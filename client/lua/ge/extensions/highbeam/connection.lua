@@ -62,6 +62,20 @@ M.connect = function(host, port, username, password)
   end
 end
 
+-- Utility function to create hex dump of binary data
+local function _hexDump(data, maxBytes)
+  maxBytes = maxBytes or 64
+  local bytes = {}
+  for i = 1, math.min(#data, maxBytes) do
+    table.insert(bytes, string.format("%02X", data:byte(i)))
+  end
+  local hex = table.concat(bytes, " ")
+  if #data > maxBytes then
+    hex = hex .. " ... (" .. (#data - maxBytes) .. " more bytes)"
+  end
+  return hex
+end
+
 M.disconnect = function()
   log('I', logTag, 'Disconnect requested')
   if tcp then
@@ -158,12 +172,38 @@ M._sendPacket = function(packetTable)
   tcp:send(header .. json)
 end
 
+-- Validate that packet has required fields (Phase 2.3)
+local function _validatePacket(packet)
+  if type(packet) ~= "table" then
+    return false, "Packet is not a table"
+  end
+  if type(packet.type) ~= "string" then
+    return false, "Packet missing 'type' field or type is not string"
+  end
+  return true
+end
+
 M._handlePacket = function(jsonStr)
   local ok, packet = pcall(function()
     return require("highbeam/lib/json").decode(jsonStr)
   end)
   if not ok or not packet then
-    log('W', logTag, 'Failed to decode packet: ' .. tostring(packet))
+    -- Log parse error with hex dump for debugging (Phase 2.3)
+    log('W', logTag, 'Failed to decode packet (Phase 2.3): ' .. tostring(packet))
+    local hexDump = _hexDump(jsonStr)
+    log('D', logTag, 'Hex dump of malformed packet: ' .. hexDump)
+    -- Gracefully disconnect on parse error
+    M._onDisconnect("Malformed packet received (JSON parse failed)")
+    return
+  end
+
+  -- Validate packet structure (Phase 2.3)
+  local valid, err = _validatePacket(packet)
+  if not valid then
+    log('W', logTag, 'Packet validation failed: ' .. tostring(err))
+    local hexDump = _hexDump(jsonStr)
+    log('D', logTag, 'Hex dump: ' .. hexDump)
+    M._onDisconnect("Invalid packet structure: " .. tostring(err))
     return
   end
 
