@@ -117,18 +117,18 @@ The server and client negotiate protocol version during the handshake. Mismatche
 
 ### v0.3.0 — Chat, Mods & Auth (Alpha) ⏳
 
-**Status:** In progress — v0.3.0-alpha.1 (features ~70% complete, hardening applied)  
+**Status:** Complete — v0.3.0-alpha.1  
 **Goal:** Complete the core multiplayer experience with chat, mod sync via launcher, and proper auth.
 
 **Server:**
 - [x] Chat message relay
-- [ ] Password auth mode *(config parsing exists, enforcement not implemented)*
-- [ ] Allowlist auth mode *(config parsing exists, enforcement not implemented)*
+- [x] Password auth mode
+- [x] Allowlist auth mode
 - [x] Mod file serving from Resources/Client/ (raw binary TCP to launcher)
 - [x] `mod_list` endpoint — SHA-256 manifest of available mods
 - [x] Raw binary file transfer for mod data (no base64)
-- [ ] MaxPlayers enforcement *(value sent in ServerHello but not enforced at join)*
-- [ ] MaxCarsPerPlayer enforcement *(vehicle_count_for_player() exists but not called on spawn)*
+- [x] MaxPlayers enforcement
+- [x] MaxCarsPerPlayer enforcement
 - [x] Rate limiting on auth attempts
 
 **Launcher:**
@@ -139,22 +139,22 @@ The server and client negotiate protocol version during the handshake. Mismatche
 - [x] Download missing mods via raw binary TCP transfer
 - [x] SHA-256 verification of downloaded files
 - [x] Install mods into BeamNG userfolder (`mods/`)
-- [ ] Install/update HighBeam client mod *(scaffolded, incomplete bundle creation)*
-- [ ] Launch BeamNG.drive process *(spawns process, but no exit code handling)*
+- [x] Install/update HighBeam client mod
+- [x] Launch BeamNG.drive process (wait for exit, handle exit codes)
 - [x] CLI interface (`--server`, `--no-launch`, `--clear-cache`)
 
 **Client:**
 - [x] Chat UI (send/receive messages)
-- [ ] Player list display *(shows count only, not individual names)*
-- [ ] Connection status indicators *(basic log messages, no real-time UI state)*
-- [ ] Reconnection with backoff *(not implemented — disconnect is final)*
+- [x] Player list display
+- [x] Connection status indicators
+- [x] Reconnection with backoff
 - [x] *(Mods pre-synced by launcher before game starts)*
 
 **Protocol:**
 - [x] ChatMessage packets
 - [x] Launcher mod transfer protocol (mod_list / mod_request JSON + raw binary stream)
 - [x] Kick packet
-- [ ] ServerMessage packet
+- [x] ServerMessage packet
 
 **Hardening (applied during v0.3.0 development):**
 
@@ -183,24 +183,24 @@ The following production hardening was implemented alongside v0.3.0 feature work
 **Deliverable:** Full multiplayer session with chat, modded vehicles, and password-protected servers. Launcher handles mod sync before game launch.
 
 **Remaining for v0.3.0 release:**
-- [ ] Password auth enforcement (server rejects wrong password)
-- [ ] Allowlist auth enforcement (server rejects unlisted users)
-- [ ] MaxPlayers enforcement (reject connection when full)
-- [ ] MaxCarsPerPlayer enforcement (reject spawn when at limit)
-- [ ] Reconnection with exponential backoff (client)
-- [ ] Player list UI with names (client)
-- [ ] Connection status indicator UI (client)
-- [ ] ServerMessage packet type
-- [ ] HighBeam client mod auto-install via launcher (complete bundle creation)
-- [ ] Launch process management (wait for exit, handle errors)
+- [x] Password auth enforcement (server rejects wrong password)
+- [x] Allowlist auth enforcement (server rejects unlisted users)
+- [x] MaxPlayers enforcement (reject connection when full)
+- [x] MaxCarsPerPlayer enforcement (reject spawn when at limit)
+- [x] Reconnection with exponential backoff (client)
+- [x] Player list UI with names (client)
+- [x] Connection status indicator UI (client)
+- [x] ServerMessage packet type
+- [x] HighBeam client mod auto-install via launcher (complete bundle creation)
+- [x] Launch process management (wait for exit, handle errors)
 
 **Acceptance Criteria:**
 - [x] Chat messages relay between all connected players
-- [ ] Password mode rejects incorrect passwords, allowlist mode rejects unlisted users
+- [x] Password mode rejects incorrect passwords, allowlist mode rejects unlisted users
 - [x] Launcher downloads mods from server via raw binary TCP before launching the game
 - [x] Mod cache deduplicates files by SHA-256 across servers
 - [x] Rate limiting blocks auth brute force and chat spam
-- [ ] MaxPlayers and MaxCarsPerPlayer limits are enforced
+- [x] MaxPlayers and MaxCarsPerPlayer limits are enforced
 
 ---
 

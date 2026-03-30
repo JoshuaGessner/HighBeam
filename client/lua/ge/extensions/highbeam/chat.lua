@@ -48,4 +48,23 @@ M.receive = function(playerId, playerName, message)
   log('I', logTag, 'Chat received from ' .. playerName .. ': ' .. message)
 end
 
+-- Display a system message (server announcements, status messages)
+M.systemMessage = function(text)
+  if not text then return end
+
+  table.insert(M.messages, {
+    playerId = nil,
+    name = "Server",
+    message = text,
+    time = os.time(),
+    system = true,
+  })
+
+  if #M.messages > MAX_MESSAGES then
+    table.remove(M.messages, 1)
+  end
+
+  log('I', logTag, 'System message: ' .. text)
+end
+
 return M

@@ -9,6 +9,11 @@ local HEADER_SIZE = 4  -- 4-byte LE uint32 length prefix
 local CONNECT_TIMEOUT = 5  -- 5-second connect timeout (Phase 2.1)
 local PONG_TIMEOUT = 30  -- 30-second pong timeout (Phase 2.2)
 
+-- Reconnection settings
+local RECONNECT_BASE_DELAY = 2    -- Initial delay in seconds
+local RECONNECT_MAX_DELAY = 30    -- Maximum delay cap in seconds
+local RECONNECT_MAX_ATTEMPTS = 5  -- Give up after this many attempts
+
 -- Connection states
 M.STATE_DISCONNECTED    = 0
 M.STATE_CONNECTING      = 1
@@ -24,6 +29,17 @@ M._lastPingTime = nil  -- Track last ping time for heartbeat (Phase 2.2)
 M._connectStartTime = nil  -- Track connection start time for timeout (Phase 2.1)
 M._onConnectFailedCallback = nil  -- Optional callback for connect failures
 M._errorCallback = nil  -- Optional callback for runtime errors (Phase 2.4)
+M._statusCallback = nil  -- Optional callback for connection status changes
+
+-- Reconnection state
+M._reconnectAttempt = 0
+M._reconnectDelay = 0
+M._reconnectTimer = 0
+M._reconnectCredentials = nil  -- Stored {host, port, username, password} for reconnect
+M._autoReconnect = false  -- Whether we should attempt reconnection
+
+-- Player tracking
+M._players = {}  -- player_id -> { name = "..." }
 
 -- Error tracking for diagnostics (Phase 2.4)
 M._errorCount = 0
@@ -38,6 +54,20 @@ end
 
 M.setErrorCallback = function(callback)
   M._errorCallback = callback
+end
+
+M.setStatusCallback = function(callback)
+  M._statusCallback = callback
+end
+
+M._notifyStatus = function(status, detail)
+  if M._statusCallback then
+    pcall(M._statusCallback, status, detail)
+  end
+end
+
+M.getPlayers = function()
+  return M._players
 end
 
 M._reportError = function(level, context, message)
@@ -114,6 +144,11 @@ end
 M.connect = function(host, port, username, password)
   log('I', logTag, 'Connect requested: ' .. host .. ':' .. tostring(port))
 
+  -- Store credentials for reconnection
+  M._reconnectCredentials = { host = host, port = port, username = username, password = password }
+  M._reconnectAttempt = 0
+  M._autoReconnect = true
+
   -- Load LuaSocket
   local ok, sock = pcall(require, "socket")
   if not ok then
@@ -125,6 +160,7 @@ M.connect = function(host, port, username, password)
   if not M._setState(M.STATE_CONNECTING, "connect") then
     return
   end
+  M._notifyStatus("connecting", host .. ":" .. tostring(port))
   tcp = socket.tcp()
   tcp:settimeout(0)  -- NON-BLOCKING: critical for not freezing the game
 
@@ -158,11 +194,14 @@ end
 
 M.disconnect = function()
   log('I', logTag, 'Disconnect requested')
+  M._autoReconnect = false  -- Manual disconnect disables reconnection
+  M._reconnectAttempt = 0
   if M.state == M.STATE_DISCONNECTED then
     return
   end
 
   M._setState(M.STATE_DISCONNECTING, "disconnect")
+  M._notifyStatus("disconnecting")
 
   if tcp then
     pcall(function() tcp:close() end)
@@ -174,12 +213,39 @@ M.disconnect = function()
   end
   recvBuffer = ""
   M._sessionHash = nil
-  M._lastPingTime = nil  -- Clear ping tracking on disconnect (Phase 2.2)
-  M._connectStartTime = nil  -- Clear connect timeout tracking (Phase 2.1)
+  M._lastPingTime = nil
+  M._connectStartTime = nil
+  M._players = {}
   M._setState(M.STATE_DISCONNECTED, "disconnect_complete")
+  M._notifyStatus("disconnected")
 end
 
 M.tick = function(dt)
+  -- Handle reconnection timer when disconnected
+  if M.state == M.STATE_DISCONNECTED and M._autoReconnect and M._reconnectCredentials then
+    if M._reconnectAttempt >= RECONNECT_MAX_ATTEMPTS then
+      log('W', logTag, 'Reconnection failed after ' .. RECONNECT_MAX_ATTEMPTS .. ' attempts')
+      M._autoReconnect = false
+      M._notifyStatus("reconnect_failed")
+      return
+    end
+    M._reconnectTimer = M._reconnectTimer - dt
+    if M._reconnectTimer <= 0 then
+      M._reconnectAttempt = M._reconnectAttempt + 1
+      M._reconnectDelay = math.min(RECONNECT_BASE_DELAY * (2 ^ (M._reconnectAttempt - 1)), RECONNECT_MAX_DELAY)
+      M._reconnectTimer = M._reconnectDelay
+      log('I', logTag, 'Reconnection attempt ' .. M._reconnectAttempt .. '/' .. RECONNECT_MAX_ATTEMPTS)
+      M._notifyStatus("reconnecting", "attempt " .. M._reconnectAttempt .. "/" .. RECONNECT_MAX_ATTEMPTS)
+      local creds = M._reconnectCredentials
+      -- Temporarily disable autoReconnect to avoid recursion through connect()
+      local savedAutoReconnect = M._autoReconnect
+      M._autoReconnect = false
+      M.connect(creds.host, creds.port, creds.username, creds.password)
+      M._autoReconnect = savedAutoReconnect
+    end
+    return
+  end
+
   if not tcp or not socket then return end
 
   if M.state == M.STATE_CONNECTING then
@@ -362,6 +428,10 @@ M._handlePacket = function(jsonStr)
         M._onDisconnect("Invalid state transition after auth")
         return
       end
+      M._notifyStatus("connected")
+      -- Reset reconnection state on successful connect
+      M._reconnectAttempt = 0
+      M._reconnectTimer = 0
       M._lastPingTime = os.clock()  -- Initialize ping tracking (Phase 2.2)
       -- Bind UDP after successful auth
       if M._pendingAuth then
@@ -380,6 +450,15 @@ M._handlePacket = function(jsonStr)
     end
   elseif ptype == "world_state" then
     log('I', logTag, 'Received WorldState: ' .. tostring(#(packet.players or {})) .. ' players, ' .. tostring(#(packet.vehicles or {})) .. ' vehicles')
+    -- Populate player tracking from world state
+    M._players = {}
+    if packet.players then
+      for _, p in ipairs(packet.players) do
+        if p.id and p.name then
+          M._players[p.id] = { name = p.name }
+        end
+      end
+    end
     if vehicles and packet.vehicles then
       for _, v in ipairs(packet.vehicles) do
         vehicles.spawnRemote(v.player_id, v.vehicle_id, v.data)
@@ -412,10 +491,22 @@ M._handlePacket = function(jsonStr)
     if vehicles and packet.player_id ~= M._playerId then
       vehicles.resetRemote(packet.player_id, packet.vehicle_id, packet.data)
     end
+  elseif ptype == "server_message" then
+    log('I', logTag, 'Server message: ' .. tostring(packet.text))
+    local okChat, chat = pcall(require, "highbeam/chat")
+    if okChat and chat and chat.systemMessage then
+      pcall(chat.systemMessage, packet.text)
+    end
   elseif ptype == "player_join" then
     log('I', logTag, 'Player joined: ' .. tostring(packet.name) .. ' (id=' .. tostring(packet.player_id) .. ')')
+    if packet.player_id and packet.name then
+      M._players[packet.player_id] = { name = packet.name }
+    end
   elseif ptype == "player_leave" then
     log('I', logTag, 'Player left: id=' .. tostring(packet.player_id))
+    if packet.player_id then
+      M._players[packet.player_id] = nil
+    end
     if vehicles then
       vehicles.removeAllForPlayer(packet.player_id)
     end
@@ -552,7 +643,15 @@ M._onDisconnect = function(reason)
   recvBuffer = ""
   M._sessionHash = nil
   M._lastPingTime = nil  -- Clear ping tracking on disconnect (Phase 2.2)
+  M._players = {}
   M._setState(M.STATE_DISCONNECTED, "remote_disconnect")
+  -- Trigger auto-reconnection if enabled
+  if M._autoReconnect and M._reconnectCredentials then
+    M._reconnectTimer = RECONNECT_BASE_DELAY
+    M._notifyStatus("reconnecting", "connection lost: " .. tostring(reason))
+  else
+    M._notifyStatus("disconnected", reason)
+  end
 end
 
 M.getState = function()

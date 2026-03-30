@@ -38,9 +38,50 @@
             color: #e94560;
         }
         
+        #headerRight {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        
+        #connectionStatus {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: #aaa;
+        }
+        
+        #statusDot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: #888;
+        }
+        
+        #statusDot.connected { background-color: #66bb6a; }
+        #statusDot.connecting, #statusDot.reconnecting { background-color: #ffa726; animation: pulse 1s infinite; }
+        #statusDot.disconnected, #statusDot.reconnect_failed { background-color: #ef5350; }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+        
         #playerCount {
             font-size: 12px;
             color: #aaa;
+            cursor: pointer;
+        }
+        
+        #playerCount:hover {
+            color: #e94560;
+        }
+        
+        #chatBody {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
         }
         
         #messageContainer {
@@ -49,6 +90,33 @@
             padding: 15px;
             background-color: rgba(30, 30, 30, 0.8);
             scroll-behavior: smooth;
+        }
+        
+        #playerList {
+            width: 160px;
+            background-color: rgba(15, 52, 96, 0.6);
+            border-left: 1px solid #e94560;
+            overflow-y: auto;
+            display: none;
+        }
+        
+        #playerList.visible {
+            display: block;
+        }
+        
+        #playerListHeader {
+            padding: 10px 12px;
+            font-size: 12px;
+            font-weight: bold;
+            color: #e94560;
+            border-bottom: 1px solid rgba(233, 69, 96, 0.3);
+        }
+        
+        .playerEntry {
+            padding: 6px 12px;
+            font-size: 13px;
+            color: #ccc;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
         }
         
         .message {
@@ -156,9 +224,21 @@
     <div id="chatContainer">
         <div id="chatHeader">
             <div id="chatTitle">HighBeam Chat</div>
-            <div id="playerCount">Players: 0</div>
+            <div id="headerRight">
+                <div id="connectionStatus">
+                    <div id="statusDot"></div>
+                    <span id="statusText">Disconnected</span>
+                </div>
+                <div id="playerCount" onclick="togglePlayerList()">Players: 0</div>
+            </div>
         </div>
-        <div id="messageContainer"></div>
+        <div id="chatBody">
+            <div id="messageContainer"></div>
+            <div id="playerList">
+                <div id="playerListHeader">Online Players</div>
+                <div id="playerListEntries"></div>
+            </div>
+        </div>
         <div id="inputContainer">
             <input type="text" id="chatInput" placeholder="Type a message... (Enter to send, Esc to close)">
             <button id="sendButton">Send</button>
@@ -258,6 +338,44 @@
         window.clearChat = function() {
             messageContainer.innerHTML = '';
         };
+        
+        // Global function for Lua to update connection status
+        window.updateConnectionStatus = function(status, detail) {
+            const dot = document.getElementById('statusDot');
+            const text = document.getElementById('statusText');
+            dot.className = status;
+            const labels = {
+                connected: 'Connected',
+                connecting: 'Connecting...',
+                reconnecting: detail || 'Reconnecting...',
+                disconnected: 'Disconnected',
+                disconnecting: 'Disconnecting...',
+                reconnect_failed: 'Connection Lost'
+            };
+            text.textContent = labels[status] || status;
+        };
+        
+        // Global function for Lua to update player list
+        window.updatePlayerList = function(players) {
+            const entries = document.getElementById('playerListEntries');
+            entries.innerHTML = '';
+            let count = 0;
+            if (players) {
+                for (const id in players) {
+                    count++;
+                    const el = document.createElement('div');
+                    el.className = 'playerEntry';
+                    el.textContent = players[id].name || ('Player ' + id);
+                    entries.appendChild(el);
+                }
+            }
+            window.updatePlayerCount(count);
+        };
+        
+        function togglePlayerList() {
+            const pl = document.getElementById('playerList');
+            pl.classList.toggle('visible');
+        }
         
         // Initialize
         chatInput.focus();

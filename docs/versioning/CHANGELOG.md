@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — v0.3.0-alpha.1
 
-> Working toward v0.3.0. Chat, mod sync, and launcher features partially implemented.
+> All v0.3.0 features complete. Chat, mod sync, launcher, auth, reconnection, and player list UI shipped.
 > Production hardening applied across server and client.
 
 ### Added (v0.3.0 features)
@@ -18,7 +18,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Mod sync**: `mod_list` endpoint, SHA-256 manifest, raw binary TCP file transfer (0.002% overhead vs 33% for base64)
 - **Mod cache**: SHA-256 deduplication across servers (`~/.highbeam/cache/`)
 - **Kick packet**: server can forcibly disconnect players with reason
+- **ServerMessage packet**: server-to-client announcements displayed as system messages
 - **Auth rate limiting**: 5 attempts per 60s per IP, chat 10/10s, spawn 5/5s
+- **Password auth enforcement**: server rejects incorrect passwords in `password` auth mode
+- **Allowlist auth enforcement**: server rejects unlisted usernames in `allowlist` auth mode (case-insensitive)
+- **MaxPlayers enforcement**: server rejects connections when player count is at capacity
+- **MaxCarsPerPlayer enforcement**: server rejects vehicle spawns beyond per-player limit
+- **Reconnection with exponential backoff**: client auto-reconnects on disconnect (2s base, 30s max, 5 attempts)
+- **Player list UI**: sidebar panel in chat showing online player names, toggled via player count
+- **Connection status indicator**: colored dot + label in chat header (connected/connecting/reconnecting/disconnected)
+- **Player tracking**: client maintains `_players` table updated from world_state, player_join, player_leave
+- **Launcher process management**: waits for BeamNG.drive exit, reports exit codes
 - **Launcher CLI**: `--server`, `--no-launch`, `--clear-cache` flags
 
 ### Added (production hardening — server)

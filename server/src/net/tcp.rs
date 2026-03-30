@@ -118,9 +118,62 @@ async fn handle_connection(
         }
     };
 
-    // 4. Validate auth (v0.1.0: open mode — accept all)
-    if config.auth.mode != "open" {
-        tracing::warn!("Only 'open' auth mode is supported in v0.1.0");
+    // 4. Validate auth based on configured mode
+    match config.auth.mode.as_str() {
+        "open" => { /* Accept all */ }
+        "password" => {
+            let client_password = match &auth_packet {
+                TcpPacket::AuthRequest { password, .. } => password.clone(),
+                _ => None,
+            };
+            let expected = config.auth.password.as_deref().unwrap_or("");
+            match client_password.as_deref() {
+                Some(pw) if pw == expected => { /* Password matches */ }
+                _ => {
+                    tracing::warn!(%addr, name = %username, "Password auth failed");
+                    let response = TcpPacket::AuthResponse {
+                        success: false,
+                        player_id: None,
+                        session_token: None,
+                        error: Some("Incorrect password.".into()),
+                    };
+                    write_packet(&mut stream, &response).await?;
+                    return Ok(());
+                }
+            }
+        }
+        "allowlist" => {
+            let allowed = config.auth.allowlist.as_ref().map_or(false, |list| {
+                list.iter().any(|name| name.eq_ignore_ascii_case(&username))
+            });
+            if !allowed {
+                tracing::warn!(%addr, name = %username, "Allowlist auth rejected");
+                let response = TcpPacket::AuthResponse {
+                    success: false,
+                    player_id: None,
+                    session_token: None,
+                    error: Some("You are not on the server's allowlist.".into()),
+                };
+                write_packet(&mut stream, &response).await?;
+                return Ok(());
+            }
+        }
+        other => {
+            tracing::error!(mode = %other, "Unknown auth mode in config");
+        }
+    }
+
+    // 4b. Enforce MaxPlayers limit
+    if sessions.player_count() >= config.general.max_players as usize {
+        tracing::warn!(%addr, name = %username, "Server full ({} players)", config.general.max_players);
+        let response = TcpPacket::AuthResponse {
+            success: false,
+            player_id: None,
+            session_token: None,
+            error: Some("Server is full.".into()),
+        };
+        write_packet(&mut stream, &response).await?;
+        return Ok(());
     }
 
     // 5-6. Create a channel for this player's outbound TCP packets.
@@ -235,6 +288,7 @@ async fn handle_connection(
         &world,
         &rate_limiters,
         config.logging.log_chat,
+        config.general.max_cars_per_player,
     )
     .await;
 
@@ -274,6 +328,7 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
     world: &Arc<WorldState>,
     rate_limiters: &Arc<ServerRateLimiters>,
     log_chat: bool,
+    max_cars: u32,
 ) -> Result<()> {
     let idle_timeout = Duration::from_secs(60); // 60-second idle timeout
     let mut last_activity = Instant::now();
@@ -310,6 +365,14 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                     tracing::warn!(player_id, error = %e, "VehicleSpawn rejected: invalid config");
                     continue;
                 }
+
+                // Enforce MaxCarsPerPlayer
+                let current_count = world.vehicle_count_for_player(player_id);
+                if current_count >= max_cars {
+                    tracing::warn!(player_id, current_count, max_cars, "MaxCarsPerPlayer limit reached");
+                    continue;
+                }
+
                 let vid = world.spawn_vehicle(player_id, data.clone());
                 // Broadcast to ALL players (including sender so they learn the server-assigned ID)
                 sessions.broadcast(

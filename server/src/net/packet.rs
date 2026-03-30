@@ -49,6 +49,10 @@ pub enum TcpPacket {
     #[serde(rename = "kick")]
     Kick { reason: String },
 
+    /// Generic server-to-client notification message.
+    #[serde(rename = "server_message")]
+    ServerMessage { text: String },
+
     /// Server sends available mod manifest to a launcher.
     #[serde(rename = "mod_list")]
     ModList { mods: Vec<ModDescriptor> },
@@ -358,6 +362,13 @@ mod tests {
             player_id: 1,
             player_name: "Alice".into(),
             text: "Hello, everyone!".into(),
+        });
+    }
+
+    #[test]
+    fn test_server_message_round_trip() {
+        round_trip(&TcpPacket::ServerMessage {
+            text: "Welcome to the server!".into(),
         });
     }
 }

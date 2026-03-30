@@ -11,6 +11,15 @@ pub fn launch_game(beamng_exe: Option<&str>) -> Result<()> {
         }
     };
 
-    Command::new(exe).spawn()?;
+    println!("Launching BeamNG.drive: {}", exe);
+    let mut child = Command::new(exe).spawn()?;
+
+    let status = child.wait()?;
+    if status.success() {
+        println!("BeamNG.drive exited normally");
+    } else {
+        let code = status.code().unwrap_or(-1);
+        eprintln!("BeamNG.drive exited with code {}", code);
+    }
     Ok(())
 }
