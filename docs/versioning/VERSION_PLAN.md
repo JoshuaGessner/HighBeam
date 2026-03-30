@@ -158,7 +158,8 @@ The server and client negotiate protocol version during the handshake. Mismatche
 
 **Hardening (applied during v0.3.0 development):**
 
-The following production hardening was implemented alongside v0.3.0 feature work. These items are tracked in detail in [PRODUCTION_ROADMAP.md](../../PRODUCTION_ROADMAP.md).
+The following production hardening was implemented alongside v0.3.0 feature work.
+As of 2026-03-30, historical hardening notes were merged into this plan.
 
 *Server hardening:*
 - [x] TCP keepalive & 60s idle timeout enforcement
@@ -179,6 +180,12 @@ The following production hardening was implemented alongside v0.3.0 feature work
 - [x] Lua error handling: all callbacks and requires wrapped in pcall
 - [x] Vehicle interpolation: 50ms buffer, lerp/slerp math helpers (`math.lua`)
 - [x] Connection state machine with transition guards and stack-trace logging
+
+**Post-hardening verification backlog (tracked here, not in a separate roadmap):**
+- [ ] Manual verification pass for v0.3.0 hardening behavior (timeouts, rate limits, validation, log rotation)
+- [ ] Add malformed-packet fuzzing corpus to automated tests
+- [ ] Run rapid connect/disconnect stress cycle validation
+- [ ] Add explicit bad-JSON recovery test scenario for client error handling
 
 **Deliverable:** Full multiplayer session with chat, modded vehicles, and password-protected servers. Launcher handles mod sync before game launch.
 
