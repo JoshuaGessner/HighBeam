@@ -11,7 +11,7 @@ HighBeam is an open-source multiplayer mod and server for BeamNG.drive that lets
 - **No auth keys** — Servers are fully self-contained. No third-party accounts or API keys required.
 - **Lightweight launcher** — A small Rust binary syncs mods, installs the client mod, launches the game, and exits. No always-running proxy.
 - **Direct connect** — Connect to any server by IP:port from the in-game UI. No traffic routed through a third party.
-- **Server-side plugins** — Lua 5.4 scripting for server customization (chat commands, game modes, economy). *(Coming in v0.4.0)*
+- **Server-side plugins** — Lua 5.4 scripting for server customization (chat commands, game modes, economy, custom events).
 - **Server browser** — Optional community relay for discovering servers — no centralized authority required. *(Coming in v0.6.0)*
 - **Open protocol** — The network protocol is fully documented and versioned.
 
@@ -19,15 +19,15 @@ HighBeam is an open-source multiplayer mod and server for BeamNG.drive that lets
 
 ## Current Status
 
-**v0.3.0-alpha.1** — Core multiplayer working (TCP handshake, UDP vehicle sync, chat, mod sync via launcher). Production hardening applied. See [VERSION_PLAN.md](docs/versioning/VERSION_PLAN.md) for the roadmap.
+**v0.4.0** — Core multiplayer, chat, mod sync via launcher, and server-side Lua plugin system all implemented. Production hardening applied across server and client.
 
 | Feature | Status |
 |---------|--------|
 | TCP connection & authentication | ✅ Done |
 | Real-time vehicle sync (UDP) | ✅ Done |
 | Production hardening (timeouts, rate limiting, input validation, file logging) | ✅ Done |
-| Chat & mod distribution via launcher | ⏳ Planned (v0.3.0) |
-| Server-side Lua plugins | ⏳ Planned (v0.4.0) |
+| Chat & mod distribution via launcher | ✅ Done |
+| Server-side Lua plugins | ✅ Done |
 | Server management GUI | ⏳ Planned (v0.5.0) |
 | Server browser / discovery | ⏳ Planned (v0.6.0) |
 | Stable v1.0.0 release | 🔭 Target |
@@ -36,7 +36,7 @@ HighBeam is an open-source multiplayer mod and server for BeamNG.drive that lets
 
 ## Getting Started
 
-> **Note:** HighBeam is in active early development. The steps below reflect the current alpha build. A packaged release will be available once the launcher and mod distribution are complete (v0.3.0).
+> **Note:** HighBeam is in active early development. The steps below reflect the current build. A packaged release will be available once the server GUI is complete (v0.5.0).
 
 ### Requirements
 
@@ -64,7 +64,7 @@ The server listens on port **18860** by default. A `ServerConfig.toml` is create
 2. The launcher syncs required mods, installs the client mod, and launches BeamNG.drive.
 3. Use the HighBeam in-game UI to connect and start driving.
 
-> **Note:** The launcher binary is not yet packaged for distribution. It must be built from source (`cd launcher && cargo build --release`) until v0.3.0.
+> **Note:** The launcher can also be built from source (`cd launcher && cargo build --release`).
 
 ---
 
@@ -109,15 +109,13 @@ The server is pure Rust with no platform-specific code and compiles identically 
 
 ## Roadmap
 
-See [VERSION_PLAN.md](docs/versioning/VERSION_PLAN.md) for full milestone details and [CHANGELOG.md](docs/versioning/CHANGELOG.md) for a running list of changes.
-
 | Version | Milestone | Status |
 |---------|-----------|--------|
 | v0.1.0 | TCP handshake + auth | ✅ Done |
 | v0.2.0 | Real-time vehicle sync | ✅ Done |
-| v0.3.0 | Chat, mod distribution, launcher | ⏳ Next |
-| v0.4.0 | Server-side Lua plugin system | 📋 Planned |
-| v0.5.0 | Server management GUI | 📋 Planned |
+| v0.3.0 | Chat, mod distribution, launcher | ✅ Done |
+| v0.4.0 | Server-side Lua plugin system | ✅ Done |
+| v0.5.0 | Server management GUI | ⏳ Next |
 | v0.6.0 | Server browser & discovery | 📋 Planned |
 | v1.0.0 | Stable release | 🔭 Target |
 
@@ -125,7 +123,7 @@ See [VERSION_PLAN.md](docs/versioning/VERSION_PLAN.md) for full milestone detail
 
 ## Contributing
 
-Contributions are welcome. Before opening a PR, please read the architecture docs for the component you're working on and follow the commit message conventions described in [.copilot-instructions.md](.copilot-instructions.md).
+Contributions are welcome. Before opening a PR, please read the architecture docs and follow conventional commit message style (`feat:`, `fix:`, `chore:`, etc.).
 
 ---
 

@@ -156,7 +156,7 @@ async fn handle_connection(
             }
         }
         "allowlist" => {
-            let allowed = config.auth.allowlist.as_ref().map_or(false, |list| {
+            let allowed = config.auth.allowlist.as_ref().is_some_and(|list| {
                 list.iter().any(|name| name.eq_ignore_ascii_case(&username))
             });
             if !allowed {
@@ -351,6 +351,7 @@ async fn handle_connection(
 
 /// Main receive loop: read packets until the client disconnects or errors.
 /// Also enforces idle timeout to detect dead connections.
+#[allow(clippy::too_many_arguments)]
 async fn receive_loop<R: AsyncReadExt + Unpin>(
     player_id: u32,
     reader: &mut R,
