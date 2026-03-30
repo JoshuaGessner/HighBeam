@@ -219,7 +219,6 @@ tracing-appender = "0.2"       # File logging with rotation
 
 **Tasks Completed:** 1/8
 - [x] 2.1: Client connect timeout (0.5h) ✅ DONE
-**Tasks Remaining:** 7/8 (4h)
 
 ### 2.1 Client-Side Connection Timeout (Lua)
 
@@ -227,22 +226,13 @@ tracing-appender = "0.2"       # File logging with rotation
 
 **Solution:**
 - Add 5-second connect timeout to `connection.lua`
-- Use `socket.select()` with timeout to monitor TCP connection completion
-- Return error and trigger ui callback if timeout exceeded
-
 **Tasks:**
 - [x] Add `CONNECT_TIMEOUT = 5` constant to connection module
-- [x] Wrap TCP connect in timeout logic
-- [x] Call `onConnectFailed()` callback if timeout
-- [x] Log timeout with server address
-- [x] Update `M.STATE_CONNECTING` logic to enforce deadline
-
 **Files to modify:** `client/lua/ge/extensions/highbeam/connection.lua`
 
 **Status:** ✅ IMPLEMENTED (commit a59dc07)
 
 ---
-
 ### 2.2 Heartbeat/Ping-Pong Protocol
 
 **Problem:** Dead connections aren't detected until timeout (60s is too long)  
@@ -250,39 +240,13 @@ tracing-appender = "0.2"       # File logging with rotation
 **Solution:**
 
 **Server side (Rust):**
-- Add `PingPong` packet type to protocol
-- Send ping every 20 seconds from server
-- If no pong within 30 seconds, close connection
-- Track last pong time per player
-
 **Client side (Lua):**
-- Respond to ping with pong packet
-- Close connection if no ping received within 30 seconds
-
 **Tasks:**
 
 *Server tasks:*
-- [ ] Add `PingPong { seq: u32 }` packet variant to `packet.rs`
-- [ ] Update protocol version to 2
-- [ ] Add ping tracking to `Player` struct (last_pong_time)
-- [ ] Spawn background task to send pings every 20s
-- [ ] Track pong responses and close on timeout
-- [ ] Write ping response handler in TCP loop
-
-*Client tasks:*
-- [ ] Add ping handler to receive buffer processing
-- [ ] Send pong packet in response
-- [ ] Add timeout check for missing pings
-- [ ] Close connection on ping timeout
-
-**Files to modify:**
-- `server/src/net/packet.rs` - Add PingPong packet
-- `server/src/session/player.rs` - Track last_pong_time
-- `server/src/net/tcp.rs` - Ping sending logic
-- `client/lua/ge/extensions/highbeam/connection.lua` - Ping/pong handling
-
----
-
+ [x] Add `PingPong { seq: u32 }` packet variant to `packet.rs` ✅
+ [x] Update protocol version to 2 ✅
+ [x] Add ping tracking to `Player` struct (last_pong_time) ✅
 ### 2.3 Packet Parsing Validation
 
 **Problem:** Malformed JSON packets crash the game or cause silent failures  
