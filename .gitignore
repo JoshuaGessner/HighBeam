@@ -16,7 +16,6 @@ Desktop.ini
 *~
 .idea/
 .vscode/
-*.code-workspace
 
 # BeamNG mod build artifacts
 client/build/
@@ -26,6 +25,15 @@ client/build/
 server.log
 ServerConfig.toml
 Resources/
+
+# Documentation (local dev reference only)
+docs/
+
+# Copilot/agent instructions
+.copilot-instructions.md
+
+# Workspace config
+*.code-workspace
 
 # Temporary files
 *.tmp
