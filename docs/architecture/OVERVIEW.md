@@ -112,7 +112,7 @@ The protocol uses **two channels**:
 | Channel | Transport | Purpose | Examples |
 |---------|-----------|---------|----------|
 | **Reliable** | TCP | Events, auth, config, chat, vehicle spawn/edit/delete | Player join, chat message, vehicle config change |
-| **Fast** | UDP | High-frequency state sync | Position, rotation, velocity updates (10-60 Hz) |
+| **Fast** | UDP | High-frequency state sync | Position, rotation, velocity updates (default 20 Hz, configurable) |
 
 See [PROTOCOL.md](PROTOCOL.md) for the full protocol specification.
 
@@ -183,7 +183,7 @@ Player A (Client)           Server              Player B (Client)
      │                        │                       │
      │  [Drives around]       │                       │
      │── PosUpdate (UDP) ────►│                       │
-     │   (pos,rot,vel @30Hz)  │── PosUpdate (UDP) ──►│
+     │   (pos,rot,vel @20Hz)  │── PosUpdate (UDP) ──►│
      │                        │                       │  [Vehicle moves]
      │                        │                       │
      │  [Edits vehicle]       │                       │
@@ -200,7 +200,7 @@ Player A (Client)           Server              Player B (Client)
 |-----------|-----------|-----------|
 | Server binary | Rust | Memory safety without GC, excellent async networking (tokio), cross-platform |
 | Server plugins | Lua 5.4 (via mlua) | Familiar to BeamNG modders, sandboxed execution, hot-reloadable |
-| Client mod | Lua (LuaJIT via BeamNG) | Required by BeamNG.drive's extension system |
+| Client mod | Lua (LuaJIT via BeamNG) | Required by BeamNG.drive's extension system — runs in GELUA (main/graphics thread) |
 | Client UI | HTML/JS/CSS (BeamNG UI apps) | BeamNG's native UI app framework |
 | Network | TCP + UDP (custom protocol) | TCP for reliability, UDP for performance |
 | Config | TOML | Human-readable, well-supported in Rust ecosystem |

@@ -113,7 +113,7 @@ Key differences from HighBeam:
 
 ### Default Port
 
-Both BeamMP and HighBeam use **port 30814** (TCP + UDP on the same port).
+BeamMP uses **port 30814** (TCP + UDP on the same port). HighBeam uses **port 18860** to avoid conflicts (1886 = year of the first automobile patent).
 
 ### Resource Directory Structure
 
@@ -251,7 +251,7 @@ The launcher acts as a TCP proxy on localhost. The in-game mod connects to the l
 
 ### What We Know
 
-- Default port: **30814** (TCP + UDP)
+- Default port: **30814** (TCP + UDP) — HighBeam uses **18860** to avoid conflicts
 - The launcher proxies between game and server
 - Vehicle data is sent as JSON strings
 - Position data includes: pos (xyz), rot (quaternion xyzw), vel (xyz), time, ping

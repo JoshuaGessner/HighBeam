@@ -34,6 +34,9 @@ The server and client negotiate protocol version during the handshake. Mismatche
 
 ## Roadmap
 
+> **Implementation details for each phase are in [BUILD_GUIDE.md](../BUILD_GUIDE.md).**
+> The VERSION_PLAN defines *what* ships in each version. The BUILD_GUIDE defines *how* to build it.
+
 ### v0.1.0 — Foundation (Pre-Alpha)
 
 **Goal:** Establish the core connection loop — one player can connect to a server, spawn a vehicle, and see it exist on the server.
@@ -59,6 +62,14 @@ The server and client negotiate protocol version during the handshake. Mismatche
 
 **Deliverable:** Connect to server, authenticate, see "Player connected" in server log.
 
+**Acceptance Criteria:**
+- Server starts on port 18860 and logs readiness
+- Client connects via direct IP, completes handshake, enters CONNECTED state
+- Server tracks connected players by ID and session token
+- Multiple clients can connect simultaneously with unique IDs
+- Clean disconnect removes the session from the server
+- Oversized packets (>1MB) are rejected
+
 ---
 
 ### v0.2.0 — Vehicle Sync (Alpha)
@@ -74,11 +85,11 @@ The server and client negotiate protocol version during the handshake. Mismatche
 
 **Client:**
 - [ ] UDP socket binding with session token
-- [ ] Send local vehicle position at 30 Hz
+- [ ] Send local vehicle position at 20 Hz (configurable)
 - [ ] Receive and apply remote vehicle positions
 - [ ] Spawn remote vehicles on world_state
 - [ ] Remove remote vehicles on player disconnect
-- [ ] Basic interpolation (lerp position, slerp rotation)
+- [ ] Basic interpolation (lerp position, slerp rotation) with 2-3 snapshot buffer
 
 **Protocol:**
 - [ ] UDP packet format (binary, 63-65 bytes per update)
@@ -88,6 +99,14 @@ The server and client negotiate protocol version during the handshake. Mismatche
 - [ ] PlayerJoin, PlayerLeave notifications
 
 **Deliverable:** Two players on the same map can see each other driving around.
+
+**Acceptance Criteria:**
+- UDP binds successfully after TCP auth
+- Position updates sent at ~20Hz, received and relayed by server
+- Remote vehicles spawn correctly with the right model/config
+- Interpolation provides smooth movement (no teleporting)
+- Player disconnect removes all their vehicles from other clients' views
+- World state sent on join shows all existing vehicles
 
 ---
 
@@ -119,6 +138,13 @@ The server and client negotiate protocol version during the handshake. Mismatche
 
 **Deliverable:** Full multiplayer session with chat, modded vehicles, and password-protected servers.
 
+**Acceptance Criteria:**
+- Chat messages relay between all connected players
+- Password mode rejects incorrect passwords, allowlist mode rejects unlisted users
+- Mods from Resources/Client/ are served to connecting clients
+- Rate limiting blocks auth brute force and chat spam
+- MaxPlayers and MaxCarsPerPlayer limits are enforced
+
 ---
 
 ### v0.4.0 — Plugin System (Beta)
@@ -140,6 +166,14 @@ The server and client negotiate protocol version during the handshake. Mismatche
 - [ ] Send custom events to server
 
 **Deliverable:** Server operators can write Lua plugins to customize gameplay (kick/ban, economy, custom rules).
+
+**Acceptance Criteria:**
+- Plugins load from Resources/Server/<PluginName>/
+- HB.* API functions work correctly (GetPlayers, SendChatMessage, DropPlayer, etc.)
+- Event handlers fire in correct order (dependencies respected)
+- Cancellable events prevent the action when cancelled
+- Plugin errors are isolated — one plugin crash doesn't affect others
+- Hot reload works without server restart
 
 ---
 
@@ -163,6 +197,13 @@ The server and client negotiate protocol version during the handshake. Mismatche
 
 **Deliverable:** Stable enough for community servers with 10-20 players.
 
+**Acceptance Criteria:**
+- 20-player server uses < 2Mbps total bandwidth
+- Remote vehicle movement is smooth under 5% packet loss
+- TLS connection works when configured
+- Binary protocol reduces per-packet overhead by >50% vs JSON
+- Jitter buffer eliminates visual hitches from network jitter
+
 ---
 
 ### v0.6.0 — Discovery & Community (Beta)
@@ -179,6 +220,12 @@ The server and client negotiate protocol version during the handshake. Mismatche
 - [ ] Server info preview (name, map, players, ping)
 
 **Deliverable:** Players can find servers through a community-run index without any centralized authority.
+
+**Acceptance Criteria:**
+- Server responds to UDP query packets with info (no auth required)
+- Relay registration works with configurable relay URL
+- Server browser shows servers with name, map, player count, and ping
+- Favorites and recent servers persist across game restarts
 
 ---
 

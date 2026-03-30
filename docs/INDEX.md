@@ -36,6 +36,12 @@
 | [SERVER.md](architecture/SERVER.md) | Server binary architecture (Rust) | Writing or modifying server code |
 | [PROTOCOL.md](architecture/PROTOCOL.md) | Network protocol specification (TCP/UDP) | Adding new packet types, debugging networking, or working on client-server communication |
 
+### Implementation (`docs/`)
+
+| Document | Purpose | Read When... |
+|----------|---------|-------------|
+| [BUILD_GUIDE.md](BUILD_GUIDE.md) | Step-by-step implementation blueprint for every phase | Building any component — this is the master build plan |
+
 ### Versioning (`docs/versioning/`)
 
 | Document | Purpose | Read When... |
@@ -60,7 +66,8 @@
 | Client language | Lua (LuaJIT) | Required by BeamNG.drive's extension system | [CLIENT.md](architecture/CLIENT.md) |
 | Auth model | Decentralized (server-issued tokens) | No dependency on centralized auth servers | [OVERVIEW.md](architecture/OVERVIEW.md) |
 | Transport | TCP (reliable) + UDP (state sync) | TCP for events/config, UDP for high-frequency position updates | [PROTOCOL.md](architecture/PROTOCOL.md) |
-| Config format | TOML | Human-readable, ecosystem standard | [SERVER.md](architecture/SERVER.md) |
+| Default port | 18860 (TCP + UDP) | Avoids BeamMP conflict; 1886 = birth of the automobile | [PROTOCOL.md](architecture/PROTOCOL.md) |
+| Update rate | 20 Hz (configurable) | Balances visual quality with bandwidth | [BUILD_GUIDE.md](BUILD_GUIDE.md) |
 | Versioning | SemVer 2.0.0 | Industry standard, clear compatibility signals | [VERSION_PLAN.md](versioning/VERSION_PLAN.md) |
 | Server discovery | Direct connect + optional community relay | No enforced centralized server list | [OVERVIEW.md](architecture/OVERVIEW.md) |
 

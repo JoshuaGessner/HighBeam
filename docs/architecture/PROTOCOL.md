@@ -16,7 +16,9 @@ HighBeam uses a dual-channel protocol:
 | **Reliable** | TCP | Authentication, vehicle spawn/edit/delete, chat, plugin events, mod sync |
 | **Fast** | UDP | Position/rotation/velocity updates (high frequency) |
 
-Both channels share the same server port (default `30814`).
+Both channels share the same server port (default `18860`).
+
+> **Why 18860?** Karl Benz patented the first true automobile on January 29, **1886**. Port 18860 pays tribute to the birth of driving.
 
 ---
 
@@ -197,11 +199,11 @@ Total: 16 + 1 + 2 + 2 + 12 + 16 + 12 + 4 = **65 bytes per relayed update**
 
 ## Bandwidth Estimation
 
-At 30 Hz position updates:
-- **Per vehicle sent**: 63 bytes × 30 = ~1.9 KB/s
-- **Per vehicle received** (from server): 65 bytes × 30 = ~1.95 KB/s
-- **20-player server, 1 car each**: each client sends 1.9 KB/s, receives 19 × 1.95 = ~37 KB/s
-- **Total server bandwidth (20 players, 1 car)**: 20 × 19 × 1.95 = ~741 KB/s ≈ 5.9 Mbps
+At 20 Hz position updates:
+- **Per vehicle sent**: 63 bytes × 20 = ~1.26 KB/s
+- **Per vehicle received** (from server): 65 bytes × 20 = ~1.3 KB/s
+- **20-player server, 1 car each**: each client sends 1.26 KB/s, receives 19 × 1.3 = ~24.7 KB/s
+- **Total server bandwidth (20 players, 1 car)**: 20 × 19 × 1.3 = ~494 KB/s ≈ 3.95 Mbps
 
 ---
 

@@ -70,7 +70,7 @@ server/
 ### Network Layer (`net/`)
 
 #### TCP (`tcp.rs`)
-- Listens on configured port (default `30814`)
+- Listens on configured port (default `18860`)
 - Spawns a task per client connection
 - Handles the handshake and authentication exchange
 - Receives reliable packets (chat, vehicle spawn/edit/delete, plugin events)
@@ -193,7 +193,7 @@ server/
 ```toml
 [General]
 Name = "My HighBeam Server"
-Port = 30814
+Port = 18860
 MaxPlayers = 20
 MaxCarsPerPlayer = 3
 Map = "/levels/gridmap_v2/info.json"
@@ -209,7 +209,7 @@ MaxAuthAttempts = 5        # Per IP, before temporary ban
 AuthTimeoutSec = 30        # Time limit for auth handshake
 
 [Network]
-TickRate = 30              # Server tick rate (Hz)
+TickRate = 20              # Server tick rate (Hz) — 20Hz provides good quality with manageable bandwidth
 UdpBufferSize = 65535      # UDP receive buffer size
 TcpKeepAliveSec = 15       # TCP keepalive interval
 

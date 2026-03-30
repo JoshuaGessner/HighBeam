@@ -404,7 +404,7 @@ local currentMap = getMissionFilename()
 
 - **Frame time budget:** `onUpdate` runs every frame. At 60 FPS, that's ~16.6 ms per frame total. HighBeam's per-frame work should stay under 1-2 ms.
 - **Non-blocking sockets:** Always use `settimeout(0)` for network I/O to avoid stalling the game.
-- **Batch updates:** Don't send position updates every frame. Cap at 30 Hz (every ~2 frames at 60 FPS).
+- **Batch updates:** Don't send position updates every frame. Cap at 20 Hz (every ~3 frames at 60 FPS).
 - **LuaJIT FFI:** Available for performance-critical operations (binary packet encoding/decoding).
 - **Avoid table churn:** Reuse tables for position/rotation data rather than allocating new ones every frame.
 

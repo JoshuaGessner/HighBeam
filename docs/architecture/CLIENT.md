@@ -144,7 +144,7 @@ Tracks local game state relevant to multiplayer.
 **Responsibilities:**
 - Track local player's vehicles (IDs, configs, positions)
 - Detect vehicle spawns, edits, resets, and deletions
-- Rate-limit position updates (target: 30 Hz default, configurable)
+- Rate-limit position updates (target: 20 Hz default, configurable)
 - Diff vehicle configs to only send changes
 
 ### Chat Handler (`chat.lua`)
@@ -165,10 +165,10 @@ Client config stored in BeamNG's mod settings:
 ```lua
 -- Default client configuration
 local defaults = {
-    updateRate = 30,          -- Position updates per second (Hz)
+    updateRate = 20,          -- Position updates per second (Hz) — 20Hz balances quality and bandwidth
     interpolation = true,     -- Enable position interpolation
     directConnectHost = "",   -- Last used direct connect address
-    directConnectPort = 30814,-- Last used direct connect port
+    directConnectPort = 18860,-- Last used direct connect port (1886 = birth of the automobile)
     username = "",            -- Player display name
     showChat = true,          -- Show chat window
 }
