@@ -38,7 +38,9 @@ pub async fn start_listener(
         let world = world.clone();
         let rate_limiters = rate_limiters.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, addr, config, sessions, world, rate_limiters).await {
+            if let Err(e) =
+                handle_connection(stream, addr, config, sessions, world, rate_limiters).await
+            {
                 tracing::warn!(%addr, error = %e, "Connection error");
             }
         });
@@ -184,7 +186,8 @@ async fn handle_connection(
 
     // 11. Main receive loop
     let mut read_half = tokio::io::BufReader::new(read_half);
-    let recv_result = receive_loop(player_id, &mut read_half, &sessions, &world, &rate_limiters).await;
+    let recv_result =
+        receive_loop(player_id, &mut read_half, &sessions, &world, &rate_limiters).await;
 
     // 12. Disconnect cleanup
     write_task.abort();
@@ -279,7 +282,7 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                     tracing::warn!(player_id, error = %e, "VehicleEdit: invalid config");
                     continue;
                 }
-                
+
                 if world.is_owner(player_id, vehicle_id) {
                     world.update_config(player_id, vehicle_id, data.clone());
                     sessions.broadcast(
@@ -299,7 +302,7 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                     tracing::warn!(player_id, vehicle_id, error = %e, "VehicleDelete: invalid vehicle ID");
                     continue;
                 }
-                
+
                 if world.is_owner(player_id, vehicle_id) {
                     world.remove_vehicle(player_id, vehicle_id);
                     sessions.broadcast(
@@ -324,7 +327,7 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                     tracing::warn!(player_id, error = %e, "VehicleReset: invalid config");
                     continue;
                 }
-                
+
                 if world.is_owner(player_id, vehicle_id) {
                     sessions.broadcast(
                         TcpPacket::VehicleReset {
