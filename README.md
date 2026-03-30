@@ -19,7 +19,7 @@ HighBeam is an open-source multiplayer mod and server for BeamNG.drive that lets
 
 ## Current Status
 
-**Alpha (v0.2.0)** — Core multiplayer is functional. Players can connect to a server, authenticate, spawn vehicles, and see each other driving in real time.
+**v0.3.0-alpha.1** — Core multiplayer working (TCP handshake, UDP vehicle sync, chat, mod sync via launcher). Production hardening applied. See [VERSION_PLAN.md](docs/versioning/VERSION_PLAN.md) for the roadmap.
 
 | Feature | Status |
 |---------|--------|

@@ -1,21 +1,28 @@
-# HighBeam Production Roadmap
+# HighBeam Production Hardening Checklist
+
+> **This is a supplementary document.** The master roadmap and version milestones live in
+> [VERSION_PLAN.md](docs/versioning/VERSION_PLAN.md). This file tracks the specific production
+> hardening tasks that were applied during v0.3.0 development. Phase 3/4 items are now tracked
+> in VERSION_PLAN under v0.5.0 and v1.0.0 respectively.
 
 **Last Updated:** 2026-03-30  
-**Current Phase:** Phase 2 (Error Handling & Client Stability) - ✅ IMPLEMENTED  
-**Next Phase:** Phase 3 (Resource Management & Monitoring)  
-**Target Completion:** Phase 3 by 2026-04-01
+**Applies to:** v0.3.0-alpha.1 (hardening on top of v0.2.0 → v0.3.0 feature work)  
+**Phase 1:** ✅ Complete (server hardening)  
+**Phase 2:** ✅ Complete (client stability)  
+**Phase 3:** Merged into [VERSION_PLAN v0.5.0](docs/versioning/VERSION_PLAN.md) — Resource Management & Monitoring  
+**Phase 4:** Merged into [VERSION_PLAN v1.0.0](docs/versioning/VERSION_PLAN.md) — Testing & Stress Testing
 
 ---
 
 ## Overview
 
-HighBeam production hardening follows a 4-phase plan:
-- **Phase 1 ✅ IMPLEMENTED** - Critical server fixes (timeouts, validation, rate limiting, logging)
-- **Phase 2 ✅ IMPLEMENTED** - Client stability & error handling
-- **Phase 3** - Resource management & monitoring  
-- **Phase 4** - Testing & stress testing
+During v0.3.0 development, a production hardening pass was applied in two phases:
+- **Phase 1** — Critical server fixes (timeouts, validation, rate limiting, logging)
+- **Phase 2** — Client stability & error handling
 
-This document tracks implementation status and provides a clear roadmap for reaching production readiness.
+These phases are **complete** and their items are checked off below. Remaining hardening work
+(resource management, deployment, testing) has been folded into the VERSION_PLAN milestones
+where they naturally belong.
 
 ---
 
@@ -439,134 +446,26 @@ tracing-appender = "0.2"       # File logging with rotation
 - [x] Malformed packets logged without crashing ✅
 - [x] Vehicle movement smooth (no teleporting) ✅
 - [x] Chat logging works when flag enabled ✅
-- [ ] Integration tests pass (Phase 4)
-
-## Phase 3 - Resource Management & Monitoring (PLANNED)
-
-**Target Effort:** 2-3 hours  
-**Priority:** MEDIUM - Deployment readiness  
-**Status:** Design phase
-
-### Key Improvements
-
-- **Bandwidth throttling** - Limit position update frequency per player
-- **Memory cleanup** - Clear old connection attempts, purge old vehicle cache
-- **Metrics logging** - Player count, message rate, vehicle count per interval
-- **Log rotation policy** - Configurable retention and compression
-- **Systemd service file** - Template for Linux production deployments
-- **Docker support** - Dockerfile + docker-compose for containerized deployment
-
-### Phase 3 Acceptance Criteria
-
-- [ ] Systemd service file works on Linux
-- [ ] Docker image builds and runs
-- [ ] Memory stable over 1-hour test with 10 players
-- [ ] Metrics logged at 1-minute intervals
-- [ ] Old logs archived and compressed
+- [ ] Integration tests pass (see VERSION_PLAN v1.0.0)
 
 ---
 
-## Phase 4 - Testing & Stress Testing (PLANNED)
+## Phase 3 & 4 — Merged into VERSION_PLAN
 
-**Target Effort:** 3-4 hours  
-**Priority:** HIGH - Validation before 1.0 release  
-**Status:** Test plan in progress
+Phase 3 (Resource Management & Monitoring) items have been merged into
+[VERSION_PLAN v0.5.0](docs/versioning/VERSION_PLAN.md) under "Server — Performance & Resource Management"
+and "Server — Deployment".
 
-### Test Suites
+Phase 4 (Testing & Stress Testing) items have been merged into
+[VERSION_PLAN v1.0.0](docs/versioning/VERSION_PLAN.md) under "Test Suites Required".
 
-**Unit Tests:**
-- Validation functions (all inputs)
-- Rate limiter logic (boundary conditions)
-- Session token generation (entropy distribution)
-
-**Integration Tests:**
-- Full connect → auth → ready → disconnect cycle
-- Multiple players joining/leaving
-- Chat broadcast to all players
-- Vehicle spawn/edit/delete propagation
-
-**Stress Tests:**
-- 50 concurrent players connecting
-- 100 messages/second chat flood
-- Vehicle position updates at max rate for 5 minutes
-- Rapid connect/disconnect cycles
-
-**Network Simulation Tests:**
-- Packet loss scenarios
-- High latency (500ms+)
-- Connection resets mid-game
-- UDP packet drops
-
-### Phase 4 Acceptance Criteria
-
-- [ ] All unit tests pass
-- [ ] All integration tests pass
-- [ ] 50-player load test completes without crashes
-- [ ] Memory usage stays under 500MB
-- [ ] Log files rotate correctly
-- [ ] Recovery from network failures works
-- [ ] No memory leaks detected (valgrind)
+See VERSION_PLAN.md for the current status and checklist of these items.
 
 ---
 
-## Next Steps & Action Items
+## Next Steps
 
-### Immediate (Next 4-5 hours)
-
-1. **Complete Phase 1 + Phase 2 Validation**
-   - [ ] Run manual tests from Phase 1 checklist
-   - [ ] Validate Phase 2.4/2.6/2.7 manual test items
-   - [ ] Document pass/fail results
-
-2. **Begin Phase 3 Implementation**
-   - [ ] Add bandwidth throttling / update frequency limits
-   - [ ] Add memory cleanup for stale state
-   - [ ] Add periodic runtime metrics logging
-
-3. **Git Workflow**
-   - [ ] Keep commits task-scoped and small
-   - [ ] Tag Phase 2 completion checkpoint
-   - [ ] Open Phase 3 branch if desired
-
-### Mid-term (Over next 1-2 days)
-
-- Complete Phase 3 and validate deployment setup
-- Set up automated test suite (Phase 4 prep)
-- Deploy to staging environment
-- Run basic load and reliability scenarios
-
-### Long-term (Week 2+)
-
-- Phase 4 comprehensive testing
-- Performance profiling and optimization
-- Prepare for v1.0 release
-
----
-
-## Git Status
-
-**Last commit:** (run `git log -1 --oneline` for current tip)  
-**Branch:** main  
-**Status:** ✅ Phase 2 implementation complete locally; push/sync as needed
-
-```bash
-# To continue with Phase 3:
-git checkout -b phase-3-dev
-cargo build  # Verify no new issues
-```
-
----
-
-## Summary: Path to Production
-
-| Phase | Status | Tests | Est. Hours | Blocker? |
-|-------|--------|-------|-----------|----------|
-| Phase 1 | ✅ Implemented | ⏳ Pending | 4 | Needs testing |
-| Phase 2 | ✅ Implemented | ⏳ Pending | 4.5 | Needs validation run |
-| Phase 3 | 📋 Planned | Not started | 3 | Phase 2 validation |
-| Phase 4 | 📋 Planned | Not started | 4 | Phase 3 done |
-| **Total** | **⏳ In Progress** | | **15.5** | |
-
-**Projected Production Ready:** April 3, 2026 (pending validation and Phase 3/4 execution)
-
----
+1. **Complete remaining v0.3.0 tasks** — see [VERSION_PLAN v0.3.0](docs/versioning/VERSION_PLAN.md) for the gap list
+2. **Run manual validation** of Phase 1 + Phase 2 hardening (testing checklist above)
+3. **Tag v0.1.0 and v0.2.0** retroactively on the appropriate commits
+4. **Release v0.3.0** when all v0.3.0 acceptance criteria pass

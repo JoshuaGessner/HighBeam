@@ -1,7 +1,8 @@
 # HighBeam Version Plan
 
-> **Last updated:** 2026-03-29
+> **Last updated:** 2026-03-30
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
+> **Current version:** v0.3.0-alpha.1 (protocol v2)
 
 ---
 
@@ -30,6 +31,8 @@ The network protocol has its own integer version (independent of SemVer). Protoc
 
 The server and client negotiate protocol version during the handshake. Mismatches result in a clean disconnect with an error message.
 
+**Current protocol version:** 2 (bumped from 1 when PingPong heartbeat was added)
+
 ---
 
 ## Roadmap
@@ -37,128 +40,167 @@ The server and client negotiate protocol version during the handshake. Mismatche
 > **Implementation details for each phase are in [BUILD_GUIDE.md](../BUILD_GUIDE.md).**
 > The VERSION_PLAN defines *what* ships in each version. The BUILD_GUIDE defines *how* to build it.
 
-### v0.1.0 — Foundation (Pre-Alpha)
+### v0.1.0 — Foundation (Pre-Alpha) ✅
 
+**Status:** Complete — commit `abf7d44`  
 **Goal:** Establish the core connection loop — one player can connect to a server, spawn a vehicle, and see it exist on the server.
 
 **Server:**
-- [ ] TCP listener accepts connections
-- [ ] Handshake: ServerHello → AuthRequest → AuthResponse
-- [ ] Session management (create, track, cleanup)
-- [ ] Basic auth: `open` mode (no password)
-- [ ] TOML config loading
-- [ ] Structured logging
+- [x] TCP listener accepts connections
+- [x] Handshake: ServerHello → AuthRequest → AuthResponse
+- [x] Session management (create, track, cleanup)
+- [x] Basic auth: `open` mode (no password)
+- [x] TOML config loading
+- [x] Structured logging
 
 **Client:**
-- [ ] GE extension loads in BeamNG
-- [ ] TCP connection to server
-- [ ] Handshake flow (send AuthRequest, receive AuthResponse)
-- [ ] Connect/disconnect UI (direct connect only)
+- [x] GE extension loads in BeamNG
+- [x] TCP connection to server
+- [x] Handshake flow (send AuthRequest, receive AuthResponse)
+- [x] Connect/disconnect UI (direct connect only)
 
 **Protocol:**
-- [ ] Define TCP packet format (length-prefixed JSON)
-- [ ] ServerHello, AuthRequest, AuthResponse, Ready packets
-- [ ] Protocol version 1
+- [x] Define TCP packet format (length-prefixed JSON)
+- [x] ServerHello, AuthRequest, AuthResponse, Ready packets
+- [x] Protocol version 1
 
 **Deliverable:** Connect to server, authenticate, see "Player connected" in server log.
 
 **Acceptance Criteria:**
-- Server starts on port 18860 and logs readiness
-- Client connects via direct IP, completes handshake, enters CONNECTED state
-- Server tracks connected players by ID and session token
-- Multiple clients can connect simultaneously with unique IDs
-- Clean disconnect removes the session from the server
-- Oversized packets (>1MB) are rejected
+- [x] Server starts on port 18860 and logs readiness
+- [x] Client connects via direct IP, completes handshake, enters CONNECTED state
+- [x] Server tracks connected players by ID and session token
+- [x] Multiple clients can connect simultaneously with unique IDs
+- [x] Clean disconnect removes the session from the server
+- [x] Oversized packets (>1MB) are rejected
 
 ---
 
-### v0.2.0 — Vehicle Sync (Alpha)
+### v0.2.0 — Vehicle Sync (Alpha) ✅
 
+**Status:** Complete — commit `cfcbbb3`  
 **Goal:** Multiple players can see each other's vehicles moving in real-time.
 
 **Server:**
-- [ ] UDP receiver bound to same port
-- [ ] Vehicle state tracking (spawn, edit, delete)
-- [ ] Position relay: receive UDP from one client, broadcast to others
-- [ ] World state snapshot on player join
-- [ ] Player disconnect cleanup (remove vehicles, notify others)
+- [x] UDP receiver bound to same port
+- [x] Vehicle state tracking (spawn, edit, delete)
+- [x] Position relay: receive UDP from one client, broadcast to others
+- [x] World state snapshot on player join
+- [x] Player disconnect cleanup (remove vehicles, notify others)
 
 **Client:**
-- [ ] UDP socket binding with session token
-- [ ] Send local vehicle position at 20 Hz (configurable)
-- [ ] Receive and apply remote vehicle positions
-- [ ] Spawn remote vehicles on world_state
-- [ ] Remove remote vehicles on player disconnect
-- [ ] Basic interpolation (lerp position, slerp rotation) with 2-3 snapshot buffer
+- [x] UDP socket binding with session token
+- [x] Send local vehicle position at 20 Hz (configurable)
+- [x] Receive and apply remote vehicle positions
+- [x] Spawn remote vehicles on world_state
+- [x] Remove remote vehicles on player disconnect
+- [x] Basic interpolation (lerp position, slerp rotation) with 2-3 snapshot buffer
 
 **Protocol:**
-- [ ] UDP packet format (binary, 63-65 bytes per update)
-- [ ] VehicleSpawn, VehicleEdit, VehicleDelete, VehicleReset (TCP)
-- [ ] PositionUpdate (UDP)
-- [ ] WorldState packet
-- [ ] PlayerJoin, PlayerLeave notifications
+- [x] UDP packet format (binary, 63-65 bytes per update)
+- [x] VehicleSpawn, VehicleEdit, VehicleDelete, VehicleReset (TCP)
+- [x] PositionUpdate (UDP)
+- [x] WorldState packet
+- [x] PlayerJoin, PlayerLeave notifications
 
 **Deliverable:** Two players on the same map can see each other driving around.
 
 **Acceptance Criteria:**
-- UDP binds successfully after TCP auth
-- Position updates sent at ~20Hz, received and relayed by server
-- Remote vehicles spawn correctly with the right model/config
-- Interpolation provides smooth movement (no teleporting)
-- Player disconnect removes all their vehicles from other clients' views
-- World state sent on join shows all existing vehicles
+- [x] UDP binds successfully after TCP auth
+- [x] Position updates sent at ~20Hz, received and relayed by server
+- [x] Remote vehicles spawn correctly with the right model/config
+- [x] Interpolation provides smooth movement (no teleporting)
+- [x] Player disconnect removes all their vehicles from other clients' views
+- [x] World state sent on join shows all existing vehicles
 
 ---
 
-### v0.3.0 — Chat, Mods & Auth (Alpha)
+### v0.3.0 — Chat, Mods & Auth (Alpha) ⏳
 
+**Status:** In progress — v0.3.0-alpha.1 (features ~70% complete, hardening applied)  
 **Goal:** Complete the core multiplayer experience with chat, mod sync via launcher, and proper auth.
 
 **Server:**
-- [ ] Chat message relay
-- [ ] Password auth mode
-- [ ] Allowlist auth mode
-- [ ] Mod file serving from Resources/Client/ (raw binary TCP to launcher)
-- [ ] `mod_list` endpoint — SHA-256 manifest of available mods
-- [ ] Raw binary file transfer for mod data (no base64)
-- [ ] MaxPlayers enforcement
-- [ ] MaxCarsPerPlayer enforcement
-- [ ] Rate limiting on auth attempts
+- [x] Chat message relay
+- [ ] Password auth mode *(config parsing exists, enforcement not implemented)*
+- [ ] Allowlist auth mode *(config parsing exists, enforcement not implemented)*
+- [x] Mod file serving from Resources/Client/ (raw binary TCP to launcher)
+- [x] `mod_list` endpoint — SHA-256 manifest of available mods
+- [x] Raw binary file transfer for mod data (no base64)
+- [ ] MaxPlayers enforcement *(value sent in ServerHello but not enforced at join)*
+- [ ] MaxCarsPerPlayer enforcement *(vehicle_count_for_player() exists but not called on spawn)*
+- [x] Rate limiting on auth attempts
 
 **Launcher:**
-- [ ] Scaffold Rust binary (Cargo project under `launcher/`)
-- [ ] TOML config loading (`LauncherConfig.toml`)
-- [ ] Connect to server, request `mod_list`
-- [ ] Compare mod hashes against local cache (`~/.highbeam/cache/`)
-- [ ] Download missing mods via raw binary TCP transfer
-- [ ] SHA-256 verification of downloaded files
-- [ ] Install mods into BeamNG userfolder (`mods/`)
-- [ ] Install/update HighBeam client mod
-- [ ] Launch BeamNG.drive process
-- [ ] CLI interface (`--server`, `--no-launch`, `--clear-cache`)
+- [x] Scaffold Rust binary (Cargo project under `launcher/`)
+- [x] TOML config loading (`LauncherConfig.toml`)
+- [x] Connect to server, request `mod_list`
+- [x] Compare mod hashes against local cache (`~/.highbeam/cache/`)
+- [x] Download missing mods via raw binary TCP transfer
+- [x] SHA-256 verification of downloaded files
+- [x] Install mods into BeamNG userfolder (`mods/`)
+- [ ] Install/update HighBeam client mod *(scaffolded, incomplete bundle creation)*
+- [ ] Launch BeamNG.drive process *(spawns process, but no exit code handling)*
+- [x] CLI interface (`--server`, `--no-launch`, `--clear-cache`)
 
 **Client:**
-- [ ] Chat UI (send/receive messages)
-- [ ] Player list display
-- [ ] Connection status indicators
-- [ ] Reconnection with backoff
-- [ ] *(Mods pre-synced by launcher before game starts)*
+- [x] Chat UI (send/receive messages)
+- [ ] Player list display *(shows count only, not individual names)*
+- [ ] Connection status indicators *(basic log messages, no real-time UI state)*
+- [ ] Reconnection with backoff *(not implemented — disconnect is final)*
+- [x] *(Mods pre-synced by launcher before game starts)*
 
 **Protocol:**
-- [ ] ChatMessage packets
-- [ ] Launcher mod transfer protocol (mod_list / mod_request JSON + raw binary stream)
-- [ ] Kick packet
+- [x] ChatMessage packets
+- [x] Launcher mod transfer protocol (mod_list / mod_request JSON + raw binary stream)
+- [x] Kick packet
 - [ ] ServerMessage packet
+
+**Hardening (applied during v0.3.0 development):**
+
+The following production hardening was implemented alongside v0.3.0 feature work. These items are tracked in detail in [PRODUCTION_ROADMAP.md](../../PRODUCTION_ROADMAP.md).
+
+*Server hardening:*
+- [x] TCP keepalive & 60s idle timeout enforcement
+- [x] Graceful shutdown with SIGTERM/SIGINT signal handlers
+- [x] Input validation module (`validation.rs`): username, password, chat, vehicle ID, config size
+- [x] Rate limiting: auth (5/60s per IP), chat (10/10s), spawn (5/5s)
+- [x] Vehicle ownership & ID bounds validation
+- [x] Session token collision safety (64-byte entropy + timestamp)
+- [x] Config validation at startup (rejects invalid settings)
+- [x] File logging with daily rotation (`tracing-appender`)
+- [x] Chat logging when `LogChat=true` (structured `highbeam::chat` target)
+- [x] Username emptiness runtime check in `add_player()`
+
+*Client hardening:*
+- [x] 5-second connect timeout
+- [x] Heartbeat/ping-pong protocol (20s ping, 30s pong timeout) — bumped protocol to v2
+- [x] Packet parsing validation with pcall wrappers
+- [x] Lua error handling: all callbacks and requires wrapped in pcall
+- [x] Vehicle interpolation: 50ms buffer, lerp/slerp math helpers (`math.lua`)
+- [x] Connection state machine with transition guards and stack-trace logging
 
 **Deliverable:** Full multiplayer session with chat, modded vehicles, and password-protected servers. Launcher handles mod sync before game launch.
 
+**Remaining for v0.3.0 release:**
+- [ ] Password auth enforcement (server rejects wrong password)
+- [ ] Allowlist auth enforcement (server rejects unlisted users)
+- [ ] MaxPlayers enforcement (reject connection when full)
+- [ ] MaxCarsPerPlayer enforcement (reject spawn when at limit)
+- [ ] Reconnection with exponential backoff (client)
+- [ ] Player list UI with names (client)
+- [ ] Connection status indicator UI (client)
+- [ ] ServerMessage packet type
+- [ ] HighBeam client mod auto-install via launcher (complete bundle creation)
+- [ ] Launch process management (wait for exit, handle errors)
+
 **Acceptance Criteria:**
-- Chat messages relay between all connected players
-- Password mode rejects incorrect passwords, allowlist mode rejects unlisted users
-- Launcher downloads mods from server via raw binary TCP before launching the game
-- Mod cache deduplicates files by SHA-256 across servers
-- Rate limiting blocks auth brute force and chat spam
-- MaxPlayers and MaxCarsPerPlayer limits are enforced
+- [x] Chat messages relay between all connected players
+- [ ] Password mode rejects incorrect passwords, allowlist mode rejects unlisted users
+- [x] Launcher downloads mods from server via raw binary TCP before launching the game
+- [x] Mod cache deduplicates files by SHA-256 across servers
+- [x] Rate limiting blocks auth brute force and chat spam
+- [ ] MaxPlayers and MaxCarsPerPlayer limits are enforced
 
 ---
 
@@ -196,7 +238,7 @@ The server and client negotiate protocol version during the handshake. Mismatche
 
 **Goal:** Graphical server management interface, production-quality stability, and performance.
 
-**Server:**
+**Server — GUI:**
 - [ ] Server GUI (egui/eframe) with tabbed panel layout
 - [ ] Dashboard panel (player count, uptime, tick rate, bandwidth)
 - [ ] Player management panel (kick, ban, persistence toggle)
@@ -207,12 +249,22 @@ The server and client negotiate protocol version during the handshake. Mismatche
 - [ ] Settings panel (edit ServerConfig.toml values at runtime)
 - [ ] System tray integration (minimize-to-tray, tray context menu)
 - [ ] `--headless` CLI flag to disable GUI (for Docker / systemd)
+
+**Server — Performance & Resource Management:**
+- [ ] Bandwidth throttling — limit position update frequency per player
+- [ ] Memory cleanup — purge stale connection attempts and old vehicle cache
+- [ ] Periodic runtime metrics logging (player count, message rate, vehicle count)
+- [ ] Log rotation policy — configurable retention and compression
 - [ ] Optional TLS for TCP channel
 - [ ] Binary TCP packet format (replace JSON with MessagePack or custom)
 - [ ] Delta compression for vehicle config updates
 - [ ] Graceful shutdown with save state
 - [ ] Memory usage monitoring
 - [ ] Configurable tick rate
+
+**Server — Deployment:**
+- [ ] Systemd service file template for Linux
+- [ ] Dockerfile + docker-compose for containerized deployment
 
 **Client:**
 - [ ] Advanced interpolation (extrapolation with velocity)
@@ -233,6 +285,10 @@ The server and client negotiate protocol version during the handshake. Mismatche
 - TLS connection works when configured
 - Binary protocol reduces per-packet overhead by >50% vs JSON
 - Jitter buffer eliminates visual hitches from network jitter
+- Memory stable over 1-hour test with 10 players
+- Metrics logged at configurable intervals
+- Systemd service file works on Linux
+- Docker image builds and runs
 
 ---
 
@@ -274,6 +330,38 @@ The server and client negotiate protocol version during the handshake. Mismatche
 - At least one community relay running
 - Performance validated at 20+ players
 - Server GUI tested on Windows and Linux
+
+**Test Suites Required:**
+
+*Unit Tests:*
+- [ ] Validation functions (all inputs)
+- [ ] Rate limiter logic (boundary conditions)
+- [ ] Session token generation (entropy distribution)
+
+*Integration Tests:*
+- [ ] Full connect → auth → ready → disconnect cycle
+- [ ] Multiple players joining/leaving
+- [ ] Chat broadcast to all players
+- [ ] Vehicle spawn/edit/delete propagation
+
+*Stress Tests:*
+- [ ] 50 concurrent players connecting
+- [ ] 100 messages/second chat flood
+- [ ] Vehicle position updates at max rate for 5 minutes
+- [ ] Rapid connect/disconnect cycles
+
+*Network Simulation:*
+- [ ] Packet loss scenarios
+- [ ] High latency (500ms+)
+- [ ] Connection resets mid-game
+- [ ] UDP packet drops
+
+**Acceptance Criteria:**
+- All unit + integration tests pass
+- 50-player load test completes without crashes
+- Memory usage stays under 500MB
+- No memory leaks detected
+- Recovery from network failures works
 
 ---
 
