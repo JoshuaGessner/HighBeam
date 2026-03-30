@@ -7,6 +7,7 @@ local udp = nil
 local recvBuffer = ""
 local HEADER_SIZE = 4  -- 4-byte LE uint32 length prefix
 local CONNECT_TIMEOUT = 5  -- 5-second connect timeout (Phase 2.1)
+local PONG_TIMEOUT = 30  -- 30-second pong timeout (Phase 2.2)
 
 -- Connection states
 M.STATE_DISCONNECTED    = 0
@@ -19,6 +20,7 @@ M.state = 0  -- STATE_DISCONNECTED
 M._playerId = nil
 M._sessionToken = nil
 M._sessionHash = nil
+M._lastPingTime = nil  -- Track last ping time for heartbeat (Phase 2.2)
 M._connectStartTime = nil  -- Track connection start time for timeout (Phase 2.1)
 M._onConnectFailedCallback = nil  -- Optional callback for connect failures
 
@@ -72,6 +74,7 @@ M.disconnect = function()
   end
   recvBuffer = ""
   M._sessionHash = nil
+  M._lastPingTime = nil  -- Clear ping tracking on disconnect (Phase 2.2)
   M._connectStartTime = nil  -- Clear connect timeout tracking (Phase 2.1)
   M.state = M.STATE_DISCONNECTED
 end
@@ -113,6 +116,13 @@ M.tick = function(dt)
 
   -- Tick UDP if connected
   if M.state == M.STATE_CONNECTED then
+    -- Check for pong timeout (Phase 2.2)
+    if M._lastPingTime and os.clock() - M._lastPingTime > PONG_TIMEOUT then
+      log('W', logTag, 'Pong timeout - no heartbeat for ' .. PONG_TIMEOUT .. 's')
+      M._onDisconnect("Heartbeat timeout")
+      return
+    end
+    
     M._tickUdp()
   end
 end
@@ -161,7 +171,7 @@ M._handlePacket = function(jsonStr)
   if ptype == "server_hello" then
     log('I', logTag, 'Received ServerHello: ' .. tostring(packet.name))
     -- Validate protocol version
-    if packet.version ~= 1 then
+    if packet.version ~= 1 and packet.version ~= 2 then
       log('E', logTag, 'Protocol version mismatch: ' .. tostring(packet.version))
       M.disconnect()
       return
@@ -182,6 +192,7 @@ M._handlePacket = function(jsonStr)
       -- Send ready
       M._sendPacket({ type = "ready" })
       M.state = M.STATE_CONNECTED
+      M._lastPingTime = os.clock()  -- Initialize ping tracking (Phase 2.2)
       -- Bind UDP after successful auth
       if M._pendingAuth then
         M._bindUdp(M._pendingAuth.host, M._pendingAuth.port, M._sessionToken)
@@ -235,6 +246,14 @@ M._handlePacket = function(jsonStr)
     local chat = require("highbeam/chat")
     chat.receive(packet.player_id, packet.player_name, packet.text)
     log('I', logTag, 'Chat [' .. packet.player_name .. ']: ' .. packet.text)
+  elseif ptype == "ping_pong" then
+    log('D', logTag, 'Received PingPong: seq=' .. tostring(packet.seq))
+    M._lastPingTime = os.clock()  -- Update last ping time (Phase 2.2)
+    -- Send pong response immediately
+    M._sendPacket({
+      type = "ping_pong",
+      seq = packet.seq
+    })
   elseif ptype == "kick" then
     log('W', logTag, 'Kicked: ' .. tostring(packet.reason))
     M.disconnect()
@@ -336,6 +355,7 @@ M._onDisconnect = function(reason)
   end
   recvBuffer = ""
   M._sessionHash = nil
+  M._lastPingTime = nil  -- Clear ping tracking on disconnect (Phase 2.2)
   M.state = M.STATE_DISCONNECTED
 end
 
