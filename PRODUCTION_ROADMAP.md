@@ -215,7 +215,7 @@ tracing-appender = "0.2"       # File logging with rotation
 
 **Target Effort:** 3-4 hours  
 **Priority:** HIGH - Prevents crashes and improves user experience  
-**Status:** Specification complete, 1/8 tasks implemented
+**Status:** Specification complete, 2/8 tasks implemented (server-side heartbeat done, client pending)
 
 **Tasks Completed:** 1/8
 - [x] 2.1: Client connect timeout (0.5h) ✅ DONE
@@ -380,14 +380,33 @@ tracing-appender = "0.2"       # File logging with rotation
 | Task | File | Effort | Priority | Status |
 |------|------|--------|----------|--------|
 | Client connect timeout | connection.lua | 0.5h | HIGH | ✅ DONE |
-| Heartbeat protocol | packet.rs, tcp.rs, connection.lua | 1.5h | HIGH | ⏳ NEXT |
+| Heartbeat protocol | packet.rs, tcp.rs, connection.lua | 1.5h | HIGH | ⏳ IN PROGRESS (server ✅) |
 | Packet parse validation | tcp.rs, connection.lua, protocol.lua | 0.5h | HIGH | 📋 TODO |
 | Lua error handling | connection.lua, highbeam.lua | 0.5h | MEDIUM | 📋 TODO |
 | Vehicle interpolation | vehicles.lua, math.lua | 1h | HIGH | 📋 TODO |
 | Connection state validation | connection.lua | 0.5h | MEDIUM | 📋 TODO |
 | Chat logging | tcp.rs | 0.25h | LOW | 📋 TODO |
 | Username check | manager.rs | 0.25h | LOW | 📋 TODO |
-| **TOTAL** | | **4.5h** | | **1/8 ✅** |
+| **TOTAL** | | **4.5h** | | **2/8 ✅** |
+
+**Server Implementation Details (Commit 55a530a):**
+- Added `PROTOCOL_VERSION = 2` constant in `packet.rs`
+- Added `PingPong { seq: u32 }` packet enum variant
+- Added `last_pong_time: Instant` field to Player struct in `player.rs`
+- Added `SessionManager::get_player_mut()` method for mutable player access in `manager.rs`
+- Implemented ping task in `tcp.rs`: spawns background task that sends PingPong every 20s with sequence number
+- Implemented pong timeout detection: closes connection if no pong within 30s
+- Implemented PingPong handler in receive_loop that updates `last_pong_time` when pong received
+- Properly aborts ping task during connection cleanup
+- ✅ Server compiles cleanly with heartbeat protocol v2
+
+**Status:** ✅ Server-side IMPLEMENTED (55a530a), ⏳ Client-side PENDING
+
+*Client tasks (pending):*
+ [ ] Add PingPong handler to receive buffer processing in `connection.lua`
+ [ ] Send pong response immediately when ping received
+ [ ] Track last ping received time
+ [ ] Close connection if no ping within 30s (pong_timeout)
 
 ---
 
