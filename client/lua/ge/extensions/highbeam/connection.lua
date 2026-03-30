@@ -6,6 +6,7 @@ local tcp = nil
 local udp = nil
 local recvBuffer = ""
 local HEADER_SIZE = 4  -- 4-byte LE uint32 length prefix
+local CONNECT_TIMEOUT = 5  -- 5-second connect timeout (Phase 2.1)
 
 -- Connection states
 M.STATE_DISCONNECTED    = 0
@@ -18,6 +19,8 @@ M.state = 0  -- STATE_DISCONNECTED
 M._playerId = nil
 M._sessionToken = nil
 M._sessionHash = nil
+M._connectStartTime = nil  -- Track connection start time for timeout (Phase 2.1)
+M._onConnectFailedCallback = nil  -- Optional callback for connect failures
 
 -- Subsystem references (set by highbeam.lua after loading)
 local vehicles = nil
@@ -49,6 +52,7 @@ M.connect = function(host, port, username, password)
   if result or err == "timeout" then
     -- Connection in progress
     M._pendingAuth = { username = username, password = password, host = host, port = port }
+    M._connectStartTime = os.clock()  -- Track start time for timeout (Phase 2.1)
   else
     log('E', logTag, 'Connect failed: ' .. tostring(err))
     M.state = M.STATE_DISCONNECTED
@@ -68,6 +72,7 @@ M.disconnect = function()
   end
   recvBuffer = ""
   M._sessionHash = nil
+  M._connectStartTime = nil  -- Clear connect timeout tracking (Phase 2.1)
   M.state = M.STATE_DISCONNECTED
 end
 
@@ -75,10 +80,19 @@ M.tick = function(dt)
   if not tcp or not socket then return end
 
   if M.state == M.STATE_CONNECTING then
+    -- Check for connect timeout (Phase 2.1)
+    if M._connectStartTime and os.clock() - M._connectStartTime > CONNECT_TIMEOUT then
+      local host = M._pendingAuth and M._pendingAuth.host or "unknown"
+      log('E', logTag, 'Connection timeout after ' .. CONNECT_TIMEOUT .. 's to ' .. host)
+      M._onConnectFailedTimeout(host)
+      return
+    end
+    
     -- Check if TCP connect completed
     local _, writable = socket.select(nil, {tcp}, 0)
     if writable and #writable > 0 then
       -- Connected! Wait for ServerHello
+      M._connectStartTime = nil  -- Clear timeout tracking
       M.state = M.STATE_AUTHENTICATING
       log('I', logTag, 'TCP connected, waiting for ServerHello')
     end
@@ -327,6 +341,19 @@ end
 
 M.getState = function()
   return M.state
+end
+
+M.setOnConnectFailedCallback = function(callback)
+  -- Allow UI or other subsystems to handle connect failures (Phase 2.1)
+  M._onConnectFailedCallback = callback
+end
+
+M._onConnectFailedTimeout = function(host)
+  -- Handle connection timeout (Phase 2.1)
+  if M._onConnectFailedCallback then
+    pcall(M._onConnectFailedCallback, "timeout", host)
+  end
+  M.disconnect()
 end
 
 return M
