@@ -21,3 +21,6 @@ TcpKeepAliveSec = 15
 Level = "info"
 LogFile = "server.log"
 LogChat = true
+
+[Updates]
+AutoUpdate = true

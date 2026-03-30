@@ -8,12 +8,14 @@ mod installer;
 mod mod_cache;
 mod mod_sync;
 mod transfer;
+mod updater;
 
 struct CliArgs {
     server: Option<String>,
     config: PathBuf,
     no_launch: bool,
     clear_cache: bool,
+    no_update: bool,
 }
 
 fn parse_args() -> CliArgs {
@@ -21,6 +23,7 @@ fn parse_args() -> CliArgs {
     let mut config = PathBuf::from("LauncherConfig.toml");
     let mut no_launch = false;
     let mut clear_cache = false;
+    let mut no_update = false;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -37,6 +40,7 @@ fn parse_args() -> CliArgs {
             }
             "--no-launch" => no_launch = true,
             "--clear-cache" => clear_cache = true,
+            "--no-update" => no_update = true,
             _ => {}
         }
     }
@@ -46,6 +50,7 @@ fn parse_args() -> CliArgs {
         config,
         no_launch,
         clear_cache,
+        no_update,
     }
 }
 
@@ -66,6 +71,29 @@ fn main() -> Result<()> {
         .init();
 
     let args = parse_args();
+
+    // Clean up leftover binary from a previous update
+    updater::cleanup_previous_update();
+
+    // Check for updates unless --no-update is specified
+    if !args.no_update {
+        match updater::check_and_update() {
+            Ok(true) => {
+                tracing::info!("Launcher updated — restarting");
+                let exe = std::env::current_exe()?;
+                let status = std::process::Command::new(&exe)
+                    .args(std::env::args().skip(1))
+                    .arg("--no-update")
+                    .status()?;
+                std::process::exit(status.code().unwrap_or(0));
+            }
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "Auto-update failed, continuing with current version")
+            }
+        }
+    }
+
     let mut cfg = config::LauncherConfig::load(&args.config)?;
 
     if let Some(server) = args.server {

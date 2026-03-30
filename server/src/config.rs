@@ -12,6 +12,8 @@ pub struct ServerConfig {
     pub network: NetworkConfig,
     #[serde(rename = "Logging")]
     pub logging: LoggingConfig,
+    #[serde(rename = "Updates", default)]
+    pub updates: UpdatesConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -68,6 +70,20 @@ pub struct LoggingConfig {
     pub log_chat: bool,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdatesConfig {
+    #[serde(rename = "AutoUpdate", default = "default_auto_update")]
+    pub auto_update: bool,
+}
+
+impl Default for UpdatesConfig {
+    fn default() -> Self {
+        Self {
+            auto_update: default_auto_update(),
+        }
+    }
+}
+
 fn default_port() -> u16 {
     18860
 }
@@ -103,6 +119,9 @@ fn default_log_level() -> String {
 }
 fn default_log_file() -> String {
     "server.log".into()
+}
+fn default_auto_update() -> bool {
+    true
 }
 
 impl ServerConfig {
@@ -160,6 +179,7 @@ impl Default for ServerConfig {
                 log_file: "server.log".into(),
                 log_chat: false,
             },
+            updates: UpdatesConfig::default(),
         }
     }
 }

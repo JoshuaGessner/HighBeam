@@ -13,6 +13,7 @@ mod net;
 mod plugin;
 mod session;
 mod state;
+mod updater;
 mod validation;
 
 #[tokio::main]
@@ -57,6 +58,22 @@ async fn main() -> Result<()> {
     }
 
     tracing::info!("HighBeam server v{}", env!("CARGO_PKG_VERSION"));
+
+    // Clean up leftover binary from a previous update
+    updater::cleanup_previous_update();
+
+    // Check for updates if enabled
+    if config.updates.auto_update {
+        match updater::check_and_update().await {
+            Ok(true) => {
+                tracing::info!("Server binary updated — please restart to run the new version");
+            }
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "Auto-update failed, continuing with current version")
+            }
+        }
+    }
 
     // Validate config parameters
     validation::validate_server_config(
