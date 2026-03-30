@@ -12,15 +12,33 @@ local state        -- highbeam/state.lua
 local chat         -- highbeam/chat.lua
 local config       -- highbeam/config.lua
 
+local function _safeRequire(moduleName)
+  local ok, mod = pcall(require, moduleName)
+  if not ok then
+    log('E', logTag, 'Failed to load module ' .. moduleName .. ': ' .. tostring(mod))
+    return nil
+  end
+  return mod
+end
+
 M.onExtensionLoaded = function()
   log('I', logTag, 'HighBeam extension loaded')
 
-  connection = require("highbeam/connection")
-  protocol   = require("highbeam/protocol")
-  vehicles   = require("highbeam/vehicles")
-  state      = require("highbeam/state")
-  chat       = require("highbeam/chat")
-  config     = require("highbeam/config")
+  connection = _safeRequire("highbeam/connection")
+  protocol   = _safeRequire("highbeam/protocol")
+  vehicles   = _safeRequire("highbeam/vehicles")
+  state      = _safeRequire("highbeam/state")
+  chat       = _safeRequire("highbeam/chat")
+  config     = _safeRequire("highbeam/config")
+
+  if not connection or not protocol or not vehicles or not state or not chat or not config then
+    log('E', logTag, 'HighBeam startup aborted due to module load failure')
+    return
+  end
+
+  connection.setErrorCallback(function(context, message, level)
+    log(level or 'E', logTag, '[ConnectionError][' .. tostring(context) .. '] ' .. tostring(message))
+  end)
 
   -- Wire subsystem cross-references
   connection.setSubsystems(vehicles, state)

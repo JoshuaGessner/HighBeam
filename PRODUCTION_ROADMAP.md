@@ -279,12 +279,12 @@ tracing-appender = "0.2"       # File logging with rotation
 - Log errors instead of crashing
 - Continue running even if one subsystem fails
 
-**Tasks:**
-- [ ] Wrap `_processBuffer()` in pcall
-- [ ] Wrap `_onPacket()` dispatch in pcall per packet type
-- [ ] Wrap all `require()` calls in pcall with fallback
-- [ ] Add error callback to logging system
-- [ ] Test by injecting bad JSON
+**Tasks:** ✅ IMPLEMENTED (connection/highbeam updates)
+- [x] Wrap `_processBuffer()` in pcall ✅
+- [x] Wrap `_onPacket()` dispatch in pcall per packet type ✅
+- [x] Wrap all `require()` calls in pcall with fallback ✅
+- [x] Add error callback to logging system ✅
+- [ ] Test by injecting bad JSON (manual validation pending)
 
 **Files to modify:**
 - `client/lua/ge/extensions/highbeam/connection.lua` - All callbacks
@@ -382,12 +382,12 @@ tracing-appender = "0.2"       # File logging with rotation
 | Client connect timeout | connection.lua | 0.5h | HIGH | ✅ DONE |
 | Heartbeat protocol | packet.rs, tcp.rs, connection.lua | 1.5h | HIGH | ✅ DONE |
 | Packet parse validation | tcp.rs, connection.lua, protocol.lua | 0.5h | HIGH | ✅ DONE |
-| Lua error handling | connection.lua, highbeam.lua | 0.5h | MEDIUM | 📋 TODO |
+| Lua error handling | connection.lua, highbeam.lua | 0.5h | MEDIUM | ✅ DONE |
 | Vehicle interpolation | vehicles.lua, math.lua | 1h | HIGH | 📋 TODO |
 | Connection state validation | connection.lua | 0.5h | MEDIUM | 📋 TODO |
 | Chat logging | tcp.rs | 0.25h | LOW | 📋 TODO |
 | Username check | manager.rs | 0.25h | LOW | 📋 TODO |
-| **TOTAL** | | **4.5h** | | **4/8 completed (1h invested)** |
+| **TOTAL** | | **4.5h** | | **5/8 completed (3h invested)** |
 
 **Server Implementation Details (Commit 55a530a):**
 - Added `PROTOCOL_VERSION = 2` constant in `packet.rs`

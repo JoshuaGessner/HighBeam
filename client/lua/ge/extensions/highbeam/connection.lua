@@ -23,6 +23,32 @@ M._sessionHash = nil
 M._lastPingTime = nil  -- Track last ping time for heartbeat (Phase 2.2)
 M._connectStartTime = nil  -- Track connection start time for timeout (Phase 2.1)
 M._onConnectFailedCallback = nil  -- Optional callback for connect failures
+M._errorCallback = nil  -- Optional callback for runtime errors (Phase 2.4)
+
+-- Error tracking for diagnostics (Phase 2.4)
+M._errorCount = 0
+M._lastErrorTime = nil
+
+M.getErrorStats = function()
+  return {
+    count = M._errorCount,
+    lastError = M._lastErrorTime
+  }
+end
+
+M.setErrorCallback = function(callback)
+  M._errorCallback = callback
+end
+
+M._reportError = function(level, context, message)
+  M._errorCount = M._errorCount + 1
+  M._lastErrorTime = os.clock()
+  log(level or 'E', logTag, '[' .. tostring(context) .. '] ' .. tostring(message))
+  if M._errorCallback then
+    pcall(M._errorCallback, context, message, level)
+  end
+end
+
 
 -- Subsystem references (set by highbeam.lua after loading)
 local vehicles = nil
@@ -121,7 +147,12 @@ M.tick = function(dt)
     local chunk = data or partial
     if chunk and #chunk > 0 then
       recvBuffer = recvBuffer .. chunk
-      M._processBuffer()
+      -- Wrap buffer processing in pcall to prevent crashes (Phase 2.4)
+      local ok, err = pcall(M._processBuffer)
+      if not ok then
+        log('E', logTag, 'Error processing buffer: ' .. tostring(err))
+        M._onDisconnect("Buffer processing error: " .. tostring(err))
+      end
     end
     if err == "closed" then
       M._onDisconnect("Connection closed by server")
@@ -137,7 +168,12 @@ M.tick = function(dt)
       return
     end
     
-    M._tickUdp()
+    -- Wrap UDP processing in pcall to prevent crashes (Phase 2.4)
+    local ok, err = pcall(M._tickUdp)
+    if not ok then
+      log('E', logTag, 'Error in UDP processing: ' .. tostring(err))
+      -- Continue running - UDP is not critical
+    end
   end
 end
 
@@ -155,13 +191,31 @@ M._processBuffer = function()
     end
     local json = recvBuffer:sub(HEADER_SIZE + 1, HEADER_SIZE + payloadLen)
     recvBuffer = recvBuffer:sub(HEADER_SIZE + payloadLen + 1)
-    M._handlePacket(json)
+    -- Wrap packet handler in pcall to prevent crashes (Phase 2.4)
+    local ok, err = pcall(function() M._handlePacket(json) end)
+    if not ok then
+      log('E', logTag, 'Error handling packet: ' .. tostring(err))
+      M._onDisconnect("Packet handler error: " .. tostring(err))
+    end
   end
 end
 
 M._sendPacket = function(packetTable)
   if not tcp then return end
-  local json = require("highbeam/lib/json").encode(packetTable)
+  local okLib, jsonLib = pcall(require, "highbeam/lib/json")
+  if not okLib or not jsonLib then
+    M._reportError('E', 'send_packet', 'JSON library unavailable: ' .. tostring(jsonLib))
+    return false
+  end
+
+  local okEncode, json = pcall(function()
+    return jsonLib.encode(packetTable)
+  end)
+  if not okEncode or not json then
+    M._reportError('E', 'send_packet', 'JSON encode failed: ' .. tostring(json))
+    return false
+  end
+
   local len = #json
   local header = string.char(
     len % 256,
@@ -169,7 +223,12 @@ M._sendPacket = function(packetTable)
     math.floor(len / 65536) % 256,
     math.floor(len / 16777216) % 256
   )
-  tcp:send(header .. json)
+  local sent, sendErr = tcp:send(header .. json)
+  if not sent then
+    M._reportError('W', 'send_packet', 'TCP send failed: ' .. tostring(sendErr))
+    return false
+  end
+  return true
 end
 
 -- Validate that packet has required fields (Phase 2.3)
@@ -189,7 +248,7 @@ M._handlePacket = function(jsonStr)
   end)
   if not ok or not packet then
     -- Log parse error with hex dump for debugging (Phase 2.3)
-    log('W', logTag, 'Failed to decode packet (Phase 2.3): ' .. tostring(packet))
+    M._reportError('W', 'packet_decode', 'Failed to decode packet (Phase 2.3): ' .. tostring(packet))
     local hexDump = _hexDump(jsonStr)
     log('D', logTag, 'Hex dump of malformed packet: ' .. hexDump)
     -- Gracefully disconnect on parse error
@@ -200,7 +259,7 @@ M._handlePacket = function(jsonStr)
   -- Validate packet structure (Phase 2.3)
   local valid, err = _validatePacket(packet)
   if not valid then
-    log('W', logTag, 'Packet validation failed: ' .. tostring(err))
+    M._reportError('W', 'packet_validate', 'Packet validation failed: ' .. tostring(err))
     local hexDump = _hexDump(jsonStr)
     log('D', logTag, 'Hex dump: ' .. hexDump)
     M._onDisconnect("Invalid packet structure: " .. tostring(err))
@@ -235,7 +294,14 @@ M._handlePacket = function(jsonStr)
       M._lastPingTime = os.clock()  -- Initialize ping tracking (Phase 2.2)
       -- Bind UDP after successful auth
       if M._pendingAuth then
-        M._bindUdp(M._pendingAuth.host, M._pendingAuth.port, M._sessionToken)
+        -- Wrap UDP binding in pcall - UDP is optional (Phase 2.4)
+        local ok, err = pcall(function()
+          M._bindUdp(M._pendingAuth.host, M._pendingAuth.port, M._sessionToken)
+        end)
+        if not ok then
+          log('W', logTag, 'UDP binding failed: ' .. tostring(err))
+          -- Continue without UDP - TCP is functional
+        end
       end
     else
       log('E', logTag, 'Auth failed: ' .. tostring(packet.error))
@@ -283,9 +349,19 @@ M._handlePacket = function(jsonStr)
       vehicles.removeAllForPlayer(packet.player_id)
     end
   elseif ptype == "chat_broadcast" then
-    local chat = require("highbeam/chat")
-    chat.receive(packet.player_id, packet.player_name, packet.text)
-    log('I', logTag, 'Chat [' .. packet.player_name .. ']: ' .. packet.text)
+    local okChat, chat = pcall(require, "highbeam/chat")
+    if okChat and chat then
+      local okReceive, receiveErr = pcall(function()
+        chat.receive(packet.player_id, packet.player_name, packet.text)
+      end)
+      if not okReceive then
+        M._reportError('W', 'chat_receive', 'Chat receive failed: ' .. tostring(receiveErr))
+      else
+        log('I', logTag, 'Chat [' .. packet.player_name .. ']: ' .. packet.text)
+      end
+    else
+      M._reportError('W', 'chat_require', 'Chat module unavailable: ' .. tostring(chat))
+    end
   elseif ptype == "ping_pong" then
     log('D', logTag, 'Received PingPong: seq=' .. tostring(packet.seq))
     M._lastPingTime = os.clock()  -- Update last ping time (Phase 2.2)
@@ -331,13 +407,16 @@ M.send = function(packetType, data)
   
   local packet = data or {}
   packet.type = packetType
-  M._sendPacket(packet)
-  return true
+  return M._sendPacket(packet)
 end
 
 M._tickUdp = function()
   if not udp then return end
-  local protocol = require("highbeam/protocol")
+  local okProtocol, protocol = pcall(require, "highbeam/protocol")
+  if not okProtocol or not protocol then
+    M._reportError('W', 'udp_protocol', 'Protocol module unavailable: ' .. tostring(protocol))
+    return
+  end
   -- Read all available UDP packets (non-blocking)
   while true do
     local data = udp:receive()
