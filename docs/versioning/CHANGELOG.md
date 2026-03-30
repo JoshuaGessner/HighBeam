@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] — Vehicle Sync & UDP Position Relay
+
+### Added
+- **UDP socket layer** (`net/udp.rs`): binary position relay with session-hash authentication
+- **Vehicle packet types**: VehicleSpawn, VehicleEdit, VehicleDelete, VehicleReset, WorldState in `packet.rs`
+- **World state module** (`state/vehicle.rs`, `state/world.rs`): authoritative vehicle tracking with DashMap
+- **Session hash system**: SHA-256 based UDP authentication linking UDP packets to TCP sessions
+- **WorldState snapshot**: newly joined players receive full vehicle/player state on connect
+- **TCP vehicle dispatch**: receive loop handles spawn/edit/delete/reset with ownership validation
+- **Disconnect cleanup**: all vehicles removed and VehicleDelete broadcast when player disconnects
+- **Client UDP binding** (`connection.lua`): automatic UDP socket setup after authentication
+- **Client position sending** (`state.lua`): configurable tick-rate position updates via binary UDP
+- **Client vehicle management** (`vehicles.lua`): remote vehicle spawn/remove/interpolation buffer
+- **Client subsystem wiring** (`highbeam.lua`): state.tick and vehicles.tick called in onUpdate
+- 5 new packet round-trip tests (16 total)
+
+### Changed
+- `SessionManager` rewritten with `session_hashes` DashMap, `broadcast_udp()`, `get_player_snapshot()`
+- `Player` struct extended with `udp_addr` and `session_hash` fields
+- `tcp.rs` `start_listener` and `handle_connection` now accept `Arc<WorldState>`
+- `main.rs` creates WorldState and spawns UDP task alongside TCP listener
+
 ### Added
 - Project initialization with full documentation structure
 - Architecture docs: OVERVIEW.md, CLIENT.md, SERVER.md, PROTOCOL.md

@@ -10,6 +10,7 @@ use tokio::time::timeout;
 
 use crate::config::ServerConfig;
 use crate::session::manager::SessionManager;
+use crate::state::world::WorldState;
 
 use super::packet::{self, TcpPacket, MAX_PACKET_SIZE, PROTOCOL_VERSION};
 
@@ -17,6 +18,7 @@ use super::packet::{self, TcpPacket, MAX_PACKET_SIZE, PROTOCOL_VERSION};
 pub async fn start_listener(
     config: Arc<ServerConfig>,
     sessions: Arc<SessionManager>,
+    world: Arc<WorldState>,
 ) -> Result<()> {
     let addr = format!("0.0.0.0:{}", config.general.port);
     let listener = TcpListener::bind(&addr)
@@ -29,8 +31,9 @@ pub async fn start_listener(
         let (stream, addr) = listener.accept().await?;
         let config = config.clone();
         let sessions = sessions.clone();
+        let world = world.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, addr, config, sessions).await {
+            if let Err(e) = handle_connection(stream, addr, config, sessions, world).await {
                 tracing::warn!(%addr, error = %e, "Connection error");
             }
         });
@@ -44,6 +47,7 @@ async fn handle_connection(
     addr: SocketAddr,
     config: Arc<ServerConfig>,
     sessions: Arc<SessionManager>,
+    world: Arc<WorldState>,
 ) -> Result<()> {
     tracing::info!(%addr, "New TCP connection");
 
@@ -115,7 +119,14 @@ async fn handle_connection(
 
     tracing::info!(player_id, name = %username, "Player ready");
 
-    // 9. Broadcast PlayerJoin to all other connected players
+    // 9. Send WorldState snapshot to the new player
+    let world_snapshot = TcpPacket::WorldState {
+        players: sessions.get_player_snapshot(),
+        vehicles: world.get_vehicle_snapshot(),
+    };
+    write_packet(&mut stream, &world_snapshot).await?;
+
+    // 10. Broadcast PlayerJoin to all other connected players
     sessions.broadcast(
         TcpPacket::PlayerJoin {
             player_id,
@@ -137,15 +148,28 @@ async fn handle_connection(
         }
     });
 
-    // 10. Main receive loop
+    // 11. Main receive loop
     let mut read_half = tokio::io::BufReader::new(read_half);
-    let recv_result = receive_loop(player_id, &mut read_half, &sessions).await;
+    let recv_result = receive_loop(player_id, &mut read_half, &sessions, &world).await;
 
-    // 11. Disconnect cleanup
+    // 12. Disconnect cleanup
     write_task.abort();
+
+    // Remove all vehicles for this player and notify others
+    let removed_vehicles = world.remove_all_for_player(player_id);
+    for vid in &removed_vehicles {
+        sessions.broadcast(
+            TcpPacket::VehicleDelete {
+                player_id: Some(player_id),
+                vehicle_id: *vid,
+            },
+            None,
+        );
+    }
+
     sessions.broadcast(TcpPacket::PlayerLeave { player_id }, Some(player_id));
     sessions.remove_player(player_id);
-    tracing::info!(player_id, name = %username, "Player disconnected");
+    tracing::info!(player_id, name = %username, vehicles_removed = removed_vehicles.len(), "Player disconnected");
 
     if let Err(e) = recv_result {
         tracing::debug!(player_id, "Receive loop ended: {e}");
@@ -158,13 +182,75 @@ async fn handle_connection(
 async fn receive_loop<R: AsyncReadExt + Unpin>(
     player_id: u32,
     reader: &mut R,
-    _sessions: &Arc<SessionManager>,
+    sessions: &Arc<SessionManager>,
+    world: &Arc<WorldState>,
 ) -> Result<()> {
     loop {
         let packet = read_packet_from(reader).await?;
-        // For v0.1.0, we only log received packets.
-        // Future phases will dispatch to vehicle/chat handlers.
-        tracing::debug!(player_id, ?packet, "Received packet");
+        match packet {
+            TcpPacket::VehicleSpawn { data, .. } => {
+                let vid = world.spawn_vehicle(player_id, data.clone());
+                // Broadcast to ALL players (including sender so they learn the server-assigned ID)
+                sessions.broadcast(
+                    TcpPacket::VehicleSpawn {
+                        player_id: Some(player_id),
+                        vehicle_id: vid,
+                        data,
+                    },
+                    None,
+                );
+            }
+            TcpPacket::VehicleEdit {
+                vehicle_id, data, ..
+            } => {
+                if world.is_owner(player_id, vehicle_id) {
+                    world.update_config(player_id, vehicle_id, data.clone());
+                    sessions.broadcast(
+                        TcpPacket::VehicleEdit {
+                            player_id: Some(player_id),
+                            vehicle_id,
+                            data,
+                        },
+                        Some(player_id),
+                    );
+                } else {
+                    tracing::warn!(player_id, vehicle_id, "VehicleEdit for unowned vehicle");
+                }
+            }
+            TcpPacket::VehicleDelete { vehicle_id, .. } => {
+                if world.is_owner(player_id, vehicle_id) {
+                    world.remove_vehicle(player_id, vehicle_id);
+                    sessions.broadcast(
+                        TcpPacket::VehicleDelete {
+                            player_id: Some(player_id),
+                            vehicle_id,
+                        },
+                        None,
+                    );
+                } else {
+                    tracing::warn!(player_id, vehicle_id, "VehicleDelete for unowned vehicle");
+                }
+            }
+            TcpPacket::VehicleReset {
+                vehicle_id, data, ..
+            } => {
+                if world.is_owner(player_id, vehicle_id) {
+                    sessions.broadcast(
+                        TcpPacket::VehicleReset {
+                            player_id: Some(player_id),
+                            vehicle_id,
+                            data,
+                        },
+                        Some(player_id),
+                    );
+                } else {
+                    tracing::warn!(player_id, vehicle_id, "VehicleReset for unowned vehicle");
+                }
+            }
+            other => {
+                tracing::debug!(player_id, ?other, "Unhandled packet");
+            }
+        }
     }
 }
 

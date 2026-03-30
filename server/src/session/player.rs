@@ -13,6 +13,10 @@ pub struct Player {
     pub addr: SocketAddr,
     /// Channel to send packets to this player's TCP writer task.
     pub tcp_tx: mpsc::Sender<TcpPacket>,
+    /// Registered UDP address (set when client sends UdpBind).
+    pub udp_addr: Option<SocketAddr>,
+    /// First 16 bytes of SHA-256(session_token), used to authenticate UDP packets.
+    pub session_hash: [u8; 16],
     pub connected_at: Instant,
     pub last_activity: Instant,
 }

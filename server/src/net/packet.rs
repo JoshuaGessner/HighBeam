@@ -61,6 +61,67 @@ pub enum TcpPacket {
     /// Client signals it is ready (handshake complete).
     #[serde(rename = "ready")]
     Ready {},
+
+    // ── Vehicle packets (Phase 2) ────────────────────────────────────
+    /// A vehicle was spawned (client → server has no player_id; server → client fills it in).
+    #[serde(rename = "vehicle_spawn")]
+    VehicleSpawn {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        player_id: Option<u32>,
+        vehicle_id: u16,
+        data: String,
+    },
+
+    /// A vehicle's config was edited.
+    #[serde(rename = "vehicle_edit")]
+    VehicleEdit {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        player_id: Option<u32>,
+        vehicle_id: u16,
+        data: String,
+    },
+
+    /// A vehicle was deleted.
+    #[serde(rename = "vehicle_delete")]
+    VehicleDelete {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        player_id: Option<u32>,
+        vehicle_id: u16,
+    },
+
+    /// A vehicle was reset (respawned at a position).
+    #[serde(rename = "vehicle_reset")]
+    VehicleReset {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        player_id: Option<u32>,
+        vehicle_id: u16,
+        data: String,
+    },
+
+    /// Full world snapshot sent to newly-joined players.
+    #[serde(rename = "world_state")]
+    WorldState {
+        players: Vec<PlayerInfo>,
+        vehicles: Vec<VehicleInfo>,
+    },
+}
+
+/// Player info included in WorldState.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlayerInfo {
+    pub player_id: u32,
+    pub name: String,
+}
+
+/// Vehicle info included in WorldState.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VehicleInfo {
+    pub player_id: u32,
+    pub vehicle_id: u16,
+    pub data: String,
+    pub position: [f32; 3],
+    pub rotation: [f32; 4],
+    pub velocity: [f32; 3],
 }
 
 /// Encode a packet to its wire format: 4-byte LE length + JSON payload.
@@ -169,6 +230,59 @@ mod tests {
     #[test]
     fn test_ready_round_trip() {
         round_trip(&TcpPacket::Ready {});
+    }
+
+    #[test]
+    fn test_vehicle_spawn_round_trip() {
+        round_trip(&TcpPacket::VehicleSpawn {
+            player_id: Some(1),
+            vehicle_id: 5,
+            data: r#"{"model":"pickup"}"#.into(),
+        });
+    }
+
+    #[test]
+    fn test_vehicle_edit_round_trip() {
+        round_trip(&TcpPacket::VehicleEdit {
+            player_id: Some(1),
+            vehicle_id: 5,
+            data: r#"{"color":"red"}"#.into(),
+        });
+    }
+
+    #[test]
+    fn test_vehicle_delete_round_trip() {
+        round_trip(&TcpPacket::VehicleDelete {
+            player_id: Some(1),
+            vehicle_id: 5,
+        });
+    }
+
+    #[test]
+    fn test_vehicle_reset_round_trip() {
+        round_trip(&TcpPacket::VehicleReset {
+            player_id: Some(1),
+            vehicle_id: 5,
+            data: r#"{"pos":[0,0,0]}"#.into(),
+        });
+    }
+
+    #[test]
+    fn test_world_state_round_trip() {
+        round_trip(&TcpPacket::WorldState {
+            players: vec![PlayerInfo {
+                player_id: 1,
+                name: "Alice".into(),
+            }],
+            vehicles: vec![VehicleInfo {
+                player_id: 1,
+                vehicle_id: 1,
+                data: r#"{"model":"pickup"}"#.into(),
+                position: [10.0, 20.0, 30.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                velocity: [1.0, 0.0, 0.0],
+            }],
+        });
     }
 
     #[test]

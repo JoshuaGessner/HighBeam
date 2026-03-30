@@ -2,10 +2,12 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use dashmap::DashMap;
+use sha2::{Digest, Sha256};
+use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
-use crate::net::packet::TcpPacket;
+use crate::net::packet::{PlayerInfo, TcpPacket};
 
 use super::player::Player;
 
@@ -13,7 +15,17 @@ use super::player::Player;
 pub struct SessionManager {
     players: DashMap<u32, Player>,
     token_map: DashMap<String, u32>,
+    /// Truncated SHA-256 of session token → player_id (for UDP authentication).
+    session_hashes: DashMap<[u8; 16], u32>,
     next_id: AtomicU32,
+}
+
+/// Compute the 16-byte session hash from a session token.
+fn compute_session_hash(token: &str) -> [u8; 16] {
+    let digest = Sha256::digest(token.as_bytes());
+    let mut hash = [0u8; 16];
+    hash.copy_from_slice(&digest[..16]);
+    hash
 }
 
 impl SessionManager {
@@ -21,6 +33,7 @@ impl SessionManager {
         Self {
             players: DashMap::new(),
             token_map: DashMap::new(),
+            session_hashes: DashMap::new(),
             next_id: AtomicU32::new(1),
         }
     }
@@ -41,6 +54,7 @@ impl SessionManager {
             bytes.iter().map(|b| format!("{b:02x}")).collect()
         };
 
+        let session_hash = compute_session_hash(&token);
         let now = Instant::now();
         let player = Player {
             id: player_id,
@@ -48,10 +62,13 @@ impl SessionManager {
             session_token: token.clone(),
             addr,
             tcp_tx,
+            udp_addr: None,
+            session_hash,
             connected_at: now,
             last_activity: now,
         };
 
+        self.session_hashes.insert(session_hash, player_id);
         self.token_map.insert(token.clone(), player_id);
         self.players.insert(player_id, player);
 
@@ -62,6 +79,7 @@ impl SessionManager {
     pub fn remove_player(&self, player_id: u32) {
         if let Some((_, player)) = self.players.remove(&player_id) {
             self.token_map.remove(&player.session_token);
+            self.session_hashes.remove(&player.session_hash);
             tracing::debug!(player_id, name = %player.name, "Removed from session manager");
         }
     }
@@ -71,22 +89,62 @@ impl SessionManager {
         self.players.get(&player_id)
     }
 
+    /// Look up a player_id by the 16-byte session hash (for UDP authentication).
+    pub fn lookup_by_hash(&self, hash: &[u8; 16]) -> Option<u32> {
+        self.session_hashes.get(hash).map(|r| *r.value())
+    }
+
+    /// Register a UDP address for a player (called when UdpBind is received).
+    pub fn register_udp_addr(&self, player_id: u32, addr: SocketAddr) {
+        if let Some(mut entry) = self.players.get_mut(&player_id) {
+            entry.udp_addr = Some(addr);
+            tracing::info!(player_id, %addr, "UDP address registered");
+        }
+    }
+
     /// Current number of connected players.
     pub fn player_count(&self) -> usize {
         self.players.len()
     }
 
-    /// Send a packet to all connected players, optionally excluding one.
+    /// Get a snapshot of all connected players (for WorldState).
+    pub fn get_player_snapshot(&self) -> Vec<PlayerInfo> {
+        self.players
+            .iter()
+            .map(|entry| {
+                let p = entry.value();
+                PlayerInfo {
+                    player_id: p.id,
+                    name: p.name.clone(),
+                }
+            })
+            .collect()
+    }
+
+    /// Send a TCP packet to all connected players, optionally excluding one.
     pub fn broadcast(&self, packet: TcpPacket, exclude: Option<u32>) {
         for entry in self.players.iter() {
             let player = entry.value();
             if Some(player.id) == exclude {
                 continue;
             }
-            // Use try_send to avoid blocking — if a player's channel is full,
-            // drop the packet (they may be slow/disconnecting).
             if let Err(e) = player.tcp_tx.try_send(packet.clone()) {
                 tracing::warn!(player_id = player.id, "Broadcast send failed: {e}");
+            }
+        }
+    }
+
+    /// Broadcast a UDP packet to all players with registered UDP addresses, optionally excluding one.
+    pub async fn broadcast_udp(&self, socket: &UdpSocket, data: &[u8], exclude: Option<u32>) {
+        for entry in self.players.iter() {
+            let player = entry.value();
+            if Some(player.id) == exclude {
+                continue;
+            }
+            if let Some(addr) = player.udp_addr {
+                if let Err(e) = socket.send_to(data, addr).await {
+                    tracing::warn!(player_id = player.id, %addr, "UDP send failed: {e}");
+                }
             }
         }
     }

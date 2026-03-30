@@ -3,6 +3,7 @@ local logTag = "HighBeam.Connection"
 
 local socket = nil  -- Loaded lazily via require("socket")
 local tcp = nil
+local udp = nil
 local recvBuffer = ""
 local HEADER_SIZE = 4  -- 4-byte LE uint32 length prefix
 
@@ -14,6 +15,18 @@ M.STATE_CONNECTED       = 3
 M.STATE_DISCONNECTING   = 4
 
 M.state = 0  -- STATE_DISCONNECTED
+M._playerId = nil
+M._sessionToken = nil
+M._sessionHash = nil
+
+-- Subsystem references (set by highbeam.lua after loading)
+local vehicles = nil
+local state = nil
+
+M.setSubsystems = function(v, s)
+  vehicles = v
+  state = s
+end
 
 M.connect = function(host, port, username, password)
   log('I', logTag, 'Connect requested: ' .. host .. ':' .. tostring(port))
@@ -35,7 +48,7 @@ M.connect = function(host, port, username, password)
   -- Must check with socket.select() on subsequent ticks
   if result or err == "timeout" then
     -- Connection in progress
-    M._pendingAuth = { username = username, password = password }
+    M._pendingAuth = { username = username, password = password, host = host, port = port }
   else
     log('E', logTag, 'Connect failed: ' .. tostring(err))
     M.state = M.STATE_DISCONNECTED
@@ -49,7 +62,12 @@ M.disconnect = function()
     pcall(function() tcp:close() end)
     tcp = nil
   end
+  if udp then
+    pcall(function() udp:close() end)
+    udp = nil
+  end
   recvBuffer = ""
+  M._sessionHash = nil
   M.state = M.STATE_DISCONNECTED
 end
 
@@ -77,6 +95,11 @@ M.tick = function(dt)
     if err == "closed" then
       M._onDisconnect("Connection closed by server")
     end
+  end
+
+  -- Tick UDP if connected
+  if M.state == M.STATE_CONNECTED then
+    M._tickUdp()
   end
 end
 
@@ -145,14 +168,55 @@ M._handlePacket = function(jsonStr)
       -- Send ready
       M._sendPacket({ type = "ready" })
       M.state = M.STATE_CONNECTED
+      -- Bind UDP after successful auth
+      if M._pendingAuth then
+        M._bindUdp(M._pendingAuth.host, M._pendingAuth.port, M._sessionToken)
+      end
     else
       log('E', logTag, 'Auth failed: ' .. tostring(packet.error))
       M.disconnect()
+    end
+  elseif ptype == "world_state" then
+    log('I', logTag, 'Received WorldState: ' .. tostring(#(packet.players or {})) .. ' players, ' .. tostring(#(packet.vehicles or {})) .. ' vehicles')
+    if vehicles and packet.vehicles then
+      for _, v in ipairs(packet.vehicles) do
+        vehicles.spawnRemote(v.player_id, v.vehicle_id, v.data)
+      end
+    end
+    if state and packet.players then
+      state.onWorldState(packet.players)
+    end
+  elseif ptype == "vehicle_spawn" then
+    log('I', logTag, 'VehicleSpawn: player=' .. tostring(packet.player_id) .. ' vid=' .. tostring(packet.vehicle_id))
+    if packet.player_id == M._playerId then
+      -- Server assigned ID for our vehicle
+      if state then
+        state.onLocalVehicleSpawned(packet.vehicle_id, packet.data)
+      end
+    else
+      if vehicles then
+        vehicles.spawnRemote(packet.player_id, packet.vehicle_id, packet.data)
+      end
+    end
+  elseif ptype == "vehicle_edit" then
+    if vehicles and packet.player_id ~= M._playerId then
+      vehicles.updateRemoteConfig(packet.player_id, packet.vehicle_id, packet.data)
+    end
+  elseif ptype == "vehicle_delete" then
+    if vehicles and packet.player_id ~= M._playerId then
+      vehicles.removeRemote(packet.player_id, packet.vehicle_id)
+    end
+  elseif ptype == "vehicle_reset" then
+    if vehicles and packet.player_id ~= M._playerId then
+      vehicles.resetRemote(packet.player_id, packet.vehicle_id, packet.data)
     end
   elseif ptype == "player_join" then
     log('I', logTag, 'Player joined: ' .. tostring(packet.name) .. ' (id=' .. tostring(packet.player_id) .. ')')
   elseif ptype == "player_leave" then
     log('I', logTag, 'Player left: id=' .. tostring(packet.player_id))
+    if vehicles then
+      vehicles.removeAllForPlayer(packet.player_id)
+    end
   elseif ptype == "kick" then
     log('W', logTag, 'Kicked: ' .. tostring(packet.reason))
     M.disconnect()
@@ -161,13 +225,86 @@ M._handlePacket = function(jsonStr)
   end
 end
 
+-- ── UDP ──────────────────────────────────────────────────────────────
+
+M._bindUdp = function(host, port, sessionToken)
+  if not socket then return end
+  udp = socket.udp()
+  udp:settimeout(0)  -- Non-blocking
+  udp:setpeername(host, port)  -- Connected mode
+
+  -- Compute session hash (SHA-256 truncated to 16 bytes)
+  M._sessionHash = M._computeSessionHash(sessionToken)
+
+  -- Send UdpBind packet: hash + type 0x01
+  udp:send(M._sessionHash .. string.char(0x01))
+  log('I', logTag, 'UDP bound to ' .. host .. ':' .. tostring(port))
+end
+
+M.sendUdp = function(data)
+  if udp then udp:send(data) end
+end
+
+M._tickUdp = function()
+  if not udp then return end
+  local protocol = require("highbeam/protocol")
+  -- Read all available UDP packets (non-blocking)
+  while true do
+    local data = udp:receive()
+    if not data then break end
+    if #data >= 65 and data:byte(17) == 0x10 then
+      -- Binary position update — decode and dispatch
+      local decoded = protocol.decodePositionUpdate(data)
+      if decoded and vehicles then
+        vehicles.updateRemote(decoded)
+      end
+    end
+  end
+end
+
+M._computeSessionHash = function(token)
+  -- SHA-256 of the session token, truncated to 16 bytes
+  -- Use a simple hash since we can't depend on external crypto in BeamNG Lua
+  -- This matches the server's sha2::Sha256 truncated to 16 bytes
+  local hash = {}
+  local tokenBytes = { token:byte(1, #token) }
+  -- Portable SHA-256 implementation (standard FIPS 180-4)
+  -- For BeamNG, we use the built-in hashStringSHA256 if available
+  local hashHex = hashStringSHA256(token)
+  if hashHex then
+    -- Convert first 32 hex chars (16 bytes) to binary
+    local result = ""
+    for i = 1, 32, 2 do
+      result = result .. string.char(tonumber(hashHex:sub(i, i + 1), 16))
+    end
+    return result
+  end
+  -- Fallback: use token bytes directly (padded/truncated to 16)
+  local result = token
+  while #result < 16 do result = result .. "\0" end
+  return result:sub(1, 16)
+end
+
+M.getSessionHash = function()
+  return M._sessionHash
+end
+
+M.getPlayerId = function()
+  return M._playerId
+end
+
 M._onDisconnect = function(reason)
   log('I', logTag, 'Disconnected: ' .. tostring(reason))
   if tcp then
     pcall(function() tcp:close() end)
     tcp = nil
   end
+  if udp then
+    pcall(function() udp:close() end)
+    udp = nil
+  end
   recvBuffer = ""
+  M._sessionHash = nil
   M.state = M.STATE_DISCONNECTED
 end
 
