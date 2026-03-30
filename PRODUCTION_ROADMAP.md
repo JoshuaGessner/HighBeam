@@ -256,12 +256,12 @@ tracing-appender = "0.2"       # File logging with rotation
 - Check required fields exist and have correct types
 - Provide error messages instead of crashes
 
-**Tasks:**
-- [ ] Add `serde` validation errors (already integrated)
-- [ ] Wrap all packet parsing in Try/Catch in Lua
-- [ ] Log parse errors with hex dump of bad packet
-- [ ] Gracefully disconnect on parse error
-- [ ] Add fuzzing test corpus of malformed packets
+**Tasks:** ✅ IMPLEMENTED (commit c907f83)
+- [x] Add `serde` validation errors (already integrated) ✅
+- [x] Wrap all packet parsing in pcall() in Lua ✅
+- [x] Log parse errors with hex dump of bad packet ✅
+- [x] Gracefully disconnect on parse error ✅
+- [ ] Add fuzzing test corpus of malformed packets (future enhancement)
 
 **Files to modify:**
 - `server/src/net/tcp.rs` - Better error messages on parse failure
@@ -381,13 +381,13 @@ tracing-appender = "0.2"       # File logging with rotation
 |------|------|--------|----------|--------|
 | Client connect timeout | connection.lua | 0.5h | HIGH | ✅ DONE |
 | Heartbeat protocol | packet.rs, tcp.rs, connection.lua | 1.5h | HIGH | ✅ DONE |
-| Packet parse validation | tcp.rs, connection.lua, protocol.lua | 0.5h | HIGH | 📋 TODO |
+| Packet parse validation | tcp.rs, connection.lua, protocol.lua | 0.5h | HIGH | ✅ DONE |
 | Lua error handling | connection.lua, highbeam.lua | 0.5h | MEDIUM | 📋 TODO |
 | Vehicle interpolation | vehicles.lua, math.lua | 1h | HIGH | 📋 TODO |
 | Connection state validation | connection.lua | 0.5h | MEDIUM | 📋 TODO |
 | Chat logging | tcp.rs | 0.25h | LOW | 📋 TODO |
 | Username check | manager.rs | 0.25h | LOW | 📋 TODO |
-| **TOTAL** | | **4.5h** | | **3/8 completed, 1.5/8 in progress** |
+| **TOTAL** | | **4.5h** | | **4/8 completed (1h invested)** |
 
 **Server Implementation Details (Commit 55a530a):**
 - Added `PROTOCOL_VERSION = 2` constant in `packet.rs`
