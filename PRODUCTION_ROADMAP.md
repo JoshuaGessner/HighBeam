@@ -1,9 +1,9 @@
 # HighBeam Production Roadmap
 
 **Last Updated:** 2026-03-30  
-**Current Phase:** Phase 1 (Critical Fixes) - IMPLEMENTED ✅  
-**Next Phase:** Phase 2 (Error Handling & Client Stability)  
-**Target Completion:** Phase 1-2 (Testing Ready) by 2026-03-31
+**Current Phase:** Phase 2 (Error Handling & Client Stability) - ⏳ IN PROGRESS  
+**Next Phase:** Phase 2 continued (7 tasks remaining)  
+**Target Completion:** Phase 2 by 2026-03-31
 
 ---
 
@@ -211,11 +211,15 @@ tracing-appender = "0.2"       # File logging with rotation
 
 ---
 
-## Phase 2 ⏳ - Error Handling & Client Stability (READY TO IMPLEMENT)
+## Phase 2 ⏳ - Error Handling & Client Stability (IN PROGRESS)
 
 **Target Effort:** 3-4 hours  
 **Priority:** HIGH - Prevents crashes and improves user experience  
-**Status:** Specification complete, ready to code
+**Status:** Specification complete, 1/8 tasks implemented
+
+**Tasks Completed:** 1/8
+- [x] 2.1: Client connect timeout (0.5h) ✅ DONE
+**Tasks Remaining:** 7/8 (4h)
 
 ### 2.1 Client-Side Connection Timeout (Lua)
 
@@ -227,13 +231,15 @@ tracing-appender = "0.2"       # File logging with rotation
 - Return error and trigger ui callback if timeout exceeded
 
 **Tasks:**
-- [ ] Add `CONNECT_TIMEOUT = 5` constant to connection module
-- [ ] Wrap TCP connect in timeout logic
-- [ ] Call `onConnectFailed()` callback if timeout
-- [ ] Log timeout with server address
-- [ ] Update `M.STATE_CONNECTING` logic to enforce deadline
+- [x] Add `CONNECT_TIMEOUT = 5` constant to connection module
+- [x] Wrap TCP connect in timeout logic
+- [x] Call `onConnectFailed()` callback if timeout
+- [x] Log timeout with server address
+- [x] Update `M.STATE_CONNECTING` logic to enforce deadline
 
 **Files to modify:** `client/lua/ge/extensions/highbeam/connection.lua`
+
+**Status:** ✅ IMPLEMENTED (commit a59dc07)
 
 ---
 
@@ -407,17 +413,17 @@ tracing-appender = "0.2"       # File logging with rotation
 
 ### Phase 2 Summary Table
 
-| Task | File | Effort | Priority |
-|------|------|--------|----------|
-| Client connect timeout | connection.lua | 0.5h | HIGH |
-| Heartbeat protocol | packet.rs, tcp.rs, connection.lua | 1.5h | HIGH |
-| Packet parse validation | tcp.rs, connection.lua, protocol.lua | 0.5h | HIGH |
-| Lua error handling | connection.lua, highbeam.lua | 0.5h | MEDIUM |
-| Vehicle interpolation | vehicles.lua, math.lua | 1h | HIGH |
-| Connection state validation | connection.lua | 0.5h | MEDIUM |
-| Chat logging | tcp.rs | 0.25h | LOW |
-| Username check | manager.rs | 0.25h | LOW |
-| **TOTAL** | | **4.5h** | |
+| Task | File | Effort | Priority | Status |
+|------|------|--------|----------|--------|
+| Client connect timeout | connection.lua | 0.5h | HIGH | ✅ DONE |
+| Heartbeat protocol | packet.rs, tcp.rs, connection.lua | 1.5h | HIGH | ⏳ NEXT |
+| Packet parse validation | tcp.rs, connection.lua, protocol.lua | 0.5h | HIGH | 📋 TODO |
+| Lua error handling | connection.lua, highbeam.lua | 0.5h | MEDIUM | 📋 TODO |
+| Vehicle interpolation | vehicles.lua, math.lua | 1h | HIGH | 📋 TODO |
+| Connection state validation | connection.lua | 0.5h | MEDIUM | 📋 TODO |
+| Chat logging | tcp.rs | 0.25h | LOW | 📋 TODO |
+| Username check | manager.rs | 0.25h | LOW | 📋 TODO |
+| **TOTAL** | | **4.5h** | | **1/8 ✅** |
 
 ---
 
