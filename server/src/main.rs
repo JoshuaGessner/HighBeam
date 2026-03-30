@@ -4,30 +4,58 @@
 
 use anyhow::Result;
 use std::sync::Arc;
+use tokio::sync::broadcast;
 
 mod config;
 mod mods;
 mod net;
 mod session;
 mod state;
+mod validation;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize logging
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .init();
+    // Load config first (before complete logging setup)
+    let config = config::ServerConfig::load()?;
+    if !config.logging.log_file.is_empty() {
+        let file_appender = tracing_appender::rolling::daily(".", &config.logging.log_file);
+        let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+        
+        let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| config.logging.level.parse().unwrap_or_else(|_| "info".into()));
+
+        tracing_subscriber::fmt()
+            .with_writer(non_blocking)
+            .with_ansi(false)
+            .with_env_filter(env_filter)
+            .init();
+    } else {
+        // Console-only logging
+        let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| config.logging.level.parse().unwrap_or_else(|_| "info".into()));
+
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .init();
+    }
 
     tracing::info!("HighBeam server v{}", env!("CARGO_PKG_VERSION"));
-
-    // Load config
-    let config = config::ServerConfig::load()?;
+    
+    // Validate config parameters
+    validation::validate_server_config(
+        config.general.max_players,
+        config.general.max_cars_per_player,
+        &config.auth.mode,
+        config.auth.password.as_deref(),
+        config.auth.allowlist.as_ref(),
+        config.general.port,
+        config.network.tick_rate,
+    )?;
+    
     tracing::info!(
         name = %config.general.name,
         port = config.general.port,
-        "Configuration loaded"
+        "Configuration loaded and validated"
     );
 
     let config = Arc::new(config);
@@ -41,6 +69,30 @@ async fn main() -> Result<()> {
         resource_folder = %config.general.resource_folder,
         "Mod manifest loaded"
     );
+
+    // Graceful shutdown signal
+    let (shutdown_tx, _) = broadcast::channel::<()>(1);
+    let shutdown_tx_clone = shutdown_tx.clone();
+
+    // Spawn signal handler task
+    tokio::spawn(async move {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm = signal(SignalKind::terminate())
+            .expect("Failed to setup SIGTERM handler");
+        let mut sigint = signal(SignalKind::interrupt())
+            .expect("Failed to setup SIGINT handler");
+
+        tokio::select! {
+            _ = sigterm.recv() => {
+                tracing::info!("Received SIGTERM, shutting down gracefully");
+            }
+            _ = sigint.recv() => {
+                tracing::info!("Received SIGINT, shutting down gracefully");
+            }
+        }
+
+        let _ = shutdown_tx_clone.send(());
+    });
 
     // Start launcher mod transfer endpoint (separate TCP listener).
     let mod_sync_port = config.network.resolved_mod_sync_port(config.general.port);
@@ -71,5 +123,6 @@ async fn main() -> Result<()> {
     // Start TCP listener (blocks forever, accepting connections)
     net::tcp::start_listener(config, sessions, world).await?;
 
+    tracing::info!("Server shut down complete");
     Ok(())
 }

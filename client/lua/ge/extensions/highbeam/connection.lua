@@ -217,6 +217,10 @@ M._handlePacket = function(jsonStr)
     if vehicles then
       vehicles.removeAllForPlayer(packet.player_id)
     end
+  elseif ptype == "chat_broadcast" then
+    local chat = require("highbeam/chat")
+    chat.receive(packet.player_id, packet.player_name, packet.text)
+    log('I', logTag, 'Chat [' .. packet.player_name .. ']: ' .. packet.text)
   elseif ptype == "kick" then
     log('W', logTag, 'Kicked: ' .. tostring(packet.reason))
     M.disconnect()
@@ -243,6 +247,19 @@ end
 
 M.sendUdp = function(data)
   if udp then udp:send(data) end
+end
+
+-- Send a TCP packet (for chat, commands, etc.)
+M.send = function(packetType, data)
+  if M.state ~= M.STATE_CONNECTED then
+    log('W', logTag, 'Cannot send packet: not connected')
+    return false
+  end
+  
+  local packet = data or {}
+  packet.type = packetType
+  M._sendPacket(packet)
+  return true
 end
 
 M._tickUdp = function()

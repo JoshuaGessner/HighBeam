@@ -121,5 +121,4 @@ impl WorldState {
             .filter(|e| e.value().owner_id == player_id)
             .count() as u32
     }
-
 }

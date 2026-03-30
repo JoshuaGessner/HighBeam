@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>HighBeam Chat</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #1e1e1e;
+            color: #e0e0e0;
+            overflow: hidden;
+        }
+        
+        #chatContainer {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+        }
+        
+        #chatHeader {
+            padding: 15px 20px;
+            background-color: #0f3460;
+            border-bottom: 2px solid #e94560;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        #chatTitle {
+            font-size: 18px;
+            font-weight: bold;
+            color: #e94560;
+        }
+        
+        #playerCount {
+            font-size: 12px;
+            color: #aaa;
+        }
+        
+        #messageContainer {
+            flex: 1;
+            overflow-y: auto;
+            padding: 15px;
+            background-color: rgba(30, 30, 30, 0.8);
+            scroll-behavior: smooth;
+        }
+        
+        .message {
+            margin-bottom: 12px;
+            padding: 8px 12px;
+            border-radius: 4px;
+            background-color: rgba(50, 50, 70, 0.5);
+            border-left: 3px solid #e94560;
+        }
+        
+        .messageTime {
+            font-size: 11px;
+            color: #888;
+            margin-right: 8px;
+        }
+        
+        .messageName {
+            font-weight: bold;
+            color: #66bb6a;
+            margin-right: 8px;
+        }
+        
+        .messageText {
+            color: #e0e0e0;
+            word-wrap: break-word;
+        }
+        
+        #inputContainer {
+            padding: 15px;
+            background-color: #0f3460;
+            border-top: 1px solid #e94560;
+            display: flex;
+            gap: 10px;
+        }
+        
+        #chatInput {
+            flex: 1;
+            padding: 10px 15px;
+            background-color: #16213e;
+            border: 1px solid #e94560;
+            border-radius: 4px;
+            color: #e0e0e0;
+            font-size: 14px;
+        }
+        
+        #chatInput:focus {
+            outline: none;
+            border-color: #ff6b9d;
+            box-shadow: 0 0 8px rgba(233, 69, 96, 0.3);
+        }
+        
+        #sendButton {
+            padding: 10px 20px;
+            background-color: #e94560;
+            border: none;
+            border-radius: 4px;
+            color: white;
+            font-weight: bold;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        
+        #sendButton:hover {
+            background-color: #ff6b9d;
+        }
+        
+        #sendButton:active {
+            transform: scale(0.95);
+        }
+        
+        #sendButton:disabled {
+            background-color: #666;
+            cursor: not-allowed;
+        }
+        
+        .systemMessage {
+            background-color: rgba(100, 100, 100, 0.3);
+            border-left-color: #888;
+        }
+        
+        .systemMessage .messageName {
+            color: #888;
+        }
+        
+        /* Scrollbar styling */
+        #messageContainer::-webkit-scrollbar {
+            width: 8px;
+        }
+        
+        #messageContainer::-webkit-scrollbar-track {
+            background: rgba(50, 50, 50, 0.5);
+        }
+        
+        #messageContainer::-webkit-scrollbar-thumb {
+            background: #e94560;
+            border-radius: 4px;
+        }
+        
+        #messageContainer::-webkit-scrollbar-thumb:hover {
+            background: #ff6b9d;
+        }
+    </style>
+</head>
+<body>
+    <div id="chatContainer">
+        <div id="chatHeader">
+            <div id="chatTitle">HighBeam Chat</div>
+            <div id="playerCount">Players: 0</div>
+        </div>
+        <div id="messageContainer"></div>
+        <div id="inputContainer">
+            <input type="text" id="chatInput" placeholder="Type a message... (Enter to send, Esc to close)">
+            <button id="sendButton">Send</button>
+        </div>
+    </div>
+    
+    <script>
+        const messageContainer = document.getElementById('messageContainer');
+        const chatInput = document.getElementById('chatInput');
+        const sendButton = document.getElementById('sendButton');
+        const playerCountEl = document.getElementById('playerCount');
+        
+        // Reference to BeamNG game API (injected by highbeam.lua)
+        let highbeamAPI = window.highbeamAPI || null;
+        let playerCount = 0;
+        
+        function addMessage(playerName, messageText, isSystem = false) {
+            const message = document.createElement('div');
+            message.className = 'message' + (isSystem ? ' systemMessage' : '');
+            
+            const time = new Date().toLocaleTimeString();
+            const timeSpan = document.createElement('span');
+            timeSpan.className = 'messageTime';
+            timeSpan.textContent = `[${time}]`;
+            
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'messageName';
+            nameSpan.textContent = playerName + ':';
+            
+            const textSpan = document.createElement('span');
+            textSpan.className = 'messageText';
+            textSpan.textContent = messageText;
+            
+            message.appendChild(timeSpan);
+            message.appendChild(nameSpan);
+            message.appendChild(document.createTextNode(' '));
+            message.appendChild(textSpan);
+            
+            messageContainer.appendChild(message);
+            messageContainer.scrollTop = messageContainer.scrollHeight;
+        }
+        
+        function sendMessage() {
+            const text = chatInput.value.trim();
+            if (!text) return;
+            
+            sendButton.disabled = true;
+            chatInput.value = '';
+            
+            // Call the Lua chat module to send to server
+            if (highbeamAPI && highbeamAPI.chat && highbeamAPI.chat.send) {
+                const success = highbeamAPI.chat.send(text);
+                if (!success) {
+                    addMessage('System', 'Failed to send message', true);
+                }
+            } else {
+                // Fallback for testing without game
+                addMessage('You', text);
+                console.log('Chat message:', text);
+            }
+            
+            sendButton.disabled = false;
+            chatInput.focus();
+        }
+        
+        sendButton.addEventListener('click', sendMessage);
+        
+        chatInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                sendMessage();
+            } else if (e.key === 'Escape') {
+                if (highbeamAPI && highbeamAPI.ui && highbeamAPI.ui.closeChat) {
+                    highbeamAPI.ui.closeChat();
+                } else {
+                    chatInput.blur();
+                }
+            }
+        });
+        
+        // Global function for Lua to update player count
+        window.updatePlayerCount = function(count) {
+            playerCount = count;
+            playerCountEl.textContent = `Players: ${count}`;
+        };
+        
+        // Global function for Lua to add chat messages
+        window.addChatMessage = function(playerName, messageText) {
+            addMessage(playerName, messageText);
+        };
+        
+        // Global function for Lua to add system messages
+        window.addSystemMessage = function(messageText) {
+            addMessage('System', messageText, true);
+        };
+        
+        // Global function for Lua to clear chat
+        window.clearChat = function() {
+            messageContainer.innerHTML = '';
+        };
+        
+        // Initialize
+        chatInput.focus();
+        addSystemMessage('Connected to HighBeam server');
+    </script>
+</body>
+</html>

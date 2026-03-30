@@ -47,14 +47,29 @@ impl SessionManager {
     ) -> (u32, String) {
         let player_id = self.next_id.fetch_add(1, Ordering::Relaxed);
 
-        // Generate a session token: 32 random bytes, hex-encoded
+        // Generate a session token: 64 random bytes, hex-encoded (extra entropy for uniqueness)
         let token: String = {
             let mut rng = rand::thread_rng();
-            let bytes: [u8; 32] = rand::Rng::gen(&mut rng);
-            bytes.iter().map(|b| format!("{b:02x}")).collect()
+            let mut bytes = [0u8; 64];
+            use rand::RngCore;
+            rng.fill_bytes(&mut bytes);
+            // Include timestamp to further reduce collision risk
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            format!("{:x}:{}", timestamp, bytes.iter().map(|b| format!("{b:02x}")).collect::<String>())
         };
 
         let session_hash = compute_session_hash(&token);
+        
+        // Verify collision didn't occur (paranoia check)
+        if self.session_hashes.contains_key(&session_hash) {
+            tracing::warn!("Session hash collision detected (extremely rare), retrying...");
+            // In the extremely unlikely event of a collision, recursively retry
+            return self.add_player(name, addr, tcp_tx);
+        }
+
         let now = Instant::now();
         let player = Player {
             id: player_id,

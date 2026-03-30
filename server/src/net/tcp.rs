@@ -6,10 +6,11 @@ use anyhow::{Context, Result};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
-use tokio::time::timeout;
+use tokio::time::{timeout, Instant};
 
 use crate::config::ServerConfig;
 use crate::session::manager::SessionManager;
+use crate::session::rate_limiter::ServerRateLimiters;
 use crate::state::world::WorldState;
 
 use super::packet::{self, TcpPacket, MAX_PACKET_SIZE, PROTOCOL_VERSION};
@@ -27,13 +28,17 @@ pub async fn start_listener(
 
     tracing::info!(port = config.general.port, "TCP listener started");
 
+    // Create rate limiters
+    let rate_limiters = Arc::new(ServerRateLimiters::new());
+
     loop {
         let (stream, addr) = listener.accept().await?;
         let config = config.clone();
         let sessions = sessions.clone();
         let world = world.clone();
+        let rate_limiters = rate_limiters.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, addr, config, sessions, world).await {
+            if let Err(e) = handle_connection(stream, addr, config, sessions, world, rate_limiters).await {
                 tracing::warn!(%addr, error = %e, "Connection error");
             }
         });
@@ -48,13 +53,14 @@ async fn handle_connection(
     config: Arc<ServerConfig>,
     sessions: Arc<SessionManager>,
     world: Arc<WorldState>,
+    rate_limiters: Arc<ServerRateLimiters>,
 ) -> Result<()> {
     tracing::info!(%addr, "New TCP connection");
 
     // 1. Set TCP_NODELAY for low-latency packet delivery
     stream.set_nodelay(true)?;
 
-    // 2. Send ServerHello immediately
+    // 3. Send ServerHello immediately
     let hello = TcpPacket::ServerHello {
         version: PROTOCOL_VERSION,
         name: config.general.name.clone(),
@@ -65,7 +71,20 @@ async fn handle_connection(
     };
     write_packet(&mut stream, &hello).await?;
 
-    // 3. Wait for AuthRequest with timeout
+    // Check auth rate limit before processing
+    if !rate_limiters.check_auth_limit(&addr).await {
+        tracing::warn!(%addr, "Auth rate limit exceeded");
+        let response = TcpPacket::AuthResponse {
+            success: false,
+            player_id: None,
+            session_token: None,
+            error: Some("Too many auth attempts. Try again later.".into()),
+        };
+        write_packet(&mut stream, &response).await?;
+        return Ok(());
+    }
+
+    // 4. Wait for AuthRequest with timeout
     let auth_timeout = Duration::from_secs(config.auth.auth_timeout_sec);
     let auth_packet = timeout(auth_timeout, read_packet(&mut stream))
         .await
@@ -79,6 +98,21 @@ async fn handle_connection(
                 "Expected AuthRequest, got {:?}",
                 std::mem::discriminant(other)
             );
+        }
+    };
+
+    // Validate username
+    let username = match crate::validation::validate_username(&username) {
+        Ok(u) => u,
+        Err(e) => {
+            let response = TcpPacket::AuthResponse {
+                success: false,
+                player_id: None,
+                session_token: None,
+                error: Some(format!("Invalid username: {}", e)),
+            };
+            write_packet(&mut stream, &response).await?;
+            return Ok(());
         }
     };
 
@@ -150,7 +184,7 @@ async fn handle_connection(
 
     // 11. Main receive loop
     let mut read_half = tokio::io::BufReader::new(read_half);
-    let recv_result = receive_loop(player_id, &mut read_half, &sessions, &world).await;
+    let recv_result = receive_loop(player_id, &mut read_half, &sessions, &world, &rate_limiters).await;
 
     // 12. Disconnect cleanup
     write_task.abort();
@@ -179,16 +213,49 @@ async fn handle_connection(
 }
 
 /// Main receive loop: read packets until the client disconnects or errors.
+/// Also enforces idle timeout to detect dead connections.
 async fn receive_loop<R: AsyncReadExt + Unpin>(
     player_id: u32,
     reader: &mut R,
     sessions: &Arc<SessionManager>,
     world: &Arc<WorldState>,
+    rate_limiters: &Arc<ServerRateLimiters>,
 ) -> Result<()> {
+    let idle_timeout = Duration::from_secs(60); // 60-second idle timeout
+    let mut last_activity = Instant::now();
+
     loop {
-        let packet = read_packet_from(reader).await?;
+        // Check for idle timeout
+        if last_activity.elapsed() > idle_timeout {
+            anyhow::bail!("Connection idle for too long");
+        }
+
+        // Use timeout on read to allow periodic idle checks
+        let read_timeout = Duration::from_secs(15);
+        let packet = match timeout(read_timeout, read_packet_from(reader)).await {
+            Ok(Ok(p)) => p,
+            Ok(Err(e)) => return Err(e),
+            Err(_) => {
+                // Timeout on read, loop back to check idle
+                continue;
+            }
+        };
+
+        last_activity = Instant::now();
+
         match packet {
             TcpPacket::VehicleSpawn { data, .. } => {
+                // Check spawn rate limit
+                if !rate_limiters.check_spawn_limit(player_id).await {
+                    tracing::warn!(player_id, "Vehicle spawn rate limit exceeded");
+                    continue;
+                }
+
+                // Validate vehicle config size
+                if let Err(e) = crate::validation::validate_vehicle_config_size(&data) {
+                    tracing::warn!(player_id, error = %e, "VehicleSpawn rejected: invalid config");
+                    continue;
+                }
                 let vid = world.spawn_vehicle(player_id, data.clone());
                 // Broadcast to ALL players (including sender so they learn the server-assigned ID)
                 sessions.broadcast(
@@ -203,6 +270,16 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
             TcpPacket::VehicleEdit {
                 vehicle_id, data, ..
             } => {
+                // Validate vehicle ID and config
+                if let Err(e) = crate::validation::validate_vehicle_id(vehicle_id) {
+                    tracing::warn!(player_id, video_id = vehicle_id, error = %e, "VehicleEdit: invalid vehicle ID");
+                    continue;
+                }
+                if let Err(e) = crate::validation::validate_vehicle_config_size(&data) {
+                    tracing::warn!(player_id, error = %e, "VehicleEdit: invalid config");
+                    continue;
+                }
+                
                 if world.is_owner(player_id, vehicle_id) {
                     world.update_config(player_id, vehicle_id, data.clone());
                     sessions.broadcast(
@@ -218,6 +295,11 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                 }
             }
             TcpPacket::VehicleDelete { vehicle_id, .. } => {
+                if let Err(e) = crate::validation::validate_vehicle_id(vehicle_id) {
+                    tracing::warn!(player_id, vehicle_id, error = %e, "VehicleDelete: invalid vehicle ID");
+                    continue;
+                }
+                
                 if world.is_owner(player_id, vehicle_id) {
                     world.remove_vehicle(player_id, vehicle_id);
                     sessions.broadcast(
@@ -234,6 +316,15 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
             TcpPacket::VehicleReset {
                 vehicle_id, data, ..
             } => {
+                if let Err(e) = crate::validation::validate_vehicle_id(vehicle_id) {
+                    tracing::warn!(player_id, vehicle_id, error = %e, "VehicleReset: invalid vehicle ID");
+                    continue;
+                }
+                if let Err(e) = crate::validation::validate_vehicle_config_size(&data) {
+                    tracing::warn!(player_id, error = %e, "VehicleReset: invalid config");
+                    continue;
+                }
+                
                 if world.is_owner(player_id, vehicle_id) {
                     sessions.broadcast(
                         TcpPacket::VehicleReset {
@@ -245,6 +336,32 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                     );
                 } else {
                     tracing::warn!(player_id, vehicle_id, "VehicleReset for unowned vehicle");
+                }
+            }
+            TcpPacket::ChatMessage { text } => {
+                // Check chat rate limit
+                if !rate_limiters.check_chat_limit(player_id).await {
+                    tracing::warn!(player_id, "Chat rate limit exceeded");
+                    continue;
+                }
+
+                // Validate chat message
+                match crate::validation::validate_chat_message(&text) {
+                    Ok(validated_text) => {
+                        if let Some(player) = sessions.get_player(player_id) {
+                            let broadcast_packet = TcpPacket::ChatBroadcast {
+                                player_id,
+                                player_name: player.name.clone(),
+                                text: validated_text,
+                            };
+                            sessions.broadcast(broadcast_packet, None);
+                        } else {
+                            tracing::warn!(player_id, "ChatMessage from unknown player");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(player_id, error = %e, "ChatMessage rejected: invalid content");
+                    }
                 }
             }
             other => {
