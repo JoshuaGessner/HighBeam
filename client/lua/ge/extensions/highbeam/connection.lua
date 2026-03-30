@@ -59,6 +59,58 @@ M.setSubsystems = function(v, s)
   state = s
 end
 
+-- State diagram:
+-- DISCONNECTED -> CONNECTING -> AUTHENTICATING -> CONNECTED -> DISCONNECTING -> DISCONNECTED
+-- CONNECTING/AUTHENTICATING can also transition directly to DISCONNECTED on failure.
+local VALID_TRANSITIONS = {
+  [M.STATE_DISCONNECTED] = {
+    [M.STATE_CONNECTING] = true,
+  },
+  [M.STATE_CONNECTING] = {
+    [M.STATE_AUTHENTICATING] = true,
+    [M.STATE_DISCONNECTED] = true,
+  },
+  [M.STATE_AUTHENTICATING] = {
+    [M.STATE_CONNECTED] = true,
+    [M.STATE_DISCONNECTED] = true,
+  },
+  [M.STATE_CONNECTED] = {
+    [M.STATE_DISCONNECTING] = true,
+    [M.STATE_DISCONNECTED] = true,
+  },
+  [M.STATE_DISCONNECTING] = {
+    [M.STATE_DISCONNECTED] = true,
+  },
+}
+
+local STATE_NAMES = {
+  [M.STATE_DISCONNECTED] = "DISCONNECTED",
+  [M.STATE_CONNECTING] = "CONNECTING",
+  [M.STATE_AUTHENTICATING] = "AUTHENTICATING",
+  [M.STATE_CONNECTED] = "CONNECTED",
+  [M.STATE_DISCONNECTING] = "DISCONNECTING",
+}
+
+M._setState = function(newState, context)
+  local oldState = M.state
+  if oldState == newState then
+    return true
+  end
+
+  local allowed = VALID_TRANSITIONS[oldState] and VALID_TRANSITIONS[oldState][newState]
+  if not allowed then
+    M._reportError(
+      'W',
+      'state_transition',
+      'Illegal transition ' .. tostring(STATE_NAMES[oldState]) .. ' -> ' .. tostring(STATE_NAMES[newState]) .. ' (' .. tostring(context) .. ') stack=' .. tostring(debug.traceback())
+    )
+    return false
+  end
+
+  M.state = newState
+  return true
+end
+
 M.connect = function(host, port, username, password)
   log('I', logTag, 'Connect requested: ' .. host .. ':' .. tostring(port))
 
@@ -70,7 +122,9 @@ M.connect = function(host, port, username, password)
   end
   socket = sock
 
-  M.state = M.STATE_CONNECTING
+  if not M._setState(M.STATE_CONNECTING, "connect") then
+    return
+  end
   tcp = socket.tcp()
   tcp:settimeout(0)  -- NON-BLOCKING: critical for not freezing the game
 
@@ -83,7 +137,7 @@ M.connect = function(host, port, username, password)
     M._connectStartTime = os.clock()  -- Track start time for timeout (Phase 2.1)
   else
     log('E', logTag, 'Connect failed: ' .. tostring(err))
-    M.state = M.STATE_DISCONNECTED
+    M._setState(M.STATE_DISCONNECTED, "connect_failed")
     tcp = nil
   end
 end
@@ -104,6 +158,12 @@ end
 
 M.disconnect = function()
   log('I', logTag, 'Disconnect requested')
+  if M.state == M.STATE_DISCONNECTED then
+    return
+  end
+
+  M._setState(M.STATE_DISCONNECTING, "disconnect")
+
   if tcp then
     pcall(function() tcp:close() end)
     tcp = nil
@@ -116,7 +176,7 @@ M.disconnect = function()
   M._sessionHash = nil
   M._lastPingTime = nil  -- Clear ping tracking on disconnect (Phase 2.2)
   M._connectStartTime = nil  -- Clear connect timeout tracking (Phase 2.1)
-  M.state = M.STATE_DISCONNECTED
+  M._setState(M.STATE_DISCONNECTED, "disconnect_complete")
 end
 
 M.tick = function(dt)
@@ -136,8 +196,12 @@ M.tick = function(dt)
     if writable and #writable > 0 then
       -- Connected! Wait for ServerHello
       M._connectStartTime = nil  -- Clear timeout tracking
-      M.state = M.STATE_AUTHENTICATING
-      log('I', logTag, 'TCP connected, waiting for ServerHello')
+      if M._setState(M.STATE_AUTHENTICATING, "tcp_connected") then
+        log('I', logTag, 'TCP connected, waiting for ServerHello')
+      else
+        M._onDisconnect("Invalid state transition during connect")
+        return
+      end
     end
   end
 
@@ -201,7 +265,11 @@ M._processBuffer = function()
 end
 
 M._sendPacket = function(packetTable)
-  if not tcp then return end
+  if not tcp then return false end
+  if M.state ~= M.STATE_AUTHENTICATING and M.state ~= M.STATE_CONNECTED then
+    M._reportError('W', 'send_packet', 'Attempted send while not authenticated/connected')
+    return false
+  end
   local okLib, jsonLib = pcall(require, "highbeam/lib/json")
   if not okLib or not jsonLib then
     M._reportError('E', 'send_packet', 'JSON library unavailable: ' .. tostring(jsonLib))
@@ -290,7 +358,10 @@ M._handlePacket = function(jsonStr)
       M._sessionToken = packet.session_token
       -- Send ready
       M._sendPacket({ type = "ready" })
-      M.state = M.STATE_CONNECTED
+      if not M._setState(M.STATE_CONNECTED, "auth_success") then
+        M._onDisconnect("Invalid state transition after auth")
+        return
+      end
       M._lastPingTime = os.clock()  -- Initialize ping tracking (Phase 2.2)
       -- Bind UDP after successful auth
       if M._pendingAuth then
@@ -395,7 +466,13 @@ M._bindUdp = function(host, port, sessionToken)
 end
 
 M.sendUdp = function(data)
-  if udp then udp:send(data) end
+  if M.state ~= M.STATE_CONNECTED then
+    return false
+  end
+  if udp then
+    return udp:send(data)
+  end
+  return false
 end
 
 -- Send a TCP packet (for chat, commands, etc.)
@@ -475,7 +552,7 @@ M._onDisconnect = function(reason)
   recvBuffer = ""
   M._sessionHash = nil
   M._lastPingTime = nil  -- Clear ping tracking on disconnect (Phase 2.2)
-  M.state = M.STATE_DISCONNECTED
+  M._setState(M.STATE_DISCONNECTED, "remote_disconnect")
 end
 
 M.getState = function()

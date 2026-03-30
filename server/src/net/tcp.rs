@@ -127,7 +127,20 @@ async fn handle_connection(
     //       SessionManager assigns player_id and generates the session token.
     let (tcp_tx, mut tcp_rx) = mpsc::channel::<TcpPacket>(64);
     let tcp_tx_ping = tcp_tx.clone();  // Clone for ping task
-    let (player_id, session_token) = sessions.add_player(username.clone(), addr, tcp_tx.clone());
+    let (player_id, session_token) = match sessions.add_player(username.clone(), addr, tcp_tx.clone()) {
+        Ok(result) => result,
+        Err(e) => {
+            tracing::warn!(%addr, error = %e, "Failed to create session");
+            let response = TcpPacket::AuthResponse {
+                success: false,
+                player_id: None,
+                session_token: None,
+                error: Some(format!("Session creation failed: {e}")),
+            };
+            write_packet(&mut stream, &response).await?;
+            return Ok(());
+        }
+    };
 
     tracing::info!(player_id, %addr, name = %username, "Player authenticated");
 
@@ -215,8 +228,15 @@ async fn handle_connection(
 
     // 11. Main receive loop
     let mut read_half = tokio::io::BufReader::new(read_half);
-    let recv_result =
-        receive_loop(player_id, &mut read_half, &sessions, &world, &rate_limiters).await;
+    let recv_result = receive_loop(
+        player_id,
+        &mut read_half,
+        &sessions,
+        &world,
+        &rate_limiters,
+        config.logging.log_chat,
+    )
+    .await;
 
     // 12. Disconnect cleanup
     write_task.abort();
@@ -253,6 +273,7 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
     sessions: &Arc<SessionManager>,
     world: &Arc<WorldState>,
     rate_limiters: &Arc<ServerRateLimiters>,
+    log_chat: bool,
 ) -> Result<()> {
     let idle_timeout = Duration::from_secs(60); // 60-second idle timeout
     let mut last_activity = Instant::now();
@@ -382,6 +403,16 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                 match crate::validation::validate_chat_message(&text) {
                     Ok(validated_text) => {
                         if let Some(player) = sessions.get_player(player_id) {
+                            if log_chat {
+                                tracing::info!(
+                                    target: "highbeam::chat",
+                                    player_id,
+                                    player_name = %player.name,
+                                    text = %validated_text,
+                                    "[CHAT]"
+                                );
+                            }
+
                             let broadcast_packet = TcpPacket::ChatBroadcast {
                                 player_id,
                                 player_name: player.name.clone(),

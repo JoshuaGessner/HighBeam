@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use anyhow::{bail, Result};
 use dashmap::DashMap;
 use sha2::{Digest, Sha256};
 use tokio::net::UdpSocket;
@@ -44,7 +45,13 @@ impl SessionManager {
         name: String,
         addr: SocketAddr,
         tcp_tx: mpsc::Sender<TcpPacket>,
-    ) -> (u32, String) {
+    ) -> Result<(u32, String)> {
+        let trimmed_name = name.trim();
+        if trimmed_name.is_empty() {
+            tracing::warn!(%addr, "Rejected player with empty username at session creation");
+            bail!("Username cannot be empty");
+        }
+
         let player_id = self.next_id.fetch_add(1, Ordering::Relaxed);
 
         // Generate a session token: 64 random bytes, hex-encoded (extra entropy for uniqueness)
@@ -70,14 +77,14 @@ impl SessionManager {
         // Verify collision didn't occur (paranoia check)
         if self.session_hashes.contains_key(&session_hash) {
             tracing::warn!("Session hash collision detected (extremely rare), retrying...");
-            // In the extremely unlikely event of a collision, recursively retry
-            return self.add_player(name, addr, tcp_tx);
+            // In the extremely unlikely event of a collision, recursively retry.
+            return self.add_player(trimmed_name.to_string(), addr, tcp_tx);
         }
 
         let now = Instant::now();
         let player = Player {
             id: player_id,
-            name,
+            name: trimmed_name.to_string(),
             session_token: token.clone(),
             addr,
             tcp_tx,
@@ -92,7 +99,7 @@ impl SessionManager {
         self.token_map.insert(token.clone(), player_id);
         self.players.insert(player_id, player);
 
-        (player_id, token)
+        Ok((player_id, token))
     }
 
     /// Remove a player by ID.
