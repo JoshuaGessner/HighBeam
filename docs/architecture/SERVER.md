@@ -141,8 +141,9 @@ server/
 #### Runtime (`runtime.rs`)
 - Each plugin gets its own Lua 5.4 state (isolation)
 - Plugins loaded from `Resources/Server/<PluginName>/`
-- All `.lua` files in a plugin's root directory are loaded alphabetically
-- Lua files in subdirectories are ignored (but can be `require()`-ed)
+- Each plugin must have a `plugin.toml` manifest declaring its `name`, `entry_point`, and optional `depends`
+- Load order determined by dependency graph (topological sort), not filename order
+- Lua files in subdirectories can be `require()`-ed from the entry point
 - Hot reload: watch for file changes, reload plugin state
 
 #### API (`api.rs`)

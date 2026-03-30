@@ -24,3 +24,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Default port changed from 30814 to **18860** (1886 = Karl Benz's automobile patent)
 - Default update rate changed from 30 Hz to **20 Hz** (research-backed; configurable)
 - Networking model refined: state synchronization with priority accumulator, jitter buffer, snapshot interpolation, visual smoothing, and delta compression (documented in BUILD_GUIDE.md)
+- **UDP position packets are binary from Phase 2** (63/65-byte fixed layout via LuaJIT FFI; no JSON serialization overhead)
+- **Plugin system uses `plugin.toml` manifests** instead of alphabetical file loading — explicit entry points, declared dependencies, topological load ordering
+- Added **Original Work Policy** to BUILD_GUIDE.md and .copilot-instructions.md — strict rules against referencing AGPL-3.0 BeamMP source code

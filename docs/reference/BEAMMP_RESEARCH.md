@@ -328,6 +328,18 @@ HighBeam's `HB.*` namespace is designed to be familiar to BeamMP plugin develope
 
 HighBeam mirrors BeamMP's `Resources/Client` and `Resources/Server` layout so server operators familiar with BeamMP can transition easily.
 
+### Plugin System Differences
+
+While both projects use a `Resources/Server/<PluginName>/` layout, HighBeam's plugin system differs from BeamMP's:
+
+| Aspect | BeamMP | HighBeam |
+|--------|--------|----------|
+| Manifest | None — alphabetical .lua loading | `plugin.toml` with explicit entry point |
+| Dependencies | Naming hacks (prefix with `A_`) | Declared in `plugin.toml` `depends` field |
+| Load order | Alphabetical by filename | Topological sort from dependency graph |
+| Lua version | 5.3 | 5.4 |
+| API namespace | `MP.*` | `HB.*` |
+
 ---
 
 ## References

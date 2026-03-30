@@ -26,7 +26,9 @@ Both channels share the same server port (default `18860`).
 
 ### TCP Packets (Reliable Channel)
 
-All TCP packets use a length-prefixed JSON format for simplicity and debuggability in early versions. Binary optimization is planned for v0.3.0+.
+All TCP packets use a length-prefixed JSON format for simplicity and debuggability. Binary TCP encoding (MessagePack) is planned for v0.5.0.
+
+UDP packets use a **compact binary format from day one** (no JSON overhead).
 
 ```
 ┌──────────────┬──────────────────────────────────┐
@@ -227,6 +229,7 @@ At 20 Hz position updates:
 ## Future Considerations
 
 - **v0.3.0+**: Optional TLS for TCP channel
-- **v0.3.0+**: Binary TCP packet format (MessagePack or custom) for reduced overhead
-- **v0.4.0+**: Delta compression for vehicle config updates
-- **v0.5.0+**: Voice chat channel (UDP, Opus codec)
+- **v0.5.0**: Binary TCP packet format (MessagePack) for vehicle spawn/edit/delete and other frequent packets
+- **v0.5.0+**: Advanced UDP optimizations (priority accumulator, at-rest flags, jitter buffer, visual smoothing)
+- **v0.5.0+**: Delta compression for vehicle config updates
+- **v0.6.0+**: Voice chat channel (UDP, Opus codec)

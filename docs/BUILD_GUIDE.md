@@ -16,6 +16,19 @@
 4. **Update CHANGELOG.md** after completing each phase.
 5. **Commit at each phase boundary** with a conventional commit.
 
+### Original Work Policy
+
+> **CRITICAL: HighBeam is 100% original code. Do NOT reference, translate, port, or adapt code from BeamMP.**
+>
+> BeamMP (Server, Launcher, and Client Mod) is licensed under **AGPL-3.0**, which is incompatible with HighBeam's **MIT** license. Even "translating" their C++ into Rust or their Lua patterns line-by-line would create a derivative work and force relicensing.
+>
+> **Rules:**
+> - Never open BeamMP source files while writing HighBeam code.
+> - Never copy function signatures, packet formats, or wire protocols from their codebase.
+> - Our architecture docs describe *what* to build. Implement *how* from first principles, Rust/Lua documentation, and general game networking knowledge (Glenn Fiedler, Gabriel Gambetta, etc.).
+> - If you need to understand a BeamNG.drive API, read BeamNG's own docs or test in the game console — do not look at how BeamMP calls it.
+> - The `docs/reference/BEAMMP_RESEARCH.md` file documents public-facing behavior for competitive analysis only. It is NOT a code reference.
+
 ### Port Convention
 
 HighBeam uses **port 18860** (TCP + UDP on the same port).
@@ -368,12 +381,52 @@ M.decodeTcp = function(rawData)
 end
 
 -- UDP packet encode/decode stubs
-M.encodeUdp = function(packetType, data)
-  return nil
+-- Binary UDP encode/decode (fixed-layout, zero JSON overhead)
+-- See PROTOCOL.md for packet layouts
+
+local ffi = require("ffi")
+
+-- Position update: type 0x10
+-- Layout: [vid:u16] [pos:3xf32] [rot:4xf32] [vel:3xf32] [time:f32]
+-- Total payload (after session hash + type byte): 46 bytes
+
+M.encodePositionUpdate = function(sessionHash, vehicleId, pos, rot, vel, simTime)
+  local buf = ffi.new("uint8_t[63]")  -- 16 hash + 1 type + 46 payload
+  ffi.copy(buf, sessionHash, 16)
+  buf[16] = 0x10  -- type byte
+
+  local ptr = ffi.cast("uint16_t*", buf + 17)
+  ptr[0] = vehicleId
+
+  local fp = ffi.cast("float*", buf + 19)
+  fp[0], fp[1], fp[2] = pos[1], pos[2], pos[3]          -- pos  (12B)
+  fp[3], fp[4], fp[5], fp[6] = rot[1], rot[2], rot[3], rot[4]  -- rot  (16B)
+  fp[7], fp[8], fp[9] = vel[1], vel[2], vel[3]          -- vel  (12B)
+  fp[10] = simTime                                        -- time (4B)
+
+  return ffi.string(buf, 63)
 end
 
-M.decodeUdp = function(rawData)
-  return nil
+-- Decode relayed position update from server
+-- Server-relayed layout adds pid:u16 after type byte → 65 bytes total
+M.decodePositionUpdate = function(data)
+  if #data < 65 then return nil end
+  local buf = ffi.cast("const uint8_t*", data)
+  -- buf[0..15] = session hash (already validated by caller)
+  -- buf[16] = 0x10 type (already matched by caller)
+
+  local pid = ffi.cast("const uint16_t*", buf + 17)[0]
+  local vid = ffi.cast("const uint16_t*", buf + 19)[0]
+  local fp  = ffi.cast("const float*", buf + 21)
+
+  return {
+    playerId  = pid,
+    vehicleId = vid,
+    pos  = { fp[0], fp[1], fp[2] },
+    rot  = { fp[3], fp[4], fp[5], fp[6] },
+    vel  = { fp[7], fp[8], fp[9] },
+    time = fp[10],
+  }
 end
 
 return M
@@ -816,8 +869,19 @@ pub async fn start_udp(
         match packet_type {
             0x01 => { /* UdpBind: register this addr for the player */ }
             0x10 => {
-                // Position update: relay to all other connected players
-                // Prepend player_id to the packet before relaying
+                // Position update: binary format (see PROTOCOL.md)
+                // Client sends 63 bytes: [16B hash][0x10][2B vid][12B pos][16B rot][12B vel][4B time]
+                // Server relays 65 bytes: [16B hash][0x10][2B pid][2B vid][12B pos][16B rot][12B vel][4B time]
+                if len < 63 { continue; }
+
+                // Build relay packet: insert player_id (u16 LE) after type byte
+                let mut relay = Vec::with_capacity(65);
+                relay.extend_from_slice(&buf[..17]);          // hash + type
+                relay.extend_from_slice(&(player_id as u16).to_le_bytes());  // pid
+                relay.extend_from_slice(&buf[17..len]);       // vid + pos + rot + vel + time
+
+                // Relay to all other players' registered UDP addresses
+                sessions.broadcast_udp(&socket, &relay, Some(player_id)).await;
             }
             _ => { /* Unknown type, ignore */ }
         }
@@ -917,10 +981,12 @@ M.tick = function(dt)
     local vel = playerVehicle:getVelocity()
 
     connection.sendUdp(protocol.encodePositionUpdate(
-      M.localVehicles[playerVehicle:getId()],  -- server-assigned vehicle ID
+      connection.getSessionHash(),              -- 16-byte session hash
+      M.localVehicles[playerVehicle:getId()],   -- server-assigned vehicle ID
       {pos.x, pos.y, pos.z},
       {rot.x, rot.y, rot.z, rot.w},
-      {vel.x, vel.y, vel.z}
+      {vel.x, vel.y, vel.z},
+      playerVehicle:getSimTime()                -- simulation time
     ))
   end
 end
@@ -959,24 +1025,34 @@ M._tickUdp = function()
   while true do
     local data = udp:receive()
     if not data then break end
-    M._handleUdpPacket(data)
+    if #data >= 65 and data:byte(17) == 0x10 then
+      -- Binary position update — decode and dispatch directly
+      local decoded = protocol.decodePositionUpdate(data)
+      if decoded then
+        vehicles.updateRemote(decoded)
+      end
+    end
   end
 end
 ```
 
 **Position update reception in `vehicles.lua`:**
+
+The connection layer calls `protocol.decodePositionUpdate(data)` on each received UDP packet,
+then dispatches the decoded struct here:
+
 ```lua
-M.updateRemote = function(playerId, vehicleId, pos, rot, vel, timestamp)
-  local key = playerId .. "_" .. vehicleId
+M.updateRemote = function(decoded)
+  local key = decoded.playerId .. "_" .. decoded.vehicleId
   local rv = M.remoteVehicles[key]
   if not rv then return end
 
   -- Push new snapshot into interpolation buffer
   table.insert(rv.snapshots, {
-    pos = pos,
-    rot = rot,
-    vel = vel,
-    time = timestamp,
+    pos = decoded.pos,
+    rot = decoded.rot,
+    vel = decoded.vel,
+    time = decoded.time,
     received = os.clock(),
   })
   -- Keep only last 3 snapshots
@@ -1039,6 +1115,7 @@ end
 | Test | How | Expected Result |
 |------|-----|-----------------|
 | UDP binds | Client sends UdpBind after auth | Server logs "UDP bound for player X" |
+| Binary encoding | Capture UDP packet, check size | Outgoing = 63 bytes, relayed = 65 bytes (no JSON) |
 | Position sending | Client drives, monitor server | Server receives position updates at ~20Hz |
 | Vehicle spawn relay | Player A spawns car | Player B sees the car appear |
 | Position relay | Player A drives | Player B sees Player A's car moving smoothly |
@@ -1219,10 +1296,13 @@ pub struct Plugin {
 impl PluginManager {
     pub fn load_plugins(resource_path: &Path) -> Result<Self> {
         // Scan Resources/Server/*/
-        // For each plugin directory, create a new Lua state
-        // Register HB.* and Util.* APIs
-        // Load all .lua files in the plugin root alphabetically
-        // Call onInit if it exists
+        // For each plugin directory:
+        //   1. Read plugin.toml manifest (required)
+        //   2. Create a new Lua state
+        //   3. Register HB.* and Util.* APIs
+        //   4. Load the entry_point file from plugin.toml
+        //   5. Call OnInit if registered
+        // Resolve load order from plugin.toml `depends` fields (topological sort)
     }
 
     pub fn fire_event(&self, event: &str, args: &[mlua::Value]) -> Vec<EventResult> {
@@ -1292,7 +1372,29 @@ pub struct EventResult {
 Cancellable events: `OnPlayerAuth`, `OnChatMessage`, `OnVehicleSpawn`, `OnVehicleEdited`.
 If any plugin handler returns a cancel signal, the action is prevented and the originator is notified.
 
-### 4.4 — Example Plugin
+### 4.4 — Plugin Manifest (`plugin.toml`)
+
+Every plugin MUST have a `plugin.toml` in its root directory. This replaces alphabetical file loading with explicit, predictable configuration.
+
+**Create `server/plugins/example/plugin.toml`:**
+```toml
+[plugin]
+name = "ExamplePlugin"
+version = "1.0.0"
+entry_point = "main.lua"   # File loaded first (required)
+authors = ["Author Name"]
+description = "An example HighBeam server plugin"
+
+# Optional: declare dependencies on other plugins (loaded first)
+# depends = ["SomeOtherPlugin"]
+```
+
+**Load order rules:**
+1. Each plugin must have a `plugin.toml` with at least `name` and `entry_point`.
+2. If `depends` is specified, those plugins are loaded first (topological sort).
+3. Plugins without dependencies are loaded in directory-name order (deterministic but not relied upon).
+4. Circular dependencies cause a startup error with a clear message.
+5. If `plugin.toml` is missing, the plugin directory is skipped with a warning.
 
 **Create `server/plugins/example/main.lua`:**
 ```lua
@@ -1322,7 +1424,10 @@ end)
 
 | Test | How | Expected Result |
 |------|-----|-----------------|
-| Plugin loads | Place plugin in Resources/Server/ | Server logs "Loaded plugin: ExamplePlugin" |
+| Plugin loads | Place plugin with plugin.toml in Resources/Server/ | Server logs "Loaded plugin: ExamplePlugin" |
+| Missing manifest | Plugin dir without plugin.toml | Server logs warning, plugin skipped |
+| Depends order | Plugin A depends on Plugin B | Plugin B loads before Plugin A |
+| Circular deps | Plugin A depends B, B depends A | Server logs error, neither loads |
 | onPlayerJoin | Player connects | All players see "Welcome, PlayerName!" in chat |
 | onChatMessage | Player sends "!players" | Only the sender sees the player list |
 | Event cancel | Plugin cancels chat message | Message is not broadcast to other players |
@@ -1347,9 +1452,11 @@ Replace JSON with a more efficient encoding for high-frequency TCP packets:
 - Protocol version bump to 2
 - Support both JSON (v1) and binary (v2) with negotiation in handshake
 
-### 5.2 — UDP Optimizations
+> **Note:** UDP position updates are already binary from Phase 2. This phase targets TCP.
 
-Based on Glenn Fiedler's networking research:
+### 5.2 — Advanced UDP Optimizations
+
+Building on the binary UDP from Phase 2, add bandwidth intelligence:
 
 **Priority Accumulator:**
 - Each vehicle has a priority value that accumulates per tick
@@ -1391,7 +1498,7 @@ For vehicle configs (which are large JSON blobs):
 
 | Test | How | Expected Result |
 |------|-----|-----------------|
-| Binary packets | Monitor bandwidth | Significant reduction vs JSON |
+| Binary TCP packets | Monitor bandwidth | Significant reduction vs JSON for vehicle events |
 | Priority accumulator | 20 players, varying distances | Nearby vehicles update more frequently |
 | At-rest savings | 10 parked vehicles | Bandwidth drops significantly |
 | Jitter buffer | Simulate 5% packet loss | Remote vehicles are smooth, no teleporting |
