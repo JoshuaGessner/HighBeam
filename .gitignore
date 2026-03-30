@@ -1,5 +1,6 @@
 # Compiled Rust output
 server/target/
+launcher/target/
 
 # Cargo lock (optional for binaries, but we'll track it)
 # server/Cargo.lock
