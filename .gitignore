@@ -1,0 +1,35 @@
+# Compiled Rust output
+server/target/
+
+# Cargo lock (optional for binaries, but we'll track it)
+# server/Cargo.lock
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editor files
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.code-workspace
+
+# BeamNG mod build artifacts
+client/build/
+*.zip.bak
+
+# Server runtime files
+server.log
+ServerConfig.toml
+Resources/
+
+# Temporary files
+*.tmp
+*.bak
+
+# Environment files
+.env
+.env.local

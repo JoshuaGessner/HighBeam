@@ -1,0 +1,101 @@
+# HighBeam Documentation Index
+
+> **This is the master index for all HighBeam project documentation.**
+> Always consult this file first when seeking project context, architectural guidance, or development procedures.
+
+---
+
+## How to Use This Index
+
+### For Developers
+1. **Before starting any work**, read the relevant architecture doc for the component you're touching.
+2. **Before opening a PR**, consult [VERSION_PLAN.md](versioning/VERSION_PLAN.md) to ensure your work aligns with the current milestone.
+3. **When adding features**, check [PROTOCOL.md](architecture/PROTOCOL.md) to ensure protocol compatibility.
+4. **When logging changes**, update [CHANGELOG.md](versioning/CHANGELOG.md) under the `[Unreleased]` section.
+
+### For Copilot / AI Assistants
+1. **Always read this INDEX.md first** when the user asks about project structure, architecture, or development procedures.
+2. **Before generating code**, read the architecture doc for the relevant component:
+   - Client mod work → [CLIENT.md](architecture/CLIENT.md)
+   - Server binary work → [SERVER.md](architecture/SERVER.md)
+   - Network/protocol work → [PROTOCOL.md](architecture/PROTOCOL.md)
+3. **Before suggesting version bumps or release steps**, read [VERSION_PLAN.md](versioning/VERSION_PLAN.md).
+4. **For BeamMP/BeamNG compatibility context**, read [BEAMMP_RESEARCH.md](reference/BEAMMP_RESEARCH.md) and [BEAMNG_MODDING.md](reference/BEAMNG_MODDING.md).
+5. **After completing work**, remind the developer to update [CHANGELOG.md](versioning/CHANGELOG.md).
+
+---
+
+## Document Map
+
+### Architecture (`docs/architecture/`)
+
+| Document | Purpose | Read When... |
+|----------|---------|-------------|
+| [OVERVIEW.md](architecture/OVERVIEW.md) | High-level system architecture, component relationships, design philosophy | Starting the project, onboarding, or making cross-cutting decisions |
+| [CLIENT.md](architecture/CLIENT.md) | Client-side BeamNG mod architecture (Lua) | Writing or modifying client mod code |
+| [SERVER.md](architecture/SERVER.md) | Server binary architecture (Rust) | Writing or modifying server code |
+| [PROTOCOL.md](architecture/PROTOCOL.md) | Network protocol specification (TCP/UDP) | Adding new packet types, debugging networking, or working on client-server communication |
+
+### Versioning (`docs/versioning/`)
+
+| Document | Purpose | Read When... |
+|----------|---------|-------------|
+| [VERSION_PLAN.md](versioning/VERSION_PLAN.md) | Version roadmap, milestone definitions, SemVer policy, release process | Planning work, cutting releases, deciding what goes in which version |
+| [CHANGELOG.md](versioning/CHANGELOG.md) | Running log of all changes per version | Every PR (update it), every release (finalize it) |
+
+### Reference (`docs/reference/`)
+
+| Document | Purpose | Read When... |
+|----------|---------|-------------|
+| [BEAMMP_RESEARCH.md](reference/BEAMMP_RESEARCH.md) | Deep-dive research on BeamMP's architecture, protocol, APIs, and limitations | Understanding what we're improving upon, avoiding BeamMP's design pitfalls |
+| [BEAMNG_MODDING.md](reference/BEAMNG_MODDING.md) | BeamNG.drive modding reference: Lua scripting, extensions, UI apps | Writing client-side code that interfaces with BeamNG |
+
+---
+
+## Quick Reference: Key Design Decisions
+
+| Decision | Choice | Rationale | Doc |
+|----------|--------|-----------|-----|
+| Server language | Rust | Memory safety, performance, cross-platform, async networking | [SERVER.md](architecture/SERVER.md) |
+| Client language | Lua (LuaJIT) | Required by BeamNG.drive's extension system | [CLIENT.md](architecture/CLIENT.md) |
+| Auth model | Decentralized (server-issued tokens) | No dependency on centralized auth servers | [OVERVIEW.md](architecture/OVERVIEW.md) |
+| Transport | TCP (reliable) + UDP (state sync) | TCP for events/config, UDP for high-frequency position updates | [PROTOCOL.md](architecture/PROTOCOL.md) |
+| Config format | TOML | Human-readable, ecosystem standard | [SERVER.md](architecture/SERVER.md) |
+| Versioning | SemVer 2.0.0 | Industry standard, clear compatibility signals | [VERSION_PLAN.md](versioning/VERSION_PLAN.md) |
+| Server discovery | Direct connect + optional community relay | No enforced centralized server list | [OVERVIEW.md](architecture/OVERVIEW.md) |
+
+---
+
+## Project Directory Layout
+
+```
+HighBeam/
+├── .github/                    # GitHub templates and CI
+│   └── PULL_REQUEST_TEMPLATE.md
+├── client/                     # BeamNG.drive mod (Lua)
+│   ├── lua/ge/extensions/      # BeamNG extension scripts
+│   ├── scripts/                # Mod loader scripts
+│   └── ui/                     # UI apps (HTML/JS/CSS)
+├── server/                     # Server binary (Rust)
+│   ├── src/                    # Rust source code
+│   ├── plugins/                # Example Lua plugins
+│   └── Cargo.toml              # Rust project manifest
+├── docs/                       # All documentation
+│   ├── INDEX.md                # ← YOU ARE HERE
+│   ├── architecture/           # System design docs
+│   ├── versioning/             # Version planning and changelog
+│   └── reference/              # Research and external references
+├── .copilot-instructions.md    # AI coding assistant instructions
+├── .gitignore                  # Git ignore rules
+├── LICENSE                     # Project license
+└── README.md                   # Project overview
+```
+
+---
+
+## Maintenance Rules
+
+1. **Keep this index current.** When adding a new doc, add it to the Document Map table above.
+2. **One truth per topic.** Don't duplicate information across docs — link to the canonical source instead.
+3. **Date your research.** Reference docs should note when they were last verified.
+4. **Version your architecture.** When an architecture doc changes significantly, note the version it applies to.
