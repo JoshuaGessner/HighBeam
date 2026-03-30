@@ -215,7 +215,7 @@ tracing-appender = "0.2"       # File logging with rotation
 
 **Target Effort:** 3-4 hours  
 **Priority:** HIGH - Prevents crashes and improves user experience  
-**Status:** Specification complete, 2/8 tasks implemented (server-side heartbeat done, client pending)
+**Status:** Specification complete, 2/8 tasks implemented (heartbeat protocol complete)
 
 **Tasks Completed:** 1/8
 - [x] 2.1: Client connect timeout (0.5h) ✅ DONE
@@ -380,14 +380,14 @@ tracing-appender = "0.2"       # File logging with rotation
 | Task | File | Effort | Priority | Status |
 |------|------|--------|----------|--------|
 | Client connect timeout | connection.lua | 0.5h | HIGH | ✅ DONE |
-| Heartbeat protocol | packet.rs, tcp.rs, connection.lua | 1.5h | HIGH | ⏳ IN PROGRESS (server ✅) |
+| Heartbeat protocol | packet.rs, tcp.rs, connection.lua | 1.5h | HIGH | ✅ DONE |
 | Packet parse validation | tcp.rs, connection.lua, protocol.lua | 0.5h | HIGH | 📋 TODO |
 | Lua error handling | connection.lua, highbeam.lua | 0.5h | MEDIUM | 📋 TODO |
 | Vehicle interpolation | vehicles.lua, math.lua | 1h | HIGH | 📋 TODO |
 | Connection state validation | connection.lua | 0.5h | MEDIUM | 📋 TODO |
 | Chat logging | tcp.rs | 0.25h | LOW | 📋 TODO |
 | Username check | manager.rs | 0.25h | LOW | 📋 TODO |
-| **TOTAL** | | **4.5h** | | **2/8 ✅** |
+| **TOTAL** | | **4.5h** | | **3/8 completed, 1.5/8 in progress** |
 
 **Server Implementation Details (Commit 55a530a):**
 - Added `PROTOCOL_VERSION = 2` constant in `packet.rs`
@@ -400,12 +400,16 @@ tracing-appender = "0.2"       # File logging with rotation
 - Properly aborts ping task during connection cleanup
 - ✅ Server compiles cleanly with heartbeat protocol v2
 
-**Status:** ✅ Server-side IMPLEMENTED (55a530a), ⏳ Client-side PENDING
+**Status:** ✅ COMPLETE (server 55a530a, client 10a49df)
 
 *Client tasks (pending):*
  [ ] Add PingPong handler to receive buffer processing in `connection.lua`
  [ ] Send pong response immediately when ping received
  [ ] Track last ping received time
+ [x] Add PingPong handler to receive buffer processing in `connection.lua` ✅
+ [x] Send pong response immediately when ping received ✅
+ [x] Track last ping received time ✅
+ [x] Close connection if no ping within 30s (pong_timeout) ✅
  [ ] Close connection if no ping within 30s (pong_timeout)
 
 ---
