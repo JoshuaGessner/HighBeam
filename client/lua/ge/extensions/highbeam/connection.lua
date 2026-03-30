@@ -40,6 +40,7 @@ M._autoReconnect = false  -- Whether we should attempt reconnection
 
 -- Player tracking
 M._players = {}  -- player_id -> { name = "..." }
+M._serverEventHandlers = {}  -- event_name -> callback(payload)
 
 -- Error tracking for diagnostics (Phase 2.4)
 M._errorCount = 0
@@ -68,6 +69,25 @@ end
 
 M.getPlayers = function()
   return M._players
+end
+
+M.onServerEvent = function(eventName, callback)
+  if not eventName or type(callback) ~= "function" then
+    return false
+  end
+  M._serverEventHandlers[eventName] = callback
+  return true
+end
+
+M.triggerServerEvent = function(eventName, payload)
+  if M.state ~= M.STATE_CONNECTED then
+    return false
+  end
+  return M._sendPacket({
+    type = "trigger_server_event",
+    name = eventName,
+    payload = payload or ""
+  })
 end
 
 M._reportError = function(level, context, message)
@@ -496,6 +516,18 @@ M._handlePacket = function(jsonStr)
     local okChat, chat = pcall(require, "highbeam/chat")
     if okChat and chat and chat.systemMessage then
       pcall(chat.systemMessage, packet.text)
+    end
+  elseif ptype == "trigger_client_event" then
+    local name = packet.name
+    local payload = packet.payload
+    local handler = name and M._serverEventHandlers[name]
+    if handler then
+      local okEvent, err = pcall(handler, payload)
+      if not okEvent then
+        M._reportError('W', 'client_event', 'Server event handler failed: ' .. tostring(err))
+      end
+    else
+      log('D', logTag, 'No handler for server event: ' .. tostring(name))
     end
   elseif ptype == "player_join" then
     log('I', logTag, 'Player joined: ' .. tostring(packet.name) .. ' (id=' .. tostring(packet.player_id) .. ')')

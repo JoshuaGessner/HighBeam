@@ -92,7 +92,7 @@ impl SessionManager {
             session_hash,
             connected_at: now,
             last_activity: now,
-            last_pong_time: now,  // Initialize pong time (Phase 2.2)
+            last_pong_time: now, // Initialize pong time (Phase 2.2)
         };
 
         self.session_hashes.insert(session_hash, player_id);
@@ -117,7 +117,10 @@ impl SessionManager {
     }
 
     /// Look up a player by ID (mutable), for updating player state (Phase 2.2).
-    pub fn get_player_mut(&self, player_id: u32) -> Option<dashmap::mapref::one::RefMut<'_, u32, Player>> {
+    pub fn get_player_mut(
+        &self,
+        player_id: u32,
+    ) -> Option<dashmap::mapref::one::RefMut<'_, u32, Player>> {
         self.players.get_mut(&player_id)
     }
 
@@ -164,6 +167,14 @@ impl SessionManager {
                 tracing::warn!(player_id = player.id, "Broadcast send failed: {e}");
             }
         }
+    }
+
+    /// Send a TCP packet to a single player by id.
+    pub fn send_to_player(&self, player_id: u32, packet: TcpPacket) -> bool {
+        let Some(player) = self.players.get(&player_id) else {
+            return false;
+        };
+        player.tcp_tx.try_send(packet).is_ok()
     }
 
     /// Broadcast a UDP packet to all players with registered UDP addresses, optionally excluding one.

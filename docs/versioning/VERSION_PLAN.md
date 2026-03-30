@@ -213,21 +213,23 @@ As of 2026-03-30, historical hardening notes were merged into this plan.
 
 ### v0.4.0 — Plugin System (Beta)
 
+**Status:** Complete — plugin runtime and custom event transport implemented
+
 **Goal:** Server operators can customize their servers with Lua plugins.
 
 **Server:**
-- [ ] Lua 5.4 plugin runtime (isolated states per plugin)
-- [ ] `HB.*` API namespace (player, vehicle, chat, event functions)
-- [ ] Plugin event system (onPlayerAuth, onVehicleSpawn, etc.)
-- [ ] Event cancellation support
-- [ ] `Util.*` helper functions (JSON, random, logging)
-- [ ] `FS.*` filesystem functions
-- [ ] Plugin hot reload
-- [ ] Server console with `lua <plugin>` injection
+- [x] Lua 5.4 plugin runtime (isolated states per plugin)
+- [x] `HB.*` API namespace (player, vehicle, chat, event functions)
+- [x] Plugin event system (onPlayerAuth, onVehicleSpawn, OnChatMessage)
+- [x] Event cancellation support
+- [x] `Util.*` helper functions (random, logging)
+- [x] `FS.*` filesystem functions
+- [x] Plugin hot reload
+- [x] Server console with `lua <plugin>` injection
 
 **Client:**
-- [ ] Handle custom plugin events (TriggerClientEvent)
-- [ ] Send custom events to server
+- [x] Handle custom plugin events (TriggerClientEvent)
+- [x] Send custom events to server
 
 **Deliverable:** Server operators can write Lua plugins to customize gameplay (kick/ban, economy, custom rules).
 

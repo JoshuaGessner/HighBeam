@@ -3,12 +3,14 @@
 #![allow(dead_code)]
 
 use anyhow::Result;
+use std::io::BufRead;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
 mod config;
 mod mods;
 mod net;
+mod plugin;
 mod session;
 mod state;
 mod validation;
@@ -71,6 +73,66 @@ async fn main() -> Result<()> {
     let config = Arc::new(config);
     let sessions = Arc::new(session::manager::SessionManager::new());
     let world = Arc::new(state::world::WorldState::new());
+    let plugins = Arc::new(plugin::runtime::PluginRuntime::load_from_resource(
+        &config.general.resource_folder,
+        sessions.clone(),
+        world.clone(),
+    )?);
+
+    tracing::info!(
+        plugin_count = plugins.plugin_count(),
+        resource_folder = %config.general.resource_folder,
+        "Plugin runtime initialized"
+    );
+
+    // Poll plugin directory for changes and hot-reload plugin states.
+    let plugins_for_reload = plugins.clone();
+    tokio::spawn(async move {
+        let interval = std::time::Duration::from_secs(2);
+        loop {
+            tokio::time::sleep(interval).await;
+            match plugins_for_reload.refresh_if_changed() {
+                Ok(true) => tracing::info!("Plugin files changed; runtime hot-reloaded"),
+                Ok(false) => {}
+                Err(e) => tracing::error!(error = %e, "Plugin hot-reload poll failed"),
+            }
+        }
+    });
+
+    // Local console injection: `lua <plugin_name> <code>`.
+    let plugins_for_console = plugins.clone();
+    tokio::task::spawn_blocking(move || {
+        let stdin = std::io::stdin();
+        for line in stdin.lock().lines() {
+            let Ok(line) = line else {
+                continue;
+            };
+            let trimmed = line.trim();
+            if !trimmed.starts_with("lua ") {
+                continue;
+            }
+
+            let rest = trimmed[4..].trim();
+            let mut parts = rest.splitn(2, ' ');
+            let Some(plugin_name) = parts.next() else {
+                tracing::warn!("Usage: lua <plugin_name> <code>");
+                continue;
+            };
+            let Some(code) = parts.next() else {
+                tracing::warn!("Usage: lua <plugin_name> <code>");
+                continue;
+            };
+
+            match plugins_for_console.eval_in_plugin(plugin_name, code) {
+                Ok(result) => {
+                    tracing::info!(plugin = %plugin_name, result = %result, "Lua console eval ok")
+                }
+                Err(e) => {
+                    tracing::error!(plugin = %plugin_name, error = %e, "Lua console eval failed")
+                }
+            }
+        }
+    });
 
     // Build mod manifest once at startup (Phase 3 groundwork for launcher sync).
     let mod_manifest = Arc::new(mods::build_manifest(&config.general.resource_folder)?);
@@ -142,7 +204,7 @@ async fn main() -> Result<()> {
     });
 
     // Start TCP listener (blocks forever, accepting connections)
-    net::tcp::start_listener(config, sessions, world).await?;
+    net::tcp::start_listener(config, sessions, world, plugins).await?;
 
     tracing::info!("Server shut down complete");
     Ok(())

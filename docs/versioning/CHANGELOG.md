@@ -31,6 +31,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Launcher process management**: waits for BeamNG.drive exit, reports exit codes
 - **Launcher CLI**: `--server`, `--no-launch`, `--clear-cache` flags
 
+### Added (v0.4.0 foundation — server)
+- **Plugin runtime module** (`server/src/plugin/`): isolated Lua 5.4 states per plugin loaded from `Resources/Server/<PluginName>/main.lua`
+- **Plugin event dispatch**: `OnPlayerAuth`, `OnVehicleSpawn`, and `OnChatMessage` hooks executed across loaded plugins
+- **Plugin cancellation contract**: handlers can cancel by returning `false`, a reason string, or `{ cancel = true, reason = "..." }`
+- **HB API namespace (initial)**:
+	- `HB.Player.GetPlayers()`
+	- `HB.Player.DropPlayer(playerId, reason)`
+	- `HB.Chat.SendChatMessage(text)`
+	- `HB.Vehicle.GetVehicles()`
+	- `HB.Vehicle.DeleteVehicle(playerId, vehicleId)`
+	- `HB.Event.SendServerMessage(text)`
+	- `HB.Util.Log(level, message)`
+	- `HB.Util.RandomInt(min, max)`
+	- `HB.FS.ReadFile(path)`, `HB.FS.WriteFile(path, contents)`, `HB.FS.Exists(path)` with traversal protection
+- **TCP integration for plugin hooks**: auth, vehicle spawn, and chat flows now consult plugin events before accepting actions
+- **Plugin hot reload**: runtime polls `Resources/Server` for file changes and reloads plugin states automatically
+- **Local Lua console injection**: supports `lua <plugin_name> <code>` from server stdin for runtime inspection/operations
+- **Custom event transport**:
+	- TCP packets `trigger_client_event` and `trigger_server_event`
+	- Server API: `HB.Event.TriggerClientEvent(playerId, name, payload)` and `HB.Event.BroadcastClientEvent(name, payload)`
+	- Client API: `connection.onServerEvent(name, callback)` and `connection.triggerServerEvent(name, payload)`
+
 ### Added (production hardening — server)
 - TCP keepalive enabled on all client connections
 - 60-second idle timeout enforcement in receive loop
@@ -62,6 +84,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Dependencies added
 - `tracing-appender = "0.2"` (server — file logging with rotation)
+- `mlua = "0.10"` with `lua54`, `vendored`, `send` features (server — plugin runtime)
 
 ---
 

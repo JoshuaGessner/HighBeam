@@ -21,3 +21,4 @@ sha2 = "0.10"
 dashmap = "6"
 socket2 = "0.5"
 argon2 = "0.5"
+mlua = { version = "0.10", features = ["lua54", "vendored", "send"] }

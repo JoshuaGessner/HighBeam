@@ -53,6 +53,14 @@ pub enum TcpPacket {
     #[serde(rename = "server_message")]
     ServerMessage { text: String },
 
+    /// Server-initiated custom event for client scripts.
+    #[serde(rename = "trigger_client_event")]
+    TriggerClientEvent {
+        name: String,
+        #[serde(default)]
+        payload: String,
+    },
+
     /// Server sends available mod manifest to a launcher.
     #[serde(rename = "mod_list")]
     ModList { mods: Vec<ModDescriptor> },
@@ -73,6 +81,14 @@ pub enum TcpPacket {
     /// Launcher requests a subset of mods by filename.
     #[serde(rename = "mod_request")]
     ModRequest { names: Vec<String> },
+
+    /// Client-initiated custom event for server plugin handlers.
+    #[serde(rename = "trigger_server_event")]
+    TriggerServerEvent {
+        name: String,
+        #[serde(default)]
+        payload: String,
+    },
 
     // ── Vehicle packets (Phase 2) ────────────────────────────────────
     /// A vehicle was spawned (client → server has no player_id; server → client fills it in).
@@ -255,6 +271,22 @@ mod tests {
                 size: 123_456,
                 hash: "0123456789abcdef".into(),
             }],
+        });
+    }
+
+    #[test]
+    fn test_trigger_client_event_round_trip() {
+        round_trip(&TcpPacket::TriggerClientEvent {
+            name: "ui_notification".into(),
+            payload: "hello".into(),
+        });
+    }
+
+    #[test]
+    fn test_trigger_server_event_round_trip() {
+        round_trip(&TcpPacket::TriggerServerEvent {
+            name: "ping_plugin".into(),
+            payload: "{}".into(),
         });
     }
 

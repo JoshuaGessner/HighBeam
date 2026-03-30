@@ -9,6 +9,8 @@ use tokio::sync::mpsc;
 use tokio::time::{timeout, Instant};
 
 use crate::config::ServerConfig;
+use crate::plugin::events::PluginEvent;
+use crate::plugin::runtime::PluginRuntime;
 use crate::session::manager::SessionManager;
 use crate::session::rate_limiter::ServerRateLimiters;
 use crate::state::world::WorldState;
@@ -20,6 +22,7 @@ pub async fn start_listener(
     config: Arc<ServerConfig>,
     sessions: Arc<SessionManager>,
     world: Arc<WorldState>,
+    plugins: Arc<PluginRuntime>,
 ) -> Result<()> {
     let addr = format!("0.0.0.0:{}", config.general.port);
     let listener = TcpListener::bind(&addr)
@@ -36,10 +39,19 @@ pub async fn start_listener(
         let config = config.clone();
         let sessions = sessions.clone();
         let world = world.clone();
+        let plugins = plugins.clone();
         let rate_limiters = rate_limiters.clone();
         tokio::spawn(async move {
-            if let Err(e) =
-                handle_connection(stream, addr, config, sessions, world, rate_limiters).await
+            if let Err(e) = handle_connection(
+                stream,
+                addr,
+                config,
+                sessions,
+                world,
+                plugins,
+                rate_limiters,
+            )
+            .await
             {
                 tracing::warn!(%addr, error = %e, "Connection error");
             }
@@ -55,6 +67,7 @@ async fn handle_connection(
     config: Arc<ServerConfig>,
     sessions: Arc<SessionManager>,
     world: Arc<WorldState>,
+    plugins: Arc<PluginRuntime>,
     rate_limiters: Arc<ServerRateLimiters>,
 ) -> Result<()> {
     tracing::info!(%addr, "New TCP connection");
@@ -176,24 +189,41 @@ async fn handle_connection(
         return Ok(());
     }
 
+    // Plugin hook: allow plugins to reject auth.
+    if let Some(reason) = plugins.dispatch_event(&PluginEvent::PlayerAuth {
+        username: username.clone(),
+        addr: addr.to_string(),
+    }) {
+        tracing::warn!(%addr, name = %username, reason = %reason, "Auth rejected by plugin");
+        let response = TcpPacket::AuthResponse {
+            success: false,
+            player_id: None,
+            session_token: None,
+            error: Some(reason),
+        };
+        write_packet(&mut stream, &response).await?;
+        return Ok(());
+    }
+
     // 5-6. Create a channel for this player's outbound TCP packets.
     //       SessionManager assigns player_id and generates the session token.
     let (tcp_tx, mut tcp_rx) = mpsc::channel::<TcpPacket>(64);
-    let tcp_tx_ping = tcp_tx.clone();  // Clone for ping task
-    let (player_id, session_token) = match sessions.add_player(username.clone(), addr, tcp_tx.clone()) {
-        Ok(result) => result,
-        Err(e) => {
-            tracing::warn!(%addr, error = %e, "Failed to create session");
-            let response = TcpPacket::AuthResponse {
-                success: false,
-                player_id: None,
-                session_token: None,
-                error: Some(format!("Session creation failed: {e}")),
-            };
-            write_packet(&mut stream, &response).await?;
-            return Ok(());
-        }
-    };
+    let tcp_tx_ping = tcp_tx.clone(); // Clone for ping task
+    let (player_id, session_token) =
+        match sessions.add_player(username.clone(), addr, tcp_tx.clone()) {
+            Ok(result) => result,
+            Err(e) => {
+                tracing::warn!(%addr, error = %e, "Failed to create session");
+                let response = TcpPacket::AuthResponse {
+                    success: false,
+                    player_id: None,
+                    session_token: None,
+                    error: Some(format!("Session creation failed: {e}")),
+                };
+                write_packet(&mut stream, &response).await?;
+                return Ok(());
+            }
+        };
 
     tracing::info!(player_id, %addr, name = %username, "Player authenticated");
 
@@ -251,7 +281,6 @@ async fn handle_connection(
         }
     });
 
-
     // Spawn a ping task to send heartbeat pings every 20s and monitor pong timeout (Phase 2.2)
     let ping_tx = tcp_tx_ping;
     let ping_sessions = sessions.clone();
@@ -286,6 +315,7 @@ async fn handle_connection(
         &mut read_half,
         &sessions,
         &world,
+        &plugins,
         &rate_limiters,
         config.logging.log_chat,
         config.general.max_cars_per_player,
@@ -326,6 +356,7 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
     reader: &mut R,
     sessions: &Arc<SessionManager>,
     world: &Arc<WorldState>,
+    plugins: &Arc<PluginRuntime>,
     rate_limiters: &Arc<ServerRateLimiters>,
     log_chat: bool,
     max_cars: u32,
@@ -369,7 +400,20 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                 // Enforce MaxCarsPerPlayer
                 let current_count = world.vehicle_count_for_player(player_id);
                 if current_count >= max_cars {
-                    tracing::warn!(player_id, current_count, max_cars, "MaxCarsPerPlayer limit reached");
+                    tracing::warn!(
+                        player_id,
+                        current_count,
+                        max_cars,
+                        "MaxCarsPerPlayer limit reached"
+                    );
+                    continue;
+                }
+
+                if let Some(reason) = plugins.dispatch_event(&PluginEvent::VehicleSpawn {
+                    player_id,
+                    data: data.clone(),
+                }) {
+                    tracing::warn!(player_id, reason = %reason, "VehicleSpawn blocked by plugin");
                     continue;
                 }
 
@@ -465,6 +509,14 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                 // Validate chat message
                 match crate::validation::validate_chat_message(&text) {
                     Ok(validated_text) => {
+                        if let Some(reason) = plugins.dispatch_event(&PluginEvent::ChatMessage {
+                            player_id,
+                            text: validated_text.clone(),
+                        }) {
+                            tracing::warn!(player_id, reason = %reason, "ChatMessage blocked by plugin");
+                            continue;
+                        }
+
                         if let Some(player) = sessions.get_player(player_id) {
                             if log_chat {
                                 tracing::info!(
@@ -498,6 +550,15 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                     tracing::debug!(player_id, seq, "Pong received");
                 } else {
                     tracing::warn!(player_id, "PingPong from unknown player");
+                }
+            }
+            TcpPacket::TriggerServerEvent { name, payload } => {
+                if let Some(reason) = plugins.dispatch_event(&PluginEvent::ClientEvent {
+                    player_id,
+                    name,
+                    payload,
+                }) {
+                    tracing::warn!(player_id, reason = %reason, "TriggerServerEvent blocked by plugin");
                 }
             }
             other => {
