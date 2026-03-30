@@ -57,7 +57,7 @@ jobs:
         run: |
           mkdir -p staging
           cp server/target/${{ matrix.target }}/release/${{ matrix.binary }} staging/
-          cp server/ServerConfig.toml staging/
+          cp server/ServerConfig.default.toml staging/ServerConfig.toml
           cd staging
           tar czf ../${{ matrix.archive }} *
 
@@ -67,7 +67,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path staging
           Copy-Item "server/target/${{ matrix.target }}/release/${{ matrix.binary }}" staging/
-          Copy-Item "server/ServerConfig.toml" staging/
+          Copy-Item "server/ServerConfig.default.toml" staging/ServerConfig.toml
           Compress-Archive -Path staging/* -DestinationPath ${{ matrix.archive }}
 
       - name: Upload artifact

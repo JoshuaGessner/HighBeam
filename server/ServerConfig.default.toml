@@ -1,0 +1,23 @@
+[General]
+Name = "My HighBeam Server"
+Port = 18860
+MaxPlayers = 20
+MaxCarsPerPlayer = 3
+Map = "/levels/gridmap_v2/info.json"
+Description = "A HighBeam server"
+ResourceFolder = "Resources"
+
+[Auth]
+Mode = "open"
+MaxAuthAttempts = 5
+AuthTimeoutSec = 30
+
+[Network]
+TickRate = 20
+UdpBufferSize = 65535
+TcpKeepAliveSec = 15
+
+[Logging]
+Level = "info"
+LogFile = "server.log"
+LogChat = true
