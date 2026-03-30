@@ -9,16 +9,15 @@ HighBeam is an open-source multiplayer mod and server for BeamNG.drive that enab
 ## Key Features
 
 - **No auth keys** — Servers are self-contained. No third-party accounts or API keys required.
-- **No launcher** — The client mod runs directly inside BeamNG.drive. No external programs needed.
-- **Direct connect** — Join any server by IP address, or browse optional community relays.
+- **Lightweight launcher** — A small Rust binary syncs mods, installs the client mod, launches the game, and exits. No always-running proxy.
+- **Direct connect** — The in-game client mod connects directly to servers by IP. No traffic proxied through the launcher.
 - **Server-side plugins** — Lua 5.4 scripting for server customization (chat commands, game modes, economy).
 - **Documented protocol** — The network protocol is fully specified and versioned.
 
 ## Architecture
 
 | Component | Technology | Directory |
-|-----------|-----------|-----------|
-| Client mod | Lua (LuaJIT, via BeamNG) | `client/` |
+|-----------|-----------|-----------|| Launcher | Rust (CLI) | `launcher/` || Client mod | Lua (LuaJIT, via BeamNG) | `client/` |
 | Server binary | Rust | `server/` |
 | Network | TCP (reliable) + UDP (fast sync) | — |
 | Server plugins | Lua 5.4 | `server/plugins/` |
@@ -27,6 +26,9 @@ HighBeam is an open-source multiplayer mod and server for BeamNG.drive that enab
 
 | Component | Platform | Status |
 |-----------|----------|--------|
+| Launcher | Windows (x86_64) | Supported |
+| Launcher | Linux (x86_64, aarch64) | Supported |
+| Launcher | macOS (x86_64, aarch64) | Supported |
 | Server | Windows (x86_64) | Supported |
 | Server | Linux (x86_64, aarch64) | Supported |
 | Server | macOS (x86_64, aarch64) | Supported |
@@ -49,6 +51,7 @@ All project docs live in `docs/`. Start with the index:
 | Doc | Content |
 |-----|---------|
 | [Architecture Overview](docs/architecture/OVERVIEW.md) | System design, components, security model |
+| [Launcher Architecture](docs/architecture/LAUNCHER.md) | Mod sync, file transfer, caching |
 | [Client Architecture](docs/architecture/CLIENT.md) | BeamNG mod structure, subsystems |
 | [Server Architecture](docs/architecture/SERVER.md) | Rust server design, plugin API |
 | [Protocol Spec](docs/architecture/PROTOCOL.md) | TCP/UDP packet formats, connection flow |
@@ -69,10 +72,9 @@ cargo build --release
 
 ### Client (Planned)
 
-1. Build the client mod zip from `client/`
-2. Place it in `%LOCALAPPDATA%/BeamNG.drive/mods/`
-3. Launch BeamNG.drive
-4. Use the HighBeam UI to connect to a server
+1. Run the HighBeam launcher: `./highbeam-launcher --server 127.0.0.1:18860`
+2. The launcher syncs mods, installs the client mod, and launches BeamNG.drive
+3. Use the HighBeam UI in-game to connect to the server
 
 ## Contributing
 

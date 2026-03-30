@@ -14,7 +14,8 @@ The HighBeam client is a BeamNG.drive mod written in Lua. It runs inside BeamNG'
 - Sending/receiving vehicle state (position, rotation, velocity, configuration)
 - Spawning, updating, and removing remote player vehicles
 - Chat, player list, and connection UI
-- Downloading server-required mods
+
+> **Note:** Mod downloading and installation is handled by the **HighBeam Launcher** before the game starts. The client mod has no file I/O responsibilities for mod management. See [LAUNCHER.md](LAUNCHER.md) for the launcher architecture.
 
 ---
 
@@ -198,4 +199,4 @@ highbeam.zip/
     └── app.css
 ```
 
-This zip is what gets committed under `client/` in the repo and can be installed by dropping into `%APPDATA%/Local/BeamNG.drive/mods/` or served by a HighBeam server.
+This zip is what gets committed under `client/` in the repo. The **HighBeam Launcher** installs it into `%LOCALAPPDATA%/BeamNG.drive/mods/` automatically.

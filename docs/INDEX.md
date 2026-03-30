@@ -32,6 +32,7 @@
 | Document | Purpose | Read When... |
 |----------|---------|-------------|
 | [OVERVIEW.md](architecture/OVERVIEW.md) | High-level system architecture, component relationships, design philosophy | Starting the project, onboarding, or making cross-cutting decisions |
+| [LAUNCHER.md](architecture/LAUNCHER.md) | Launcher architecture, mod sync protocol, file transfer, caching | Writing or modifying launcher code, mod distribution |
 | [CLIENT.md](architecture/CLIENT.md) | Client-side BeamNG mod architecture (Lua) | Writing or modifying client mod code |
 | [SERVER.md](architecture/SERVER.md) | Server binary architecture (Rust) | Writing or modifying server code |
 | [PROTOCOL.md](architecture/PROTOCOL.md) | Network protocol specification (TCP/UDP) | Adding new packet types, debugging networking, or working on client-server communication |

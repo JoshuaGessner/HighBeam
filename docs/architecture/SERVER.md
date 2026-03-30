@@ -336,7 +336,7 @@ cargo build --release
 ```
 Resources/
 ├── Client/
-│   └── (mod .zip files served to connecting clients)
+│   └── (mod .zip files served to connecting launchers)
 └── Server/
     ├── MyPlugin/
     │   └── main.lua

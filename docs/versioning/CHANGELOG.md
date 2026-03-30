@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Launcher architecture** (`docs/architecture/LAUNCHER.md`): new component — lightweight Rust CLI that syncs mods via raw binary TCP, installs the client mod, launches BeamNG.drive, and exits
+- Launcher mod transfer protocol: `mod_list`/`mod_request` JSON handshake + raw binary file stream (0.002% overhead vs 33% for base64)
+- Mod cache design with SHA-256 deduplication across servers (`~/.highbeam/cache/`)
+- Launcher added to VERSION_PLAN.md v0.3.0 milestone with full task list
+
+### Changed
+- Architecture is now **three components**: launcher, client mod, server (was two)
+- Mod distribution moved from in-game client to pre-launch launcher (BeamNG Lua sandbox prevents file writes)
+- PROTOCOL.md: removed `mod_data` packet, replaced `mod_info` with `mod_list`, added launcher transfer protocol section
+- BUILD_GUIDE.md §3.3 rewritten for launcher-based mod distribution
+- OVERVIEW.md, CLIENT.md, SERVER.md, README.md updated to reflect launcher
+- BEAMMP_RESEARCH.md comparison table updated (lightweight launcher vs always-running proxy)
+
 ## [0.2.0] — Vehicle Sync & UDP Position Relay
 
 ### Added

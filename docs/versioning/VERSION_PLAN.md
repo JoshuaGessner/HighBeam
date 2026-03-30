@@ -112,36 +112,51 @@ The server and client negotiate protocol version during the handshake. Mismatche
 
 ### v0.3.0 — Chat, Mods & Auth (Alpha)
 
-**Goal:** Complete the core multiplayer experience with chat, mod sync, and proper auth.
+**Goal:** Complete the core multiplayer experience with chat, mod sync via launcher, and proper auth.
 
 **Server:**
 - [ ] Chat message relay
 - [ ] Password auth mode
 - [ ] Allowlist auth mode
-- [ ] Mod file serving from Resources/Client/
+- [ ] Mod file serving from Resources/Client/ (raw binary TCP to launcher)
+- [ ] `mod_list` endpoint — SHA-256 manifest of available mods
+- [ ] Raw binary file transfer for mod data (no base64)
 - [ ] MaxPlayers enforcement
 - [ ] MaxCarsPerPlayer enforcement
 - [ ] Rate limiting on auth attempts
 
+**Launcher:**
+- [ ] Scaffold Rust binary (Cargo project under `launcher/`)
+- [ ] TOML config loading (`LauncherConfig.toml`)
+- [ ] Connect to server, request `mod_list`
+- [ ] Compare mod hashes against local cache (`~/.highbeam/cache/`)
+- [ ] Download missing mods via raw binary TCP transfer
+- [ ] SHA-256 verification of downloaded files
+- [ ] Install mods into BeamNG userfolder (`mods/`)
+- [ ] Install/update HighBeam client mod
+- [ ] Launch BeamNG.drive process
+- [ ] CLI interface (`--server`, `--no-launch`, `--clear-cache`)
+
 **Client:**
 - [ ] Chat UI (send/receive messages)
 - [ ] Player list display
-- [ ] Mod download on connect
 - [ ] Connection status indicators
 - [ ] Reconnection with backoff
+- [ ] *(Mods pre-synced by launcher before game starts)*
 
 **Protocol:**
 - [ ] ChatMessage packets
-- [ ] ModInfo, ModData packets
+- [ ] Launcher mod transfer protocol (mod_list / mod_request JSON + raw binary stream)
 - [ ] Kick packet
 - [ ] ServerMessage packet
 
-**Deliverable:** Full multiplayer session with chat, modded vehicles, and password-protected servers.
+**Deliverable:** Full multiplayer session with chat, modded vehicles, and password-protected servers. Launcher handles mod sync before game launch.
 
 **Acceptance Criteria:**
 - Chat messages relay between all connected players
 - Password mode rejects incorrect passwords, allowlist mode rejects unlisted users
-- Mods from Resources/Client/ are served to connecting clients
+- Launcher downloads mods from server via raw binary TCP before launching the game
+- Mod cache deduplicates files by SHA-256 across servers
 - Rate limiting blocks auth brute force and chat spam
 - MaxPlayers and MaxCarsPerPlayer limits are enforced
 
@@ -286,6 +301,7 @@ Ideas for future development (not committed):
 2. CHANGELOG.md updated with all changes
 3. Version bumped in:
    - `server/Cargo.toml`
+   - `launcher/Cargo.toml`
    - Client mod `info.json`
    - Protocol version (if changed)
 4. Documentation updated for new features

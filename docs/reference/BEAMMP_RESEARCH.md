@@ -37,7 +37,7 @@ The launcher:
 - Creates a local TCP proxy that the in-game Lua mod connects to
 - Forwards traffic between the in-game mod and the remote server
 
-**HighBeam eliminates the launcher entirely** — the client mod connects directly to the server from within BeamNG.drive.
+**HighBeam replaces this with a lightweight one-shot launcher** — it syncs mods and launches the game, then exits. The in-game client mod connects directly to the server (no proxy).
 
 ### Centralized Authentication
 
@@ -243,7 +243,7 @@ In-game Lua mod ←→ BeamMP Launcher (local proxy) ←→ BeamMP Server
 
 The launcher acts as a TCP proxy on localhost. The in-game mod connects to the launcher, not directly to the server.
 
-**HighBeam eliminates this proxy** — the in-game Lua mod connects directly to the server via TCP + UDP sockets.
+**HighBeam eliminates this proxy** — the launcher syncs mods before launch and then exits. The in-game Lua mod connects directly to the server via TCP + UDP sockets.
 
 ---
 
@@ -280,7 +280,7 @@ The launcher acts as a TCP proxy on localhost. The in-game mod connects to the l
 
 ### For Players
 1. **Discord required** — Must have a Discord account to play (non-guest)
-2. **Launcher required** — Separate binary must run alongside the game
+2. **Launcher required** — Separate proxy binary must run alongside the game at all times
 3. **No direct mod integration** — Launcher injects the mod, can't just drop a zip in mods folder
 
 ### For Plugin Developers
@@ -298,7 +298,7 @@ The launcher acts as a TCP proxy on localhost. The in-game mod connects to the l
 | Centralized auth | Server-local auth (open/password/allowlist) |
 | Auth key requirement | No auth keys — servers are self-contained |
 | Discord dependency | No account requirements |
-| Launcher proxy | Direct game-to-server connection |
+| Launcher proxy (always-running) | Lightweight one-shot launcher (sync mods → launch → exit). No runtime proxy. |
 | Undocumented protocol | Fully documented, versioned protocol |
 | C++ server | Rust server (memory safety, async) |
 | Lua 5.3 server plugins | Lua 5.4 with broader API |

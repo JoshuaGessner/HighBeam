@@ -13,7 +13,7 @@ HighBeam uses a dual-channel protocol:
 
 | Channel | Transport | Purpose |
 |---------|-----------|---------|
-| **Reliable** | TCP | Authentication, vehicle spawn/edit/delete, chat, plugin events, mod sync |
+| **Reliable** | TCP | Authentication, vehicle spawn/edit/delete, chat, plugin events |
 | **Fast** | UDP | Position/rotation/velocity updates (high frequency) |
 
 Both channels share the same server port (default `18860`).
@@ -96,7 +96,7 @@ Client                                  Server
   │       player_id: 3,                   │
   │       session_token: "abc123..."}     │
   │                                       │
-  │  [If mods_required, download mods]    │
+  │  [Mods already synced by launcher]    │
   │                                       │
   │──── Ready ──────────────────────────►│
   │     {type: "ready"}                   │
@@ -144,8 +144,7 @@ Client                                  Server
 | `server_message` | System message | `message` |
 | `plugin_event` | Custom plugin event | `event`, `data` |
 | `kick` | Player is being kicked | `reason` |
-| `mod_info` | Mod download info | `name`, `size`, `hash` |
-| `mod_data` | Mod file chunk | `name`, `offset`, `data` (base64) |
+| `mod_list` | Mod manifest (names, sizes, hashes) for launcher pre-sync | `mods[]` (each: `name`, `size`, `hash`) |
 | `vehicle_persist` | Vehicle frozen (owner went offline) | `player_id`, `vehicle_id`, `player_name` |
 | `vehicle_unpersist` | Vehicle restored (owner reconnected) | `player_id`, `vehicle_id` |
 
@@ -154,7 +153,7 @@ Client                                  Server
 | Type | Description | Payload Fields |
 |------|-------------|---------------|
 | `auth_request` | Authentication | `username`, `password` (optional) |
-| `ready` | Client ready after mod sync | (none) |
+| `ready` | Client ready (mods pre-synced by launcher) | (none) |
 | `vehicle_spawn` | Local vehicle spawned | `vehicle_id`, `data` (config JSON) |
 | `vehicle_edit` | Local vehicle edited | `vehicle_id`, `data` (config JSON) |
 | `vehicle_delete` | Local vehicle deleted | `vehicle_id` |
@@ -201,6 +200,60 @@ Total: 16 + 1 + 2 + 2 + 12 + 16 + 12 + 4 = **65 bytes per relayed update**
 
 ---
 
+## Launcher Mod Transfer Protocol
+
+Mod transfers happen **before the game launches**, between the HighBeam Launcher and the server. This uses a dedicated TCP connection separate from the in-game protocol.
+
+### Connection Flow
+
+```
+Launcher                                Server
+  │                                       │
+  │──── TCP Connect ─────────────────────►│
+  │                                       │
+  │◄──── ModList ────────────────────────│
+  │      {type: "mod_list",               │
+  │       mods: [                         │
+  │         {name, size, hash}, ...       │
+  │       ]}                              │
+  │                                       │
+  │──── ModRequest ──────────────────────►│
+  │     {type: "mod_request",             │
+  │      names: ["map.zip", "car.zip"]}   │
+  │                                       │
+  │◄──── Raw binary stream ──────────────│
+  │      (per-file framing, see below)    │
+  │                                       │
+```
+
+### Binary File Transfer Frame
+
+For each requested mod, the server sends a binary frame followed by the raw file data:
+
+```
+┌───────────────────┬────────────────┬────────────────────────────┐
+│  Name length (2B) │  Name (UTF-8)  │  File size (8B, u64 LE)    │
+│  uint16 LE        │  variable      │                            │
+├───────────────────┴────────────────┴────────────────────────────┤
+│                  Raw file bytes (streamed)                       │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+- **No base64 or JSON encoding** — raw bytes, zero overhead
+- The launcher writes directly to a temp file as data arrives (no memory buffering for large mods)
+- After the full file is received, the launcher verifies the SHA-256 hash
+- On hash mismatch, the file is discarded and the launcher reports an error
+- Multiple files are sent sequentially in a single TCP stream
+
+### Transfer Efficiency
+
+| Approach | 500 MB map mod | Overhead |
+|----------|---------------|----------|
+| Base64-in-JSON (original plan) | ~665 MB on wire + JSON framing + Lua string allocation | ~33% |
+| Raw binary TCP (current plan) | ~500 MB on wire + 10-byte header | ~0.002% |
+
+---
+
 ## Bandwidth Estimation
 
 At 20 Hz position updates:
@@ -230,6 +283,7 @@ At 20 Hz position updates:
 
 ## Future Considerations
 
+- **v0.3.0**: Launcher mod transfer protocol (raw binary TCP)
 - **v0.3.0+**: Optional TLS for TCP channel
 - **v0.4.0**: Vehicle persistence packets (`vehicle_persist`, `vehicle_unpersist`)
 - **v0.5.0**: Binary TCP packet format (MessagePack) for vehicle spawn/edit/delete and other frequent packets

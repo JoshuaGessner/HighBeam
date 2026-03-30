@@ -9,8 +9,9 @@
 
 HighBeam is an open-source multiplayer framework for BeamNG.drive that provides:
 
-1. **A client mod** — A Lua-based BeamNG.drive mod that handles in-game multiplayer UI, vehicle synchronization, and communication with the server.
-2. **A server binary** — A standalone Rust application that manages player connections, game state, vehicle data relay, and server-side Lua plugins.
+1. **A launcher** — A lightweight Rust CLI that installs/updates the client mod, downloads server-required mods, and launches BeamNG.drive.
+2. **A client mod** — A Lua-based BeamNG.drive mod that handles in-game multiplayer UI, vehicle synchronization, and communication with the server.
+3. **A server binary** — A standalone Rust application that manages player connections, game state, vehicle data relay, and server-side Lua plugins.
 
 ### Core Philosophy
 
@@ -19,6 +20,7 @@ HighBeam is designed as a **decentralized alternative** to existing multiplayer 
 - **No centralized authentication** — Servers issue their own tokens. No auth keys from a central authority.
 - **No enforced server list** — Players connect via direct IP or optional community-run relay/discovery services.
 - **Self-contained servers** — A server binary runs independently with zero external service dependencies.
+- **Lightweight launcher** — Unlike BeamMP's always-running proxy, HighBeam's launcher only handles mod management and game launch — it exits once the game is running.
 - **Extensible by default** — Both client and server expose plugin APIs for community customization.
 - **Protocol transparency** — The network protocol is fully documented and versioned.
 - **Cross-platform server** — The server binary runs on Windows, Linux, and macOS.
@@ -29,6 +31,7 @@ HighBeam is designed as a **decentralized alternative** to existing multiplayer 
 
 | Component | Supported Platforms | Notes |
 |-----------|-------------------|-------|
+| **Launcher** | Windows (x86_64) | Runs alongside BeamNG.drive. Linux/Proton support possible in future. |
 | **Server binary** | Windows (x86_64), Linux (x86_64, aarch64), macOS (x86_64, aarch64) | Primary targets: Windows and Linux. macOS supported for development. |
 | **Client mod** | Windows (via BeamNG.drive) | BeamNG.drive is a Windows application. Linux users can run it via Proton/Wine. |
 
@@ -39,6 +42,16 @@ The server is designed to be hosted on **dedicated Linux servers** (headless mod
 ## System Architecture
 
 ```
+┌─────────────────────────────────────────────────────────┐
+│                 HighBeam Launcher (Rust CLI)             │
+│  ┌─────────────────────────────────────────────────┐    │
+│  │  Install/update client mod → BeamNG mods dir    │    │
+│  │  Connect to server → download required mods     │    │
+│  │  Launch BeamNG.drive → exit                     │    │
+│  └─────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────┘
+          │ (runs once, exits after game launch)
+          ▼
 ┌─────────────────────────────────────────────────────────┐
 │                    BeamNG.drive                          │
 │  ┌───────────────────────────────────────────────────┐  │
@@ -57,6 +70,7 @@ The server is designed to be hosted on **dedicated Linux servers** (headless mod
 └─────────────────────┼───────────────────────────────────┘
                       │
           TCP (reliable)  +  UDP (state sync)
+          (direct connection — no proxy)
                       │
 ┌─────────────────────┼───────────────────────────────────┐
 │            HighBeam Server Binary                        │
@@ -91,6 +105,21 @@ The server is designed to be hosted on **dedicated Linux servers** (headless mod
 
 ## Component Breakdown
 
+### Launcher (`launcher/`)
+
+The launcher is a lightweight Rust CLI that runs **before** BeamNG.drive launches. Unlike BeamMP’s launcher, it is **not a network proxy** and does **not stay running** during gameplay.
+
+| Responsibility | Description |
+|---------------|-------------|
+| **Client mod install** | Installs or updates the HighBeam client mod zip into BeamNG’s mods directory |
+| **Mod sync** | Connects to the target server, queries required mods, downloads missing ones via raw binary TCP |
+| **Mod caching** | Maintains a local cache with SHA-256 hashes to skip re-downloading unchanged mods |
+| **Game launch** | Launches BeamNG.drive with the correct mod configuration, then exits |
+
+The launcher is the **only component that writes to the filesystem** outside the game. The in-game client mod has no file I/O responsibilities for mod management.
+
+See [LAUNCHER.md](LAUNCHER.md) for full details.
+
 ### Client Mod (`client/`)
 
 The client mod runs inside BeamNG.drive using its Lua extension system. It is responsible for:
@@ -101,7 +130,6 @@ The client mod runs inside BeamNG.drive using its Lua extension system. It is re
 | **Vehicle sync** | Sends local vehicle state (position, rotation, velocity, config) and applies remote vehicle state |
 | **Event bridge** | Routes events between server and local game (chat, spawns, edits, deletions) |
 | **UI** | Server browser (direct connect), chat, player list, connection status |
-| **Mod distribution** | Downloads server-required mods on connect |
 
 See [CLIENT.md](CLIENT.md) for full details.
 
@@ -143,14 +171,14 @@ See [PROTOCOL.md](PROTOCOL.md) for the full protocol specification.
 |--------|--------|----------|
 | **Authentication** | Centralized — requires auth key from BeamMP Keymaster (Discord login) | Decentralized — server issues its own tokens, optional password protection |
 | **Server list** | Centralized — servers must register with BeamMP backend to appear in list | Optional — community relay for discovery, or direct IP connect |
-| **Launcher** | Separate C++ launcher binary that bridges game ↔ server | No separate launcher — client mod connects directly from within BeamNG |
+| **Launcher** | Separate C++ launcher binary that bridges game ↔ server (always-running proxy) | Lightweight Rust CLI — syncs mods, launches game, then exits (not a proxy) |
 | **Server binary** | C++ with embedded Lua 5.3 | Rust with embedded Lua 5.4 |
 | **Server management** | Terminal-only (headless console) | Built-in desktop GUI (egui) with system tray, plus headless mode |
 | **Vehicle persistence** | Not supported natively | Admin-toggled per-player vehicle persistence (SQLite-backed) |
 | **Protocol** | Undocumented binary protocol through launcher proxy | Fully documented, versioned protocol with direct game connection |
 | **Plugin API** | Lua plugin system with MP.* functions | Compatible Lua plugin system with extended HB.* API namespace |
 | **Guest support** | Centralized guest system via BeamMP backend | Server-local guest policy (configurable per-server) |
-| **Mod sync** | Mods served from Resources/Client via launcher | Mods served directly from server to client mod |
+| **Mod sync** | Mods served from Resources/Client via launcher proxy | Launcher downloads mods via raw binary TCP before game launch; no in-game file I/O |
 
 ---
 
@@ -229,8 +257,7 @@ Player A (Client)           Server              Player B (Client)
 ## Technology Stack Summary
 
 | Component | Technology | Rationale |
-|-----------|-----------|-----------|
-| Server binary | Rust | Memory safety without GC, excellent async networking (tokio), cross-platform |
+|-----------|-----------|-----------|| Launcher | Rust | Same toolchain as server, native filesystem access, small binary size || Server binary | Rust | Memory safety without GC, excellent async networking (tokio), cross-platform |
 | Server plugins | Lua 5.4 (via mlua) | Familiar to BeamNG modders, sandboxed execution, hot-reloadable |
 | Client mod | Lua (LuaJIT via BeamNG) | Required by BeamNG.drive's extension system — runs in GELUA (main/graphics thread) |
 | Client UI | HTML/JS/CSS (BeamNG UI apps) | BeamNG's native UI app framework |

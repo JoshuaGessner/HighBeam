@@ -1220,19 +1220,36 @@ pub fn validate_auth(mode: &AuthMode, username: &str, password: Option<&str>) ->
 **Password handling on first run:**
 When `Mode = "password"` and the config contains a plaintext password, hash it with Argon2 and write the hash back to the config file. Log a message explaining the password was hashed.
 
-### 3.3 — Mod Distribution
+### 3.3 — Mod Distribution (Launcher)
 
-**Server-side:**
-- On `Ready` received, check if client needs mods from `Resources/Client/`
-- Send `ModInfo` packets: `{ type: "mod_info", name: "mod.zip", size: 12345, hash: "sha256..." }`
-- Client responds with which mods it needs
-- Server sends `ModData` packets: chunked binary (base64 in JSON for v0.3.0, raw TCP stream in v0.5.0)
+> **Mod downloading is handled by the HighBeam Launcher, not the in-game client mod.**
+> BeamNG's GE Lua runtime does not provide reliable filesystem write access, so a native
+> binary is required to download and install mod .zip files.
 
-**Client-side:**
-- Compare mod hashes with locally cached mods
-- Download missing mods, save to BeamNG mods directory
-- Enable downloaded mods in BeamNG's mod system
-- Show download progress in connection UI
+**Server-side (mod serving endpoint):**
+- Server scans `Resources/Client/` on startup, computes SHA-256 hash for each `.zip` file
+- When a launcher connects to the mod transfer endpoint, server sends `mod_list` — a JSON packet listing all required mods with name, size, and hash
+- Launcher responds with `mod_request` listing which mods it needs (hash comparison eliminates already-cached mods)
+- Server streams requested mods as raw binary TCP — no base64, no JSON wrapping
+- Each file is framed with: `[name_len: u16][name: UTF-8][file_size: u64][raw bytes]`
+
+**Launcher-side (mod sync):**
+- Launcher connects to the server's mod transfer endpoint before launching the game
+- Receives `mod_list`, compares SHA-256 hashes against local cache (`~/.highbeam/cache/`)
+- For each missing/changed mod, adds it to the download queue
+- Downloads are streamed directly to temp files (no memory buffering — critical for 500MB+ maps)
+- After each download, verifies SHA-256 hash before moving to BeamNG's mods directory
+- Shows download progress (file name, bytes received, percentage)
+- After all mods are synced, installs/updates the HighBeam client mod zip
+- Launches BeamNG.drive and exits
+
+**Why raw binary TCP instead of base64-in-JSON:**
+- A 500 MB map mod would become ~665 MB with base64 encoding (33% overhead)
+- JSON string allocation in Lua would cause massive GC pressure
+- The in-game client polls network at frame rate (8 KB/frame at 60fps ≈ 480 KB/s — too slow)
+- Raw binary TCP from a native launcher saturates the network connection with zero overhead
+
+See [LAUNCHER.md](architecture/LAUNCHER.md) for the full launcher architecture.
 
 ### 3.4 — Rate Limiting
 
@@ -1286,7 +1303,7 @@ $scope.$on('HighBeamChatMessage', function(event, data) {
 | Password auth | Set Mode="password" | Client must enter correct password to connect |
 | Wrong password | Enter incorrect password | Client gets "Invalid password" error, not connected |
 | Allowlist | Set Mode="allowlist" | Only listed usernames can connect |
-| Mod download | Server has mod in Resources/Client/ | Client downloads and enables mod on connect |
+| Mod download | Server has mod in Resources/Client/ | Launcher downloads mod before game launch, mod is available in-game |
 | Rate limit auth | Send 6 rapid auth attempts | 6th attempt blocked, IP temporarily banned |
 | Rate limit chat | Send 10 messages in 1 second | Messages after 5th are dropped |
 | Max players | Set MaxPlayers=2, connect 3 clients | 3rd client rejected with "Server full" |
