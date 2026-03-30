@@ -6,6 +6,7 @@ use anyhow::Result;
 use std::sync::Arc;
 
 mod config;
+mod mods;
 mod net;
 mod session;
 mod state;
@@ -32,6 +33,30 @@ async fn main() -> Result<()> {
     let config = Arc::new(config);
     let sessions = Arc::new(session::manager::SessionManager::new());
     let world = Arc::new(state::world::WorldState::new());
+
+    // Build mod manifest once at startup (Phase 3 groundwork for launcher sync).
+    let mod_manifest = Arc::new(mods::build_manifest(&config.general.resource_folder)?);
+    tracing::info!(
+        mod_count = mod_manifest.len(),
+        resource_folder = %config.general.resource_folder,
+        "Mod manifest loaded"
+    );
+
+    // Start launcher mod transfer endpoint (separate TCP listener).
+    let mod_sync_port = config.network.resolved_mod_sync_port(config.general.port);
+    let mod_resource_folder = Arc::new(config.general.resource_folder.clone());
+    let mod_manifest_for_task = mod_manifest.clone();
+    tokio::spawn(async move {
+        if let Err(e) = net::mod_transfer::start_listener(
+            mod_sync_port,
+            mod_resource_folder,
+            mod_manifest_for_task,
+        )
+        .await
+        {
+            tracing::error!(error = %e, port = mod_sync_port, "Mod transfer listener error");
+        }
+    });
 
     // Start UDP receiver in background
     let udp_sessions = sessions.clone();

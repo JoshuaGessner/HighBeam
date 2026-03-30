@@ -1,0 +1,9 @@
+# HighBeam launcher configuration
+
+server_addr = "127.0.0.1:18860"
+# Optional explicit endpoint for mod sync. If unset, launcher uses server_addr with port + 1.
+mod_sync_addr = ""
+cache_dir = "~/.highbeam/cache"
+beamng_exe = ""
+beamng_userfolder = ""
+connect_timeout_sec = 10

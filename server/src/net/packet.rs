@@ -49,6 +49,10 @@ pub enum TcpPacket {
     #[serde(rename = "kick")]
     Kick { reason: String },
 
+    /// Server sends available mod manifest to a launcher.
+    #[serde(rename = "mod_list")]
+    ModList { mods: Vec<ModDescriptor> },
+
     // ── Client → Server ──────────────────────────────────────────────
     /// Client authentication request.
     #[serde(rename = "auth_request")]
@@ -61,6 +65,10 @@ pub enum TcpPacket {
     /// Client signals it is ready (handshake complete).
     #[serde(rename = "ready")]
     Ready {},
+
+    /// Launcher requests a subset of mods by filename.
+    #[serde(rename = "mod_request")]
+    ModRequest { names: Vec<String> },
 
     // ── Vehicle packets (Phase 2) ────────────────────────────────────
     /// A vehicle was spawned (client → server has no player_id; server → client fills it in).
@@ -122,6 +130,14 @@ pub struct VehicleInfo {
     pub position: [f32; 3],
     pub rotation: [f32; 4],
     pub velocity: [f32; 3],
+}
+
+/// Mod descriptor included in ModList.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModDescriptor {
+    pub name: String,
+    pub size: u64,
+    pub hash: String,
 }
 
 /// Encode a packet to its wire format: 4-byte LE length + JSON payload.
@@ -212,6 +228,17 @@ mod tests {
     }
 
     #[test]
+    fn test_mod_list_round_trip() {
+        round_trip(&TcpPacket::ModList {
+            mods: vec![ModDescriptor {
+                name: "my_map.zip".into(),
+                size: 123_456,
+                hash: "0123456789abcdef".into(),
+            }],
+        });
+    }
+
+    #[test]
     fn test_auth_request_round_trip() {
         round_trip(&TcpPacket::AuthRequest {
             username: "Player1".into(),
@@ -230,6 +257,13 @@ mod tests {
     #[test]
     fn test_ready_round_trip() {
         round_trip(&TcpPacket::Ready {});
+    }
+
+    #[test]
+    fn test_mod_request_round_trip() {
+        round_trip(&TcpPacket::ModRequest {
+            names: vec!["my_map.zip".into(), "car_pack.zip".into()],
+        });
     }
 
     #[test]
