@@ -156,9 +156,10 @@ async fn handle_connection(
             }
         }
         "allowlist" => {
-            let allowed = config.auth.allowlist.as_ref().is_some_and(|list| {
-                list.iter().any(|name| name.eq_ignore_ascii_case(&username))
-            });
+            let allowed =
+                config.auth.allowlist.as_ref().is_some_and(|list| {
+                    list.iter().any(|name| name.eq_ignore_ascii_case(&username))
+                });
             if !allowed {
                 tracing::warn!(%addr, name = %username, "Allowlist auth rejected");
                 let response = TcpPacket::AuthResponse {
