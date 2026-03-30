@@ -19,35 +19,40 @@ mod validation;
 async fn main() -> Result<()> {
     // Load config first (before complete logging setup)
     let config = config::ServerConfig::load()?;
+
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        config
+            .logging
+            .level
+            .parse()
+            .unwrap_or_else(|_| "info".into())
+    });
+
+    // _guard must live for the entire program so the file writer flushes.
+    let _guard;
     if !config.logging.log_file.is_empty() {
         let file_appender = tracing_appender::rolling::daily(".", &config.logging.log_file);
-        let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+        let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+        _guard = Some(guard);
 
-        let env_filter =
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                config
-                    .logging
-                    .level
-                    .parse()
-                    .unwrap_or_else(|_| "info".into())
-            });
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
 
-        tracing_subscriber::fmt()
-            .with_writer(non_blocking)
-            .with_ansi(false)
-            .with_env_filter(env_filter)
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_writer(std::io::stdout)
+                    .with_ansi(true),
+            )
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_writer(non_blocking)
+                    .with_ansi(false),
+            )
             .init();
     } else {
-        // Console-only logging
-        let env_filter =
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                config
-                    .logging
-                    .level
-                    .parse()
-                    .unwrap_or_else(|_| "info".into())
-            });
-
+        _guard = None;
         tracing_subscriber::fmt().with_env_filter(env_filter).init();
     }
 
