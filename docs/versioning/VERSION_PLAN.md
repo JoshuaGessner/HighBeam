@@ -177,11 +177,21 @@ The server and client negotiate protocol version during the handshake. Mismatche
 
 ---
 
-### v0.5.0 — Polish & Performance (Beta)
+### v0.5.0 — Server GUI & Polish (Beta)
 
-**Goal:** Production-quality stability, performance, and error handling.
+**Goal:** Graphical server management interface, production-quality stability, and performance.
 
 **Server:**
+- [ ] Server GUI (egui/eframe) with tabbed panel layout
+- [ ] Dashboard panel (player count, uptime, tick rate, bandwidth)
+- [ ] Player management panel (kick, ban, persistence toggle)
+- [ ] Map management panel (select active map from available maps)
+- [ ] Mod management panel (add/remove mods from Resources/Client/)
+- [ ] Plugin management panel (view, reload, error status)
+- [ ] Console panel (live log viewer, Lua command injection)
+- [ ] Settings panel (edit ServerConfig.toml values at runtime)
+- [ ] System tray integration (minimize-to-tray, tray context menu)
+- [ ] `--headless` CLI flag to disable GUI (for Docker / systemd)
 - [ ] Optional TLS for TCP channel
 - [ ] Binary TCP packet format (replace JSON with MessagePack or custom)
 - [ ] Delta compression for vehicle config updates
@@ -195,9 +205,14 @@ The server and client negotiate protocol version during the handshake. Mismatche
 - [ ] Connection quality indicator
 - [ ] Settings UI (update rate, interpolation toggle)
 
-**Deliverable:** Stable enough for community servers with 10-20 players.
+**Deliverable:** Server operators have a desktop GUI for managing their server. Stable enough for community servers with 10-20 players.
 
 **Acceptance Criteria:**
+- GUI launches by default, all panels functional
+- Maps and mods can be added/removed from the GUI
+- Settings changes apply at runtime without restart
+- Minimize-to-tray works on Windows and Linux
+- `--headless` flag starts server without GUI
 - 20-player server uses < 2Mbps total bandwidth
 - Remote vehicle movement is smooth under 5% packet loss
 - TLS connection works when configured
@@ -237,11 +252,13 @@ The server and client negotiate protocol version during the handshake. Mismatche
 - All v0.x features stable and tested
 - Protocol version finalized (breaking changes require major version bump after this)
 - Plugin API stable (HB.* namespace frozen)
+- Security audit: all input validation, rate limiting, and auth paths reviewed
 - Documentation complete
 - Server builds for Windows and Linux
 - Client mod packaged and installable
 - At least one community relay running
 - Performance validated at 20+ players
+- Server GUI tested on Windows and Linux
 
 ---
 
@@ -257,6 +274,7 @@ Ideas for future development (not committed):
 - **Map voting** — Plugin + client UI for map rotation
 - **Vehicle permissions** — Per-player vehicle restrictions
 - **Bandwidth optimization** — Adaptive update rates based on distance/visibility
+- **Web dashboard** — Optional browser-based remote admin panel (separate from local GUI)
 
 ---
 

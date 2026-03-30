@@ -1266,9 +1266,9 @@ $scope.$on('HighBeamChatMessage', function(event, data) {
 
 ---
 
-## Phase 4 — Plugin System (v0.4.0)
+## Phase 4 — Plugin System & Vehicle Persistence (v0.4.0)
 
-**Goal:** Server operators can run Lua plugins that hook into game events.
+**Goal:** Server operators can run Lua plugins that hook into game events. Admins can enable vehicle persistence per player.
 
 ### 4.1 — Plugin Runtime
 
@@ -1420,7 +1420,112 @@ HB.RegisterEvent("onChatMessage", function(playerId, name, message)
 end)
 ```
 
-### 4.5 — Phase 4 Acceptance Tests
+### 4.5 — Vehicle Persistence System
+
+**Add `rusqlite = { version = "0.32", features = ["bundled"] }` to Cargo.toml.**
+
+**Create `server/src/state/persistence.rs`:**
+
+```rust
+pub struct PersistenceManager {
+    db: rusqlite::Connection,
+}
+
+impl PersistenceManager {
+    pub fn open(path: &Path) -> Result<Self> {
+        let db = rusqlite::Connection::open(path)?;
+        db.execute_batch("
+            CREATE TABLE IF NOT EXISTS persistent_players (
+                player_name TEXT PRIMARY KEY,
+                enabled     INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS persistent_vehicles (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                player_name TEXT NOT NULL,
+                config      TEXT NOT NULL,
+                pos_x       REAL NOT NULL,
+                pos_y       REAL NOT NULL,
+                pos_z       REAL NOT NULL,
+                rot_x       REAL NOT NULL,
+                rot_y       REAL NOT NULL,
+                rot_z       REAL NOT NULL,
+                rot_w       REAL NOT NULL,
+                map         TEXT NOT NULL,
+                FOREIGN KEY (player_name) REFERENCES persistent_players(player_name)
+            );
+        ")?;
+        Ok(Self { db })
+    }
+
+    pub fn is_persistent(&self, player_name: &str) -> bool { /* query persistent_players */ }
+    pub fn set_persistent(&self, player_name: &str, enabled: bool) -> Result<()> { /* upsert */ }
+    pub fn save_vehicles(&self, player_name: &str, vehicles: &[Vehicle], map: &str) -> Result<()> { /* insert */ }
+    pub fn load_vehicles(&self, map: &str) -> Result<Vec<PersistedVehicle>> { /* select by map */ }
+    pub fn clear_vehicles(&self, player_name: &str) -> Result<()> { /* delete by player */ }
+}
+```
+
+**Persistence flow:**
+
+1. **Admin toggles persistence** for a player via GUI, console command, or plugin API (`HB.SetPersistence(pid, true)`).
+2. **On player disconnect:** If persistence is enabled for that player:
+   - Save their vehicles to SQLite (config, position, map).
+   - Keep vehicles in `WorldState` but mark them as `persistent = true, frozen = true`.
+   - Broadcast `vehicle_persist` TCP packet to all clients so they know these vehicles are now static.
+   - Do NOT broadcast `vehicle_delete` for these vehicles.
+3. **Other players see frozen vehicles:** Clients receive the `vehicle_persist` packet and stop expecting position updates for those vehicles. Optionally render a visual indicator (e.g., dimmed name tag showing "(offline)").
+4. **On player reconnect:** Match by username. If persistent vehicles exist:
+   - Restore ownership in `WorldState`.
+   - Broadcast `vehicle_unpersist` to untag them as frozen.
+   - Resume normal position updates.
+5. **On map change:** Clear all persistent vehicles for the old map. Persistent vehicles are scoped to the map they were on.
+6. **On server restart:** Load persistent vehicles from SQLite on startup, spawn them as frozen in `WorldState`.
+
+**Add persistence API to `plugin/api.rs`:**
+```rust
+hb.set("SetPersistence", lua.create_function(|_, (pid, enabled): (u32, bool)| {
+    // Toggle persistence for player via PersistenceManager
+})?)?;
+hb.set("GetPersistence", lua.create_function(|_, pid: u32| {
+    // Return whether player has persistence enabled
+})?)?;
+hb.set("GetPersistentVehicles", lua.create_function(|_, ()| {
+    // Return table of all frozen persistent vehicles
+})?)?;
+```
+
+**Add new events to `plugin/events.rs`:**
+```rust
+OnPersistenceToggle { player_id: u32, enabled: bool },   // Cancellable
+OnVehiclePersisted { player_id: u32, vehicle_id: u16 },   // Informational
+OnVehicleRestored { player_id: u32, vehicle_id: u16 },    // Informational
+```
+
+**Client-side handling (`vehicles.lua`):**
+```lua
+M.persistVehicle = function(playerId, vehicleId)
+  local key = playerId .. "_" .. vehicleId
+  local rv = M.remoteVehicles[key]
+  if rv then
+    rv.frozen = true
+    rv.persistent = true
+    -- Stop interpolating, keep at last known position
+    -- Optionally show "(offline)" indicator
+  end
+end
+
+M.unpersistVehicle = function(playerId, vehicleId)
+  local key = playerId .. "_" .. vehicleId
+  local rv = M.remoteVehicles[key]
+  if rv then
+    rv.frozen = false
+    rv.persistent = false
+    -- Resume interpolation
+  end
+end
+```
+
+### 4.6 — Phase 4 Acceptance Tests
 
 | Test | How | Expected Result |
 |------|-----|-----------------|
@@ -1435,16 +1540,150 @@ end)
 | HB.GetPlayers | Plugin calls GetPlayers | Returns correct table of connected players |
 | Plugin isolation | Two plugins loaded | One plugin's error doesn't crash the other |
 | Hot reload | Modify plugin file, trigger reload | Plugin reloads without server restart |
+| Persistence toggle | Admin enables persistence for player | `HB.GetPersistence` returns true |
+| Persist on disconnect | Player with persistence disconnects | Vehicles remain visible and frozen |
+| Restore on reconnect | Same player reconnects | Vehicles restore to live ownership |
+| Persist survives restart | Restart server | Persistent vehicles reload from SQLite |
+| Map scope | Change map | Persistent vehicles from old map are cleared |
 
-**Commit:** `feat(server): Lua plugin system with HB.* API (v0.4.0)`
+**Commit:** `feat(server): Lua plugin system with HB.* API and vehicle persistence (v0.4.0)`
 
 ---
 
-## Phase 5 — Polish & Performance (v0.5.0)
+## Phase 5 — Server GUI & Performance (v0.5.0)
 
-**Goal:** Production-quality stability and performance optimizations.
+**Goal:** Graphical server management interface, production-quality stability, and performance optimizations.
 
-### 5.1 — Binary TCP Protocol
+### 5.1 — Server GUI (egui/eframe)
+
+**Add to Cargo.toml:**
+```toml
+eframe = "0.29"       # egui framework with native backend
+tray-icon = "0.19"    # System tray integration
+image = "0.25"        # Icon loading
+```
+
+**Create `server/src/gui/mod.rs`:**
+```rust
+pub mod app;
+pub mod panels;
+pub mod tray;
+```
+
+**Create `server/src/gui/app.rs`:**
+
+```rust
+use eframe::egui;
+
+pub struct HighBeamApp {
+    // Shared state references (via Arc):
+    sessions: Arc<SessionManager>,
+    world: Arc<WorldState>,
+    plugins: Arc<PluginManager>,
+    persistence: Arc<PersistenceManager>,
+    config: Arc<RwLock<ServerConfig>>,
+    // GUI state:
+    active_tab: Tab,
+    console_buffer: Vec<String>,
+    console_input: String,
+}
+
+#[derive(PartialEq)]
+enum Tab { Dashboard, Players, Maps, Mods, Plugins, Console, Settings }
+
+impl eframe::App for HighBeamApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        egui::TopBottomPanel::top("tabs").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.active_tab, Tab::Dashboard, "Dashboard");
+                ui.selectable_value(&mut self.active_tab, Tab::Players, "Players");
+                ui.selectable_value(&mut self.active_tab, Tab::Maps, "Maps");
+                ui.selectable_value(&mut self.active_tab, Tab::Mods, "Mods");
+                ui.selectable_value(&mut self.active_tab, Tab::Plugins, "Plugins");
+                ui.selectable_value(&mut self.active_tab, Tab::Console, "Console");
+                ui.selectable_value(&mut self.active_tab, Tab::Settings, "Settings");
+            });
+        });
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            match self.active_tab {
+                Tab::Dashboard => panels::dashboard::show(ui, &self.sessions, &self.world),
+                Tab::Players   => panels::players::show(ui, &self.sessions, &self.persistence),
+                Tab::Maps      => panels::maps::show(ui, &self.config),
+                Tab::Mods      => panels::mods::show(ui, &self.config),
+                Tab::Plugins   => panels::plugins::show(ui, &self.plugins),
+                Tab::Console   => panels::console::show(ui, &mut self.console_buffer, &mut self.console_input),
+                Tab::Settings  => panels::settings::show(ui, &self.config),
+            }
+        });
+
+        // Request repaint at 4 fps (GUI doesn't need high framerate)
+        ctx.request_repaint_after(std::time::Duration::from_millis(250));
+    }
+}
+```
+
+**Panel implementations (`gui/panels/`):**
+
+| Panel File | Key Features |
+|-----------|-------------|
+| `dashboard.rs` | Player count, uptime counter, tick rate display, bandwidth graph |
+| `players.rs` | Table of connected players with Kick/Ban buttons, persistence toggle checkbox per player |
+| `maps.rs` | List available maps from game files, select active map, show current map info |
+| `mods.rs` | List mods in `Resources/Client/`, drag-and-drop to add, delete button to remove |
+| `plugins.rs` | List loaded plugins with status (OK/Error), reload button per plugin |
+| `console.rs` | Scrollable log output, text input for Lua command injection, log level filter |
+| `settings.rs` | Editable fields for all `ServerConfig.toml` values, Apply button saves to disk |
+
+### 5.2 — System Tray
+
+**Create `server/src/gui/tray.rs`:**
+
+```rust
+use tray_icon::{TrayIcon, TrayIconBuilder, menu::*};
+
+pub fn create_tray(/* event sender */) -> Result<TrayIcon> {
+    let menu = Menu::new();
+    menu.append(&MenuItem::new("Show", true, None))?;
+    menu.append(&MenuItem::new("Quit", true, None))?;
+
+    TrayIconBuilder::new()
+        .with_menu(Box::new(menu))
+        .with_tooltip("HighBeam Server")
+        .with_icon(/* load icon */)
+        .build()
+}
+```
+
+**Behavior:**
+- Window close button → minimize to tray (not quit)
+- Tray "Show" → restore window
+- Tray "Quit" → graceful shutdown (save state, disconnect players, close DB)
+- Tray tooltip shows server name and player count
+
+### 5.3 — Headless Mode
+
+**CLI flag:** `--headless` or `Headless = true` in `ServerConfig.toml`.
+
+```rust
+// In main.rs:
+if config.general.headless || args.headless {
+    // Skip GUI, run server loop only
+    // Print status to terminal
+    server_loop(config, sessions, world, plugins).await?;
+} else {
+    // Start server in background tokio task
+    let server_handle = tokio::spawn(server_loop(...));
+    // Run eframe GUI on main thread (required by most OS windowing systems)
+    eframe::run_native("HighBeam Server", options, Box::new(|_cc| {
+        Ok(Box::new(HighBeamApp::new(sessions, world, plugins, persistence, config)))
+    }))?;
+}
+```
+
+> **Note:** `eframe` requires the main thread on macOS. Tokio's async runtime runs on background threads.
+
+### 5.4 — Binary TCP Protocol
 
 Replace JSON with a more efficient encoding for high-frequency TCP packets:
 - Keep JSON for `server_hello` and `auth_*` (human-debuggable handshake)
@@ -1454,7 +1693,7 @@ Replace JSON with a more efficient encoding for high-frequency TCP packets:
 
 > **Note:** UDP position updates are already binary from Phase 2. This phase targets TCP.
 
-### 5.2 — Advanced UDP Optimizations
+### 5.5 — Advanced UDP Optimizations
 
 Building on the binary UDP from Phase 2, add bandwidth intelligence:
 
@@ -1479,14 +1718,14 @@ Building on the binary UDP from Phase 2, add bandwidth intelligence:
 - Reduce error offsets exponentially each frame (0.9 for small errors, 0.85 for large)
 - Render at: simulation position + error offset
 
-### 5.3 — Delta Compression
+### 5.6 — Delta Compression
 
 For vehicle configs (which are large JSON blobs):
 - Track the last acknowledged config per vehicle per player
 - Send only the diff between current and acknowledged config
 - Fall back to full config if diff is larger than full
 
-### 5.4 — Optional TLS
+### 5.7 — Optional TLS
 
 ```rust
 // Add rustls or native-tls
@@ -1494,10 +1733,23 @@ For vehicle configs (which are large JSON blobs):
 // Client detects TLS from server_hello or uses a "tls://" connect prefix
 ```
 
-### 5.5 — Phase 5 Acceptance Tests
+### 5.8 — Phase 5 Acceptance Tests
 
 | Test | How | Expected Result |
 |------|-----|-----------------|
+| GUI launches | `cargo run` (no --headless) | Window opens with tabbed panels |
+| Dashboard | View dashboard panel | Shows player count, uptime, tick rate |
+| Player management | Click Kick on a player | Player is disconnected |
+| Persistence toggle | Toggle checkbox in Players panel | Player persistence state changes |
+| Map management | Select a different map in Maps panel | Server map config updates |
+| Mod management | Add a mod zip via Mods panel | Mod appears in Resources/Client/ |
+| Plugin management | Click Reload on a plugin | Plugin reloads without restart |
+| Console panel | Type Lua command | Command executes and output appears |
+| Settings panel | Change MaxPlayers, click Apply | Config saved, change takes effect |
+| Minimize to tray | Close window | Window hides, tray icon appears |
+| Restore from tray | Click "Show" in tray menu | Window restores |
+| Tray quit | Click "Quit" in tray menu | Graceful shutdown |
+| Headless mode | `cargo run -- --headless` | No window, server runs in terminal |
 | Binary TCP packets | Monitor bandwidth | Significant reduction vs JSON for vehicle events |
 | Priority accumulator | 20 players, varying distances | Nearby vehicles update more frequently |
 | At-rest savings | 10 parked vehicles | Bandwidth drops significantly |
@@ -1507,7 +1759,7 @@ For vehicle configs (which are large JSON blobs):
 | Config delta | Edit a vehicle | Only changed parts are sent |
 | 20-player load | Connect 20 clients | Server uses < 2Mbps total bandwidth |
 
-**Commit:** `perf(server,client): binary protocol, delta compression, visual smoothing (v0.5.0)`
+**Commit:** `feat(server): management GUI, system tray, performance optimizations (v0.5.0)`
 
 ---
 
@@ -1619,6 +1871,6 @@ HighBeam runs entirely in GELUA. We:
 | 1 | v0.1.0 | TCP handshake + auth | `tcp.rs`, `packet.rs`, `manager.rs`, `connection.lua` |
 | 2 | v0.2.0 | Vehicle sync (UDP) | `udp.rs`, `vehicle.rs`, `world.rs`, `vehicles.lua`, `state.lua` |
 | 3 | v0.3.0 | Chat, mods, auth modes | `auth.rs`, `chat.lua`, UI apps, mod distribution |
-| 4 | v0.4.0 | Plugin system | `runtime.rs`, `api.rs`, `events.rs`, example plugin |
-| 5 | v0.5.0 | Performance + TLS | Binary protocol, delta compression, jitter buffer |
+| 4 | v0.4.0 | Plugins + vehicle persistence | `runtime.rs`, `api.rs`, `events.rs`, `persistence.rs`, example plugin |
+| 5 | v0.5.0 | Server GUI + performance | `gui/app.rs`, `gui/tray.rs`, panels, binary protocol, delta compression |
 | 6 | v0.6.0 | Server discovery | Query protocol, relay registration, server browser |

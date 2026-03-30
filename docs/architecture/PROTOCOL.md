@@ -133,7 +133,7 @@ Client                                  Server
 |------|-------------|---------------|
 | `server_hello` | Server identity and info | `version`, `name`, `map`, `players`, `max_players`, `max_cars`, `mods_required[]` |
 | `auth_response` | Auth result | `success`, `player_id`, `session_token`, `error` (if failed) |
-| `world_state` | Full world snapshot on join | `players[]`, `vehicles[]` |
+| `world_state` | Full world snapshot on join | `players[]`, `vehicles[]` (includes persistent vehicles with `is_persistent` flag) |
 | `player_join` | Another player joined | `player_id`, `name` |
 | `player_leave` | Another player left | `player_id` |
 | `vehicle_spawn` | Remote vehicle spawned | `player_id`, `vehicle_id`, `data` (config JSON) |
@@ -146,6 +146,8 @@ Client                                  Server
 | `kick` | Player is being kicked | `reason` |
 | `mod_info` | Mod download info | `name`, `size`, `hash` |
 | `mod_data` | Mod file chunk | `name`, `offset`, `data` (base64) |
+| `vehicle_persist` | Vehicle frozen (owner went offline) | `player_id`, `vehicle_id`, `player_name` |
+| `vehicle_unpersist` | Vehicle restored (owner reconnected) | `player_id`, `vehicle_id` |
 
 ### Client → Server
 
@@ -229,6 +231,7 @@ At 20 Hz position updates:
 ## Future Considerations
 
 - **v0.3.0+**: Optional TLS for TCP channel
+- **v0.4.0**: Vehicle persistence packets (`vehicle_persist`, `vehicle_unpersist`)
 - **v0.5.0**: Binary TCP packet format (MessagePack) for vehicle spawn/edit/delete and other frequent packets
 - **v0.5.0+**: Advanced UDP optimizations (priority accumulator, at-rest flags, jitter buffer, visual smoothing)
 - **v0.5.0+**: Delta compression for vehicle config updates

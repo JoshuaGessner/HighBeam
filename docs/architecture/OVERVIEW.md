@@ -67,8 +67,12 @@ HighBeam is designed as a **decentralized alternative** to existing multiplayer 
 │  ┌─────────────────────────────────────────────────┐    │
 │  │              Config & Storage                    │    │
 │  │           (TOML config, SQLite/JSON)             │    │
-│  └─────────────────────────────────────────────────┘    │
-└──────────────────────────────────────────────────────────┘
+│  └─────────────────────────────────────────────────┘    ││                                                          │
+│  ┌───────────────────────────────────────────────────┐    │
+│  │             Management GUI (egui)                 │    │
+│  │   (Dashboard, Players, Maps, Mods, Settings)     │    │
+│  │            + System Tray Integration              │    │
+│  └───────────────────────────────────────────────────┘    │└──────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -101,7 +105,10 @@ The server is a standalone Rust binary. It is responsible for:
 | **Packet relay** | Forwards vehicle state and events between connected clients |
 | **Plugin runtime** | Embeds Lua 5.4 for server-side scripting/plugins |
 | **Mod hosting** | Serves client mods from `Resources/Client/` to connecting players |
-| **Configuration** | TOML-based server config |
+| **Vehicle persistence** | SQLite-backed storage for vehicles that persist when owners disconnect (admin-toggled per player) |
+| **Management GUI** | Built-in desktop interface (egui) for managing maps, mods, plugins, players, and settings |
+| **System tray** | Minimize-to-tray support with status icon and context menu |
+| **Configuration** | TOML-based server config, editable at runtime via GUI |
 
 See [SERVER.md](SERVER.md) for full details.
 
@@ -126,6 +133,8 @@ See [PROTOCOL.md](PROTOCOL.md) for the full protocol specification.
 | **Server list** | Centralized — servers must register with BeamMP backend to appear in list | Optional — community relay for discovery, or direct IP connect |
 | **Launcher** | Separate C++ launcher binary that bridges game ↔ server | No separate launcher — client mod connects directly from within BeamNG |
 | **Server binary** | C++ with embedded Lua 5.3 | Rust with embedded Lua 5.4 |
+| **Server management** | Terminal-only (headless console) | Built-in desktop GUI (egui) with system tray, plus headless mode |
+| **Vehicle persistence** | Not supported natively | Admin-toggled per-player vehicle persistence (SQLite-backed) |
 | **Protocol** | Undocumented binary protocol through launcher proxy | Fully documented, versioned protocol with direct game connection |
 | **Plugin API** | Lua plugin system with MP.* functions | Compatible Lua plugin system with extended HB.* API namespace |
 | **Guest support** | Centralized guest system via BeamMP backend | Server-local guest policy (configurable per-server) |
@@ -168,6 +177,17 @@ Client                              Server
 - UDP packets are authenticated via session token hash to prevent spoofing.
 - Server validates all client input — no trusting client-sent data blindly.
 
+### Security Enforcement
+
+> **Security is enforced strictly at every layer. There are no exceptions.**
+
+- All input from clients is treated as untrusted. Packet sizes, field values, string lengths, and JSON structure are validated before processing.
+- Rate limiting is applied to auth attempts, chat messages, vehicle spawns, and all other client-initiated actions.
+- Plugin sandboxing prevents access to `os.execute`, `io.popen`, and raw FFI. Plugins cannot escape their directory.
+- The server GUI is local-only (egui desktop rendering) — not a web server. No network-exposed admin surface.
+- Session tokens are cryptographically random and short-lived. Passwords are Argon2-hashed.
+- Resource limits (MaxPlayers, MaxCarsPerPlayer, max packet size) are always enforced.
+
 ---
 
 ## Data Flow: Vehicle Synchronization
@@ -202,7 +222,9 @@ Player A (Client)           Server              Player B (Client)
 | Server plugins | Lua 5.4 (via mlua) | Familiar to BeamNG modders, sandboxed execution, hot-reloadable |
 | Client mod | Lua (LuaJIT via BeamNG) | Required by BeamNG.drive's extension system — runs in GELUA (main/graphics thread) |
 | Client UI | HTML/JS/CSS (BeamNG UI apps) | BeamNG's native UI app framework |
+| Server GUI | egui/eframe (Rust) | Immediate-mode GUI, cross-platform, no web server dependency |
+| System tray | tray-icon (Rust) | Cross-platform tray integration for minimize-to-tray |
 | Network | TCP + UDP (custom protocol) | TCP for reliability, UDP for performance |
 | Config | TOML | Human-readable, well-supported in Rust ecosystem |
-| Storage | SQLite (optional) | Lightweight persistent storage for plugins |
+| Storage | SQLite (rusqlite) | Vehicle persistence and plugin data storage |
 | Build system | Cargo (Rust), zip (client mod) | Standard tooling for each ecosystem |

@@ -131,6 +131,7 @@ Manages the lifecycle of remote player vehicles in the game world.
 - Apply vehicle config edits (parts, paint, tuning)
 - Remove remote vehicles on disconnect or server command
 - Interpolate/extrapolate positions between UDP updates for smooth rendering
+- Handle persistent (frozen) vehicles — display static vehicles for offline players with an "(offline)" indicator
 
 **Interpolation Strategy:**
 - Buffer 2-3 position snapshots
