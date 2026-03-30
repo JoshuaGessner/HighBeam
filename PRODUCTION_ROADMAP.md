@@ -1,18 +1,29 @@
-# HighBeam Production Readiness: Phase 1 Complete
+# HighBeam Production Roadmap
 
-**Date:** 2026-03-30  
-**Status:** Phase 1 (Critical Fixes) - COMPLETE ✅  
-**Next:** Phase 2 (Error Handling & Client Stability)
+**Last Updated:** 2026-03-30  
+**Current Phase:** Phase 1 (Critical Fixes) - IMPLEMENTED ✅  
+**Next Phase:** Phase 2 (Error Handling & Client Stability)  
+**Target Completion:** Phase 1-2 (Testing Ready) by 2026-03-31
 
 ---
 
 ## Overview
 
-HighBeam has been hardened with critical production-level features. This document tracks the improvements made and outlines the path to full production readiness.
+HighBeam production hardening follows a 4-phase plan:
+- **Phase 1 ✅ IMPLEMENTED** - Critical server fixes (timeouts, validation, rate limiting, logging)
+- **Phase 2 ⏳ PLANNED** - Client stability & error handling (up next)
+- **Phase 3** - Resource management & monitoring  
+- **Phase 4** - Testing & stress testing
+
+This document tracks implementation status and provides a clear roadmap for reaching production readiness.
 
 ---
 
-## Phase 1 ✅ - Critical Fixes (COMPLETE)
+## Phase 1 ✅ - Critical Fixes (IMPLEMENTED)
+
+**Status:** Code complete and compiled ✅ | Testing pending ⏳
+
+All 8 critical production fixes have been implemented, committed, and pushed. Code compiles successfully with no errors. Awaiting manual testing of checklist items before moving to Phase 2.
 
 ### 1. TCP Socket Keepalive & Idle Timeout Enforcement ✅
 
@@ -165,21 +176,25 @@ tracing-appender = "0.2"       # File logging with rotation
 
 ## Testing Checklist for Phase 1
 
-- [ ] Server starts without config (uses defaults)
-- [ ] Server refuses to start with invalid auth mode
-- [ ] Server creates daily log files when configured
-- [ ] Idle connections close after 60 seconds
-- [ ] Auth rate limit: 6th attempt within 60s is rejected
-- [ ] Chat rate limit: 11th message within 10s is dropped
-- [ ] Spawn rate limit: 6th spawn within 5s is dropped
-- [ ] Invalid username (empty, too long, reserved) is rejected with auth error
-- [ ] Invalid chat (empty, >200 chars, control char spam) is silently dropped
-- [ ] Server shuts down cleanly on SIGTERM/SIGINT
-- [ ] Log files are created and rotated daily
-- [ ] Vehicle IDs > 10000 are rejected
-- [ ] Vehicle config > 1MB is rejected
-- [ ] Config with invalid auth mode fails at startup
-- [ ] Config with mismatched auth password/mode fails at startup
+**Status: PENDING** - All features implemented, require manual verification
+
+- [ ] **Server startup** - Starts without config (uses defaults)
+- [ ] **Config validation** - Server refuses to start with invalid auth mode
+- [ ] **Logging** - Server creates daily log files when configured
+- [ ] **Connection timeouts** - Idle connections close after 60 seconds
+- [ ] **Auth rate limit** - 6th attempt within 60s is rejected
+- [ ] **Chat rate limit** - 11th message within 10s is dropped
+- [ ] **Spawn rate limit** - 6th spawn within 5s is dropped
+- [ ] **Username validation** - Invalid (empty, too long, reserved) rejected with error
+- [ ] **Chat validation** - Invalid (empty, >200 chars, spam) silently dropped
+- [ ] **Graceful shutdown** - Server shuts down cleanly on SIGTERM/SIGINT
+- [ ] **Log rotation** - Log files created and rotated daily
+- [ ] **Vehicle ID validation** - IDs > 10000 rejected
+- [ ] **Vehicle config validation** - Configs > 1MB rejected
+- [ ] **Config auth mode** - Invalid mode fails at startup
+- [ ] **Config password mode** - Fails if password mode but no password
+
+**Action:** Run manual tests or set up automated test suite before Phase 2
 
 ---
 
@@ -196,82 +211,354 @@ tracing-appender = "0.2"       # File logging with rotation
 
 ---
 
-## Phase 2: Error Handling & Client Stability
+## Phase 2 ⏳ - Error Handling & Client Stability (READY TO IMPLEMENT)
 
-**Planned improvements:**
-- TCP connection timeout in Lua client (5 sec)
-- Heartbeat/ping-pong protocol for dead connection detection
-- Packet parsing validation with structure checks
-- Lua error handling with pcall wrappers
-- Vehicle interpolation (lerp/slerp for smooth movement)
-- Connection state machine consistency
-- Chat logging when enabled in config
-- Username emptiness check at session creation
+**Target Effort:** 3-4 hours  
+**Priority:** HIGH - Prevents crashes and improves user experience  
+**Status:** Specification complete, ready to code
 
-**Estimated effort:** 2-3 hours
+### 2.1 Client-Side Connection Timeout (Lua)
 
----
+**Problem:** Lua client has no timeout when connecting to unreachable servers; hangs indefinitely  
 
-## Phase 3: Resource Management & Monitoring
+**Solution:**
+- Add 5-second connect timeout to `connection.lua`
+- Use `socket.select()` with timeout to monitor TCP connection completion
+- Return error and trigger ui callback if timeout exceeded
 
-**Planned improvements:**
-- Bandwidth throttling limits
-- Memory cleanup for old connections
-- Basic metrics logging
-- Log rotation policy
-- Systemd service template
-- Dockerfile
+**Tasks:**
+- [ ] Add `CONNECT_TIMEOUT = 5` constant to connection module
+- [ ] Wrap TCP connect in timeout logic
+- [ ] Call `onConnectFailed()` callback if timeout
+- [ ] Log timeout with server address
+- [ ] Update `M.STATE_CONNECTING` logic to enforce deadline
 
-**Estimated effort:** 2-3 hours
+**Files to modify:** `client/lua/ge/extensions/highbeam/connection.lua`
 
 ---
 
-## Phase 4: Testing & Hardening
+### 2.2 Heartbeat/Ping-Pong Protocol
 
-**Planned improvements:**
-- Integration tests for connection flow
-- Stress tests (many concurrent players)
-- Edge case tests (rapid connect/disconnect, huge payloads)
-- Load testing with 50+ players
-- Network failure simulation
+**Problem:** Dead connections aren't detected until timeout (60s is too long)  
 
-**Estimated effort:** 3-4 hours
+**Solution:**
+
+**Server side (Rust):**
+- Add `PingPong` packet type to protocol
+- Send ping every 20 seconds from server
+- If no pong within 30 seconds, close connection
+- Track last pong time per player
+
+**Client side (Lua):**
+- Respond to ping with pong packet
+- Close connection if no ping received within 30 seconds
+
+**Tasks:**
+
+*Server tasks:*
+- [ ] Add `PingPong { seq: u32 }` packet variant to `packet.rs`
+- [ ] Update protocol version to 2
+- [ ] Add ping tracking to `Player` struct (last_pong_time)
+- [ ] Spawn background task to send pings every 20s
+- [ ] Track pong responses and close on timeout
+- [ ] Write ping response handler in TCP loop
+
+*Client tasks:*
+- [ ] Add ping handler to receive buffer processing
+- [ ] Send pong packet in response
+- [ ] Add timeout check for missing pings
+- [ ] Close connection on ping timeout
+
+**Files to modify:**
+- `server/src/net/packet.rs` - Add PingPong packet
+- `server/src/session/player.rs` - Track last_pong_time
+- `server/src/net/tcp.rs` - Ping sending logic
+- `client/lua/ge/extensions/highbeam/connection.lua` - Ping/pong handling
 
 ---
 
-## Deployment Recommendations
+### 2.3 Packet Parsing Validation
 
-**Before going live with Phase 1:**
+**Problem:** Malformed JSON packets crash the game or cause silent failures  
 
-1. **Verify logging** - Check that log files are being written daily
-2. **Test auth limits** - Verify 5 attempts/60s applies per IP
-3. **Test chat limits** - Verify 10 messages/10s applies per player
-4. **Monitor idle connections** - Ensure unused connections close
-5. **Validate config** - Test with intentionally bad configs to confirm rejection
+**Solution:**
+- Validate packet structure before use
+- Check required fields exist and have correct types
+- Provide error messages instead of crashes
 
-**Then proceed to Phase 2** for additional safety features.
+**Tasks:**
+- [ ] Add `serde` validation errors (already integrated)
+- [ ] Wrap all packet parsing in Try/Catch in Lua
+- [ ] Log parse errors with hex dump of bad packet
+- [ ] Gracefully disconnect on parse error
+- [ ] Add fuzzing test corpus of malformed packets
+
+**Files to modify:**
+- `server/src/net/tcp.rs` - Better error messages on parse failure
+- `client/lua/ge/extensions/highbeam/connection.lua` - JSON parse error handling
+- `client/lua/ge/extensions/highbeam/protocol.lua` - Validation layer
 
 ---
 
-## Compilation Status
+### 2.4 Lua Error Handling with pcall Wrappers
 
-✅ **Compiles successfully** (as of 2026-03-30)
+**Problem:** Lua errors in callbacks crash the extension instead of logging gracefully  
+
+**Solution:**
+- Wrap all network callbacks in `pcall()`
+- Log errors instead of crashing
+- Continue running even if one subsystem fails
+
+**Tasks:**
+- [ ] Wrap `_processBuffer()` in pcall
+- [ ] Wrap `_onPacket()` dispatch in pcall per packet type
+- [ ] Wrap all `require()` calls in pcall with fallback
+- [ ] Add error callback to logging system
+- [ ] Test by injecting bad JSON
+
+**Files to modify:**
+- `client/lua/ge/extensions/highbeam/connection.lua` - All callbacks
+- `client/lua/ge/extensions/highbeam.lua` - Module loading
+
+---
+
+### 2.5 Vehicle Interpolation (Lerp/Slerp)
+
+**Problem:** Remote vehicles teleport between position updates instead of moving smoothly  
+
+**Solution:**
+- Keep 2-3-frame buffer of position updates
+- Interpolate between old and new position
+- Use spherical linear interpolation (slerp) for rotation
+- Target ~50ms interpolation window
+
+**Tasks:**
+- [ ] Add interpolation buffer to `vehicles.lua` (per vehicle)
+- [ ] Implement `lerp(v1, v2, t)` for positions
+- [ ] Implement `slerp(q1, q2, t)` for rotations
+- [ ] Store update timestamps
+- [ ] Calculate interpolation factor from frame delta time
+- [ ] Apply interpolated transform each frame
+
+**Files to modify:**
+- `client/lua/ge/extensions/highbeam/vehicles.lua` - Interpolation logic
+- `client/lua/ge/extensions/highbeam/math.lua` (new) - Lerp/slerp helpers
+
+---
+
+### 2.6 Connection State Machine Consistency
+
+**Problem:** Connection state can become inconsistent if callbacks fail or race conditions occur  
+
+**Solution:**
+- Validate state transitions (only legal transitions allowed)
+- Add state guard to critical operations
+- Log state mismatches as warnings
+
+**Tasks:**
+- [ ] Add state transition validation
+- [ ] Create state diagram in comments
+- [ ] Add guards: "only in CONNECTED state" checks
+- [ ] Log illegal transitions with stack trace
+- [ ] Test rapid connect/disconnect cycles
+
+**Files to modify:**
+- `client/lua/ge/extensions/highbeam/connection.lua` - State validation
+
+---
+
+### 2.7 Chat Logging (When Enabled)
+
+**Problem:** Chat messages aren't logged even when config flag is set  
+
+**Solution:**
+- If `LogChat` is true in config, write chat to server logs
+- Format: `[CHAT] <player_name>: <text>`
+- Include timestamp and player_id
+
+**Tasks:**
+- [ ] Check `config.logging.log_chat` flag in TCP loop
+- [ ] Format and log ChatMessage packets
+- [ ] Create separate `chat.log` file or mix into `server.log`
+- [ ] Test with different log levels
+
+**Files to modify:**
+- `server/src/net/tcp.rs` - Log chat when flag set
+
+---
+
+### 2.8 Username Emptiness Check at Session Creation
+
+**Problem:** Session can be created with empty username (already validated at auth, but double-check)  
+
+**Solution:**
+- Add runtime check in `add_player()` before creating session
+- Reject if name is empty/whitespace only
+
+**Tasks:**
+- [ ] Add check in `SessionManager::add_player()`
+- [ ] Return error instead of panicking
+- [ ] Log rejected usernames
+
+**Files to modify:**
+- `server/src/session/manager.rs` - Add runtime check
+
+---
+
+### Phase 2 Summary Table
+
+| Task | File | Effort | Priority |
+|------|------|--------|----------|
+| Client connect timeout | connection.lua | 0.5h | HIGH |
+| Heartbeat protocol | packet.rs, tcp.rs, connection.lua | 1.5h | HIGH |
+| Packet parse validation | tcp.rs, connection.lua, protocol.lua | 0.5h | HIGH |
+| Lua error handling | connection.lua, highbeam.lua | 0.5h | MEDIUM |
+| Vehicle interpolation | vehicles.lua, math.lua | 1h | HIGH |
+| Connection state validation | connection.lua | 0.5h | MEDIUM |
+| Chat logging | tcp.rs | 0.25h | LOW |
+| Username check | manager.rs | 0.25h | LOW |
+| **TOTAL** | | **4.5h** | |
+
+---
+
+### Phase 2 Acceptance Criteria
+
+- [ ] All 8 tasks implemented
+- [ ] Code compiles with no errors
+- [ ] Client handles 5-second timeout gracefully
+- [ ] Heartbeat successfully detects dead connections within 30s
+- [ ] Malformed packets logged without crashing
+- [ ] Vehicle movement smooth (no teleporting)
+- [ ] Chat logging works when flag enabled
+- [ ] Integration tests pass (Phase 4)
+
+## Phase 3 - Resource Management & Monitoring (PLANNED)
+
+**Target Effort:** 2-3 hours  
+**Priority:** MEDIUM - Deployment readiness  
+**Status:** Design phase
+
+### Key Improvements
+
+- **Bandwidth throttling** - Limit position update frequency per player
+- **Memory cleanup** - Clear old connection attempts, purge old vehicle cache
+- **Metrics logging** - Player count, message rate, vehicle count per interval
+- **Log rotation policy** - Configurable retention and compression
+- **Systemd service file** - Template for Linux production deployments
+- **Docker support** - Dockerfile + docker-compose for containerized deployment
+
+### Phase 3 Acceptance Criteria
+
+- [ ] Systemd service file works on Linux
+- [ ] Docker image builds and runs
+- [ ] Memory stable over 1-hour test with 10 players
+- [ ] Metrics logged at 1-minute intervals
+- [ ] Old logs archived and compressed
+
+---
+
+## Phase 4 - Testing & Stress Testing (PLANNED)
+
+**Target Effort:** 3-4 hours  
+**Priority:** HIGH - Validation before 1.0 release  
+**Status:** Test plan in progress
+
+### Test Suites
+
+**Unit Tests:**
+- Validation functions (all inputs)
+- Rate limiter logic (boundary conditions)
+- Session token generation (entropy distribution)
+
+**Integration Tests:**
+- Full connect → auth → ready → disconnect cycle
+- Multiple players joining/leaving
+- Chat broadcast to all players
+- Vehicle spawn/edit/delete propagation
+
+**Stress Tests:**
+- 50 concurrent players connecting
+- 100 messages/second chat flood
+- Vehicle position updates at max rate for 5 minutes
+- Rapid connect/disconnect cycles
+
+**Network Simulation Tests:**
+- Packet loss scenarios
+- High latency (500ms+)
+- Connection resets mid-game
+- UDP packet drops
+
+### Phase 4 Acceptance Criteria
+
+- [ ] All unit tests pass
+- [ ] All integration tests pass
+- [ ] 50-player load test completes without crashes
+- [ ] Memory usage stays under 500MB
+- [ ] Log files rotate correctly
+- [ ] Recovery from network failures works
+- [ ] No memory leaks detected (valgrind)
+
+---
+
+## Next Steps & Action Items
+
+### Immediate (Next 4-5 hours)
+
+1. **Complete Phase 1 Testing**
+   - [ ] Run manual tests from Phase 1 checklist
+   - [ ] Fix any issues found
+   - [ ] Document results
+
+2. **Begin Phase 2 Implementation**
+   - [ ] Start with client connect timeout (quickest win)
+   - [ ] Then heartbeat protocol (most complex)
+   - [ ] Vehicle interpolation (visible impact)
+
+3. **Git Workflow**
+   - [ ] Create `phase-2-dev` branch for work-in-progress
+   - [ ] Commit each task as it completes
+   - [ ] Keep commits small and focused
+
+### Mid-term (Over next 1-2 days)
+
+- Complete Phase 2 and test with multiple clients
+- Set up automated test suite (Phase 4 prep)
+- Deploy to staging environment
+- Run basic load test scenarios
+
+### Long-term (Week 2+)
+
+- Phase 3 resource management
+- Phase 4 comprehensive testing
+- Performance profiling and optimization
+- Prepare for v1.0 release
+
+---
+
+## Git Status
+
+**Last commit:** f77c603  
+**Branch:** main  
+**Status:** ✅ Phase 1 pushed to origin
 
 ```bash
-cd server && cargo check
-# Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.38s
+# To start Phase 2:
+git checkout -b phase-2-dev
+cargo build  # Verify no new issues
 ```
 
 ---
 
-## Summary
+## Summary: Path to Production
 
-Phase 1 builds a solid foundation for production:
+| Phase | Status | Tests | Est. Hours | Blocker? |
+|-------|--------|-------|-----------|----------|
+| Phase 1 | ✅ Implemented | ⏳ Pending | 4 | Needs testing |
+| Phase 2 | ⏳ Ready | Not started | 4 | Phase 1 tests |
+| Phase 3 | 📋 Planned | Not started | 3 | Phase 2 done |
+| Phase 4 | 📋 Planned | Not started | 4 | Phase 3 done |
+| **Total** | **⏳ In Progress** | | **15** | |
 
-- ✅ **Connections** - Timeouts, keepalive, graceful shutdown
-- ✅ **Input Safety** - Validation on all user inputs + config
-- ✅ **Abuse Prevention** - Rate limiting on auth/chat/spawn
-- ✅ **Observability** - File logging with rotation
-- ✅ **Reliability** - Token collision detection, vehicle bounds checking
+**Projected Production Ready:** April 2, 2026 (if work starts immediately)
 
-**Next milestone:** Phase 2 (Error Handling & Client Stability)
+---
