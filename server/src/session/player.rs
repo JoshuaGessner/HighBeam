@@ -19,4 +19,6 @@ pub struct Player {
     pub session_hash: [u8; 16],
     pub connected_at: Instant,
     pub last_activity: Instant,
+    /// Last time a pong was received from this player (Phase 2.2 heartbeat).
+    pub last_pong_time: Instant,
 }

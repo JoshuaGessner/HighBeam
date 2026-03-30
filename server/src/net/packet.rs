@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 pub const MAX_PACKET_SIZE: u32 = 1_048_576;
 
 /// Protocol version. Incremented when packet formats change.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// All TCP packet types, JSON-encoded with a length prefix on the wire.
 ///
@@ -124,6 +124,10 @@ pub enum TcpPacket {
         player_name: String,
         text: String,
     },
+
+    /// Heartbeat ping/pong packet (Phase 2.2). Server sends ping, client responds with pong.
+    #[serde(rename = "ping_pong")]
+    PingPong { seq: u32 },
 }
 
 /// Player info included in WorldState.

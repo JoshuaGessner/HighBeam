@@ -85,6 +85,7 @@ impl SessionManager {
             session_hash,
             connected_at: now,
             last_activity: now,
+            last_pong_time: now,  // Initialize pong time (Phase 2.2)
         };
 
         self.session_hashes.insert(session_hash, player_id);
@@ -106,6 +107,11 @@ impl SessionManager {
     /// Look up a player by ID.
     pub fn get_player(&self, player_id: u32) -> Option<dashmap::mapref::one::Ref<'_, u32, Player>> {
         self.players.get(&player_id)
+    }
+
+    /// Look up a player by ID (mutable), for updating player state (Phase 2.2).
+    pub fn get_player_mut(&self, player_id: u32) -> Option<dashmap::mapref::one::RefMut<'_, u32, Player>> {
+        self.players.get_mut(&player_id)
     }
 
     /// Look up a player_id by the 16-byte session hash (for UDP authentication).
