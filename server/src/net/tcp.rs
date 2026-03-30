@@ -126,7 +126,8 @@ async fn handle_connection(
     // 5-6. Create a channel for this player's outbound TCP packets.
     //       SessionManager assigns player_id and generates the session token.
     let (tcp_tx, mut tcp_rx) = mpsc::channel::<TcpPacket>(64);
-    let (player_id, session_token) = sessions.add_player(username.clone(), addr, tcp_tx);
+    let tcp_tx_ping = tcp_tx.clone();  // Clone for ping task
+    let (player_id, session_token) = sessions.add_player(username.clone(), addr, tcp_tx.clone());
 
     tracing::info!(player_id, %addr, name = %username, "Player authenticated");
 
@@ -184,6 +185,34 @@ async fn handle_connection(
         }
     });
 
+
+    // Spawn a ping task to send heartbeat pings every 20s and monitor pong timeout (Phase 2.2)
+    let ping_tx = tcp_tx_ping;
+    let ping_sessions = sessions.clone();
+    let ping_task = tokio::spawn(async move {
+        let ping_interval = Duration::from_secs(20);
+        let pong_timeout = Duration::from_secs(30);
+        let mut seq = 0u32;
+
+        loop {
+            tokio::time::sleep(ping_interval).await;
+            if let Err(e) = ping_tx.send(TcpPacket::PingPong { seq }).await {
+                tracing::debug!(player_id, "Ping send failed: {e}");
+                break;
+            }
+            tracing::debug!(player_id, seq, "Ping sent");
+            seq = seq.wrapping_add(1);
+            if let Some(player) = ping_sessions.get_player(player_id) {
+                if player.last_pong_time.elapsed() > pong_timeout {
+                    tracing::warn!(player_id, "Pong timeout after {}s", pong_timeout.as_secs());
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+    });
+
     // 11. Main receive loop
     let mut read_half = tokio::io::BufReader::new(read_half);
     let recv_result =
@@ -191,6 +220,7 @@ async fn handle_connection(
 
     // 12. Disconnect cleanup
     write_task.abort();
+    ping_task.abort();
 
     // Remove all vehicles for this player and notify others
     let removed_vehicles = world.remove_all_for_player(player_id);
@@ -365,6 +395,15 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                     Err(e) => {
                         tracing::warn!(player_id, error = %e, "ChatMessage rejected: invalid content");
                     }
+                }
+            }
+            TcpPacket::PingPong { seq } => {
+                // Handle pong response from client (Phase 2.2: heartbeat)
+                if let Some(mut player) = sessions.get_player_mut(player_id) {
+                    player.last_pong_time = Instant::now();
+                    tracing::debug!(player_id, seq, "Pong received");
+                } else {
+                    tracing::warn!(player_id, "PingPong from unknown player");
                 }
             }
             other => {
