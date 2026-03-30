@@ -3,10 +3,12 @@ use std::path::PathBuf;
 use anyhow::Result;
 
 mod config;
+mod detect;
 mod game;
 mod installer;
 mod mod_cache;
 mod mod_sync;
+#[allow(dead_code)]
 mod transfer;
 mod updater;
 

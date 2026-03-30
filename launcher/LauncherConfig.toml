@@ -4,6 +4,8 @@ server_addr = "127.0.0.1:18860"
 # Optional explicit endpoint for mod sync. If unset, launcher uses server_addr with port + 1.
 mod_sync_addr = ""
 cache_dir = "~/.highbeam/cache"
+# Path to BeamNG.drive executable. Leave empty to auto-detect from Steam.
 beamng_exe = ""
+# Path to BeamNG.drive user data folder. Leave empty to auto-detect.
 beamng_userfolder = ""
 connect_timeout_sec = 10

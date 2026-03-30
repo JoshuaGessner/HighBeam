@@ -68,6 +68,12 @@ fn resolve_mods_dir(beamng_userfolder: Option<&str>) -> Result<PathBuf> {
         return Ok(root.join("mods"));
     }
 
+    // Try auto-detection
+    if let Some(userfolder) = crate::detect::detect_beamng_userfolder() {
+        tracing::info!(path = %userfolder.display(), "Auto-detected BeamNG.drive user folder");
+        return Ok(userfolder.join("mods"));
+    }
+
     #[cfg(target_os = "windows")]
     {
         if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {

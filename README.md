@@ -9,7 +9,7 @@ HighBeam is an open-source multiplayer mod and server for BeamNG.drive that lets
 ## Key Features
 
 - **No auth keys** — Servers are fully self-contained. No third-party accounts or API keys required.
-- **Lightweight launcher** — A small Rust binary syncs mods, installs the client mod, launches the game, and exits. No always-running proxy.
+- **Lightweight launcher** — A small Rust binary auto-detects your BeamNG.drive installation, syncs mods, installs the client mod, launches the game, and exits. No always-running proxy. Auto-updates itself from GitHub Releases.
 - **Direct connect** — Connect to any server by IP:port from the in-game UI. No traffic routed through a third party.
 - **Server-side plugins** — Lua 5.4 scripting for server customization (chat commands, game modes, economy, custom events).
 - **Server browser** — Optional community relay for discovering servers — no centralized authority required. *(Coming in v0.6.0)*
@@ -28,6 +28,8 @@ HighBeam is an open-source multiplayer mod and server for BeamNG.drive that lets
 | Production hardening (timeouts, rate limiting, input validation, file logging) | ✅ Done |
 | Chat & mod distribution via launcher | ✅ Done |
 | Server-side Lua plugins | ✅ Done |
+| Auto-update (server & launcher) | ✅ Done |
+| BeamNG.drive auto-detection | ✅ Done |
 | Server management GUI | ⏳ Planned (v0.5.0) |
 | Server browser / discovery | ⏳ Planned (v0.6.0) |
 | Stable v1.0.0 release | 🔭 Target |
@@ -57,14 +59,15 @@ The server listens on port **18860** by default. A `ServerConfig.toml` is create
 
 ### Connecting as a Client
 
-1. Run the HighBeam launcher and point it at your server:
+1. Download the launcher from the [latest release](https://github.com/JoshuaGessner/HighBeam/releases/latest) and unzip it.
+2. Run the launcher — it will auto-detect your BeamNG.drive Steam installation:
    ```bash
    ./highbeam-launcher --server <server-ip>:18860
    ```
-2. The launcher syncs required mods, installs the client mod, and launches BeamNG.drive.
-3. Use the HighBeam in-game UI to connect and start driving.
+3. The launcher syncs required mods, installs the client mod, and launches BeamNG.drive.
+4. Use the HighBeam in-game UI to connect and start driving.
 
-> **Note:** The launcher can also be built from source (`cd launcher && cargo build --release`).
+> **Note:** If BeamNG.drive is not installed via Steam, set `beamng_exe` in `LauncherConfig.toml` to the full path of the executable. The launcher auto-updates itself on each run.
 
 ---
 
