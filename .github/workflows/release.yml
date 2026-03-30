@@ -77,9 +77,42 @@ jobs:
           name: ${{ matrix.archive }}
           path: ${{ matrix.archive }}
 
+  build-launcher:
+    name: Build Launcher (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build release binary
+        working-directory: launcher
+        run: cargo build --release --target x86_64-pc-windows-msvc
+
+      - name: Run tests
+        working-directory: launcher
+        run: cargo test --release --target x86_64-pc-windows-msvc
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path staging
+          Copy-Item "launcher/target/x86_64-pc-windows-msvc/release/highbeam-launcher.exe" staging/
+          Copy-Item "launcher/LauncherConfig.toml" staging/
+          Compress-Archive -Path staging/* -DestinationPath highbeam-launcher-windows-x86_64.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: highbeam-launcher-windows-x86_64.zip
+          path: highbeam-launcher-windows-x86_64.zip
+
   release:
     name: Create GitHub Release
-    needs: build
+    needs: [build, build-launcher]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
