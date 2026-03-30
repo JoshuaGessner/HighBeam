@@ -21,6 +21,18 @@ HighBeam is designed as a **decentralized alternative** to existing multiplayer 
 - **Self-contained servers** — A server binary runs independently with zero external service dependencies.
 - **Extensible by default** — Both client and server expose plugin APIs for community customization.
 - **Protocol transparency** — The network protocol is fully documented and versioned.
+- **Cross-platform server** — The server binary runs on Windows, Linux, and macOS.
+
+---
+
+## Platform Targets
+
+| Component | Supported Platforms | Notes |
+|-----------|-------------------|-------|
+| **Server binary** | Windows (x86_64), Linux (x86_64, aarch64), macOS (x86_64, aarch64) | Primary targets: Windows and Linux. macOS supported for development. |
+| **Client mod** | Windows (via BeamNG.drive) | BeamNG.drive is a Windows application. Linux users can run it via Proton/Wine. |
+
+The server is designed to be hosted on **dedicated Linux servers** (headless mode) or **personal Windows/macOS machines** (GUI mode). All server dependencies are pure Rust or have cross-platform C bindings and compile on all three platforms without conditional code.
 
 ---
 

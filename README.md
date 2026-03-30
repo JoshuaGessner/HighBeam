@@ -23,9 +23,20 @@ HighBeam is an open-source multiplayer mod and server for BeamNG.drive that enab
 | Network | TCP (reliable) + UDP (fast sync) | — |
 | Server plugins | Lua 5.4 | `server/plugins/` |
 
+## Platform Support
+
+| Component | Platform | Status |
+|-----------|----------|--------|
+| Server | Windows (x86_64) | Supported |
+| Server | Linux (x86_64, aarch64) | Supported |
+| Server | macOS (x86_64, aarch64) | Supported |
+| Client mod | Windows (BeamNG.drive) | Supported |
+
+The server is pure Rust with no platform-specific code — it compiles and runs identically on all three operating systems. Linux is the recommended platform for dedicated servers (`--headless` mode).
+
 ## Current Status
 
-**Pre-alpha** — Project structure and documentation established. Core implementation in progress. See [VERSION_PLAN.md](docs/versioning/VERSION_PLAN.md) for the roadmap.
+**Pre-alpha** — Core TCP handshake and auth implemented. Vehicle sync in progress. See [VERSION_PLAN.md](docs/versioning/VERSION_PLAN.md) for the roadmap.
 
 ## Documentation
 

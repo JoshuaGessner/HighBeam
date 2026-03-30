@@ -71,7 +71,10 @@ async fn handle_connection(
     let username = match &auth_packet {
         TcpPacket::AuthRequest { username, .. } => username.clone(),
         other => {
-            anyhow::bail!("Expected AuthRequest, got {:?}", std::mem::discriminant(other));
+            anyhow::bail!(
+                "Expected AuthRequest, got {:?}",
+                std::mem::discriminant(other)
+            );
         }
     };
 
@@ -83,8 +86,7 @@ async fn handle_connection(
     // 5-6. Create a channel for this player's outbound TCP packets.
     //       SessionManager assigns player_id and generates the session token.
     let (tcp_tx, mut tcp_rx) = mpsc::channel::<TcpPacket>(64);
-    let (player_id, session_token) =
-        sessions.add_player(username.clone(), addr, tcp_tx);
+    let (player_id, session_token) = sessions.add_player(username.clone(), addr, tcp_tx);
 
     tracing::info!(player_id, %addr, name = %username, "Player authenticated");
 
@@ -141,10 +143,7 @@ async fn handle_connection(
 
     // 11. Disconnect cleanup
     write_task.abort();
-    sessions.broadcast(
-        TcpPacket::PlayerLeave { player_id },
-        Some(player_id),
-    );
+    sessions.broadcast(TcpPacket::PlayerLeave { player_id }, Some(player_id));
     sessions.remove_player(player_id);
     tracing::info!(player_id, name = %username, "Player disconnected");
 

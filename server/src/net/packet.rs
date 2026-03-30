@@ -14,7 +14,6 @@ pub const PROTOCOL_VERSION: u32 = 1;
 #[serde(tag = "type")]
 pub enum TcpPacket {
     // ── Server → Client ──────────────────────────────────────────────
-
     /// First packet sent by the server after TCP connect.
     #[serde(rename = "server_hello")]
     ServerHello {
@@ -51,7 +50,6 @@ pub enum TcpPacket {
     Kick { reason: String },
 
     // ── Client → Server ──────────────────────────────────────────────
-
     /// Client authentication request.
     #[serde(rename = "auth_request")]
     AuthRequest {

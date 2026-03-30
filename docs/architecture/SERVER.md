@@ -10,6 +10,20 @@
 
 The HighBeam server is a standalone Rust binary that manages multiplayer sessions for BeamNG.drive. It accepts connections from HighBeam client mods, relays vehicle state between players, and runs server-side Lua plugins.
 
+### Platform Support
+
+The server targets **Windows**, **Linux**, and **macOS**:
+
+| Platform | Arch | Use Case | GUI | Headless |
+|----------|------|----------|-----|----------|
+| Windows x86_64 | x64 | Personal hosting, development | Yes | Yes |
+| Linux x86_64 | x64 | Dedicated servers, VPS/cloud | Yes | Yes (primary) |
+| Linux aarch64 | ARM64 | ARM cloud instances (AWS Graviton, etc.) | Yes | Yes |
+| macOS x86_64 | x64 | Development | Yes | Yes |
+| macOS aarch64 | ARM64 | Development (Apple Silicon) | Yes | Yes |
+
+All platform-specific behavior is handled by Rust's standard library and the `tokio` async runtime. No `#[cfg(target_os)]` conditional compilation is required for the networking or session management layers.
+
 ---
 
 ## Directory Structure

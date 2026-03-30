@@ -1,3 +1,7 @@
+// Allow dead code for fields/methods scaffolded for upcoming phases.
+// Remove this once Phase 2+ fills in usage.
+#![allow(dead_code)]
+
 use anyhow::Result;
 use std::sync::Arc;
 
@@ -10,8 +14,7 @@ async fn main() -> Result<()> {
     // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 

@@ -37,6 +37,37 @@ HighBeam uses **port 18860** (TCP + UDP on the same port).
 
 ---
 
+## Cross-Platform Build Notes
+
+The server targets **Windows**, **Linux**, and **macOS**. All dependencies are pure Rust or have cross-platform C bindings.
+
+### Building
+
+```bash
+# Debug build (any platform)
+cd server && cargo build
+
+# Release build
+cd server && cargo build --release
+
+# Run tests
+cd server && cargo test
+```
+
+### CI
+
+GitHub Actions (`.github/workflows/ci.yml`) builds and tests on all three platforms automatically on push to `main` or `develop`.
+
+### Platform-Specific Considerations
+
+- **No conditional compilation** is needed for networking, config, or session management.
+- Future GUI (`egui`/`eframe`) supports all three platforms natively.
+- Future system tray (`tray-icon`) supports Windows and Linux. macOS tray support is optional.
+- Future SQLite (`rusqlite`) compiles everywhere via bundled C source.
+- The `--headless` CLI flag (v0.5.0) is the recommended mode for Linux dedicated servers.
+
+---
+
 ## Phase 0 — Project Scaffolding
 
 **Goal:** Create the Rust project, client mod skeleton, and development tooling so all future phases have a home.
