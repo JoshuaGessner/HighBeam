@@ -1,4 +1,4 @@
-/// Input validation and sanitization for HighBeam server.
+//! Input validation and sanitization for HighBeam server.
 
 use anyhow::{anyhow, Result};
 
@@ -44,7 +44,10 @@ pub fn validate_password(password: Option<&str>) -> Result<Option<String>> {
         None => Ok(None),
         Some(p) => {
             if p.len() > MAX_PASSWORD_LEN {
-                return Err(anyhow!("Password is too long (max {} characters)", MAX_PASSWORD_LEN));
+                return Err(anyhow!(
+                    "Password is too long (max {} characters)",
+                    MAX_PASSWORD_LEN
+                ));
             }
             if p.is_empty() {
                 return Err(anyhow!("Password cannot be empty when provided"));
@@ -138,9 +141,7 @@ pub fn validate_server_config(
         }
         "allowlist" => {
             if allowlist.is_none() || allowlist.map(|a| a.is_empty()).unwrap_or(true) {
-                return Err(anyhow!(
-                    "Auth mode is 'allowlist' but allowlist is empty"
-                ));
+                return Err(anyhow!("Auth mode is 'allowlist' but allowlist is empty"));
             }
         }
         _ => {

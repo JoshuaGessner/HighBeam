@@ -2,67 +2,48 @@
 
 **Decentralized multiplayer framework for BeamNG.drive.**
 
-HighBeam is an open-source multiplayer mod and server for BeamNG.drive that enables peer-to-peer vehicle synchronization without centralized authentication or mandatory server lists.
+HighBeam is an open-source multiplayer mod and server for BeamNG.drive that lets you host and join multiplayer sessions without third-party accounts, server lists, or always-running background software.
 
 ---
 
 ## Key Features
 
-- **No auth keys** — Servers are self-contained. No third-party accounts or API keys required.
+- **No auth keys** — Servers are fully self-contained. No third-party accounts or API keys required.
 - **Lightweight launcher** — A small Rust binary syncs mods, installs the client mod, launches the game, and exits. No always-running proxy.
-- **Direct connect** — The in-game client mod connects directly to servers by IP. No traffic proxied through the launcher.
-- **Server-side plugins** — Lua 5.4 scripting for server customization (chat commands, game modes, economy).
-- **Documented protocol** — The network protocol is fully specified and versioned.
+- **Direct connect** — Connect to any server by IP:port from the in-game UI. No traffic routed through a third party.
+- **Server-side plugins** — Lua 5.4 scripting for server customization (chat commands, game modes, economy). *(Coming in v0.4.0)*
+- **Server browser** — Optional community relay for discovering servers — no centralized authority required. *(Coming in v0.6.0)*
+- **Open protocol** — The network protocol is fully documented and versioned.
 
-## Architecture
-
-| Component | Technology | Directory |
-|-----------|-----------|-----------|| Launcher | Rust (CLI) | `launcher/` || Client mod | Lua (LuaJIT, via BeamNG) | `client/` |
-| Server binary | Rust | `server/` |
-| Network | TCP (reliable) + UDP (fast sync) | — |
-| Server plugins | Lua 5.4 | `server/plugins/` |
-
-## Platform Support
-
-| Component | Platform | Status |
-|-----------|----------|--------|
-| Launcher | Windows (x86_64) | Supported |
-| Launcher | Linux (x86_64, aarch64) | Supported |
-| Launcher | macOS (x86_64, aarch64) | Supported |
-| Server | Windows (x86_64) | Supported |
-| Server | Linux (x86_64, aarch64) | Supported |
-| Server | macOS (x86_64, aarch64) | Supported |
-| Client mod | Windows (BeamNG.drive) | Supported |
-
-The server is pure Rust with no platform-specific code — it compiles and runs identically on all three operating systems. Linux is the recommended platform for dedicated servers (`--headless` mode).
+---
 
 ## Current Status
 
-**Pre-alpha** — Core TCP handshake and auth implemented. Vehicle sync in progress. See [VERSION_PLAN.md](docs/versioning/VERSION_PLAN.md) for the roadmap.
+**Alpha (v0.2.0)** — Core multiplayer is functional. Players can connect to a server, authenticate, spawn vehicles, and see each other driving in real time.
 
-## Documentation
+| Feature | Status |
+|---------|--------|
+| TCP connection & authentication | ✅ Done |
+| Real-time vehicle sync (UDP) | ✅ Done |
+| Production hardening (timeouts, rate limiting, input validation, file logging) | ✅ Done |
+| Chat & mod distribution via launcher | ⏳ Planned (v0.3.0) |
+| Server-side Lua plugins | ⏳ Planned (v0.4.0) |
+| Server management GUI | ⏳ Planned (v0.5.0) |
+| Server browser / discovery | ⏳ Planned (v0.6.0) |
+| Stable v1.0.0 release | 🔭 Target |
 
-All project docs live in `docs/`. Start with the index:
-
-- **[docs/INDEX.md](docs/INDEX.md)** — Master documentation index and navigation guide
-
-### Quick Links
-
-| Doc | Content |
-|-----|---------|
-| [Architecture Overview](docs/architecture/OVERVIEW.md) | System design, components, security model |
-| [Launcher Architecture](docs/architecture/LAUNCHER.md) | Mod sync, file transfer, caching |
-| [Client Architecture](docs/architecture/CLIENT.md) | BeamNG mod structure, subsystems |
-| [Server Architecture](docs/architecture/SERVER.md) | Rust server design, plugin API |
-| [Protocol Spec](docs/architecture/PROTOCOL.md) | TCP/UDP packet formats, connection flow |
-| [Version Plan](docs/versioning/VERSION_PLAN.md) | Roadmap, milestones, release process |
-| [Changelog](docs/versioning/CHANGELOG.md) | Running change log |
+---
 
 ## Getting Started
 
-> **Note:** HighBeam is in early development. Build instructions will be added once the first working prototype is available.
+> **Note:** HighBeam is in active early development. The steps below reflect the current alpha build. A packaged release will be available once the launcher and mod distribution are complete (v0.3.0).
 
-### Server (Planned)
+### Requirements
+
+- **Rust toolchain** (stable) — [rustup.rs](https://rustup.rs)
+- **BeamNG.drive** (for the client mod)
+
+### Running the Server
 
 ```bash
 cd server
@@ -70,18 +51,83 @@ cargo build --release
 ./target/release/highbeam-server
 ```
 
-### Client (Planned)
+The server listens on port **18860** by default. A `ServerConfig.toml` is created on first run — edit it to set your server name, max players, and auth mode (`open`, `password`, or `allowlist`).
 
-1. Run the HighBeam launcher: `./highbeam-launcher --server 127.0.0.1:18860`
-2. The launcher syncs mods, installs the client mod, and launches BeamNG.drive
-3. Use the HighBeam UI in-game to connect to the server
+> **Tip:** Linux is the recommended platform for dedicated servers. The server binary is identical across all platforms.
+
+### Connecting as a Client
+
+1. Run the HighBeam launcher and point it at your server:
+   ```bash
+   ./highbeam-launcher --server <server-ip>:18860
+   ```
+2. The launcher syncs required mods, installs the client mod, and launches BeamNG.drive.
+3. Use the HighBeam in-game UI to connect and start driving.
+
+> **Note:** The launcher binary is not yet packaged for distribution. It must be built from source (`cd launcher && cargo build --release`) until v0.3.0.
+
+---
+
+## Platform Support
+
+| Component | Platform | Status |
+|-----------|----------|--------|
+| Server | Windows (x86_64) | ✅ Supported |
+| Server | Linux (x86_64, aarch64) | ✅ Supported |
+| Server | macOS (x86_64, aarch64) | ✅ Supported |
+| Launcher | Windows (x86_64) | ✅ Supported |
+| Launcher | Linux (x86_64, aarch64) | ✅ Supported |
+| Launcher | macOS (x86_64, aarch64) | ✅ Supported |
+| Client mod | Windows (BeamNG.drive) | ✅ Supported |
+
+The server is pure Rust with no platform-specific code and compiles identically on all three operating systems.
+
+---
+
+## Technical Specifications
+
+| Component | Technology |
+|-----------|-----------|
+| Server | Rust |
+| Launcher | Rust (CLI) |
+| Client mod | Lua (LuaJIT, via BeamNG) |
+| Server plugins | Lua 5.4 |
+| Reliable channel | TCP (length-prefixed JSON packets) |
+| Fast sync channel | UDP (binary, 63–65 bytes per position update) |
+| Default port | 18860 |
+
+### Security
+
+- **Rate limiting** — Auth attempts capped at 5/min per IP; chat at 10/10 s; vehicle spawns at 5/5 s per player.
+- **Input validation** — Usernames, chat messages, vehicle configs, and all config values are validated before use. Oversized payloads (>1 MB) are rejected.
+- **Session tokens** — 64-byte random tokens with nanosecond-precision timestamp prefix and collision detection.
+- **Config validation** — Server refuses to start if `ServerConfig.toml` contains invalid values (bad auth mode, missing password, etc.).
+- **Idle timeouts** — Connections with no activity for 60 seconds are closed automatically.
+- **Graceful shutdown** — SIGTERM/SIGINT handlers ensure clean disconnects and log flushing.
+
+---
+
+## Roadmap
+
+See [VERSION_PLAN.md](docs/versioning/VERSION_PLAN.md) for full milestone details and [CHANGELOG.md](docs/versioning/CHANGELOG.md) for a running list of changes.
+
+| Version | Milestone | Status |
+|---------|-----------|--------|
+| v0.1.0 | TCP handshake + auth | ✅ Done |
+| v0.2.0 | Real-time vehicle sync | ✅ Done |
+| v0.3.0 | Chat, mod distribution, launcher | ⏳ Next |
+| v0.4.0 | Server-side Lua plugin system | 📋 Planned |
+| v0.5.0 | Server management GUI | 📋 Planned |
+| v0.6.0 | Server browser & discovery | 📋 Planned |
+| v1.0.0 | Stable release | 🔭 Target |
+
+---
 
 ## Contributing
 
-1. Read [.copilot-instructions.md](.copilot-instructions.md) for coding standards
-2. Read the architecture docs for the component you're working on
-3. Branch from `develop`, follow the commit message format
-4. Open a PR using the template
+Contributions are welcome. Before opening a PR, please read the architecture docs for the component you're working on and follow the commit message conventions described in [.copilot-instructions.md](.copilot-instructions.md).
+
+---
 
 ## License
 

@@ -20,9 +20,15 @@ async fn main() -> Result<()> {
     if !config.logging.log_file.is_empty() {
         let file_appender = tracing_appender::rolling::daily(".", &config.logging.log_file);
         let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
-        
-        let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| config.logging.level.parse().unwrap_or_else(|_| "info".into()));
+
+        let env_filter =
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                config
+                    .logging
+                    .level
+                    .parse()
+                    .unwrap_or_else(|_| "info".into())
+            });
 
         tracing_subscriber::fmt()
             .with_writer(non_blocking)
@@ -31,16 +37,20 @@ async fn main() -> Result<()> {
             .init();
     } else {
         // Console-only logging
-        let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| config.logging.level.parse().unwrap_or_else(|_| "info".into()));
+        let env_filter =
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                config
+                    .logging
+                    .level
+                    .parse()
+                    .unwrap_or_else(|_| "info".into())
+            });
 
-        tracing_subscriber::fmt()
-            .with_env_filter(env_filter)
-            .init();
+        tracing_subscriber::fmt().with_env_filter(env_filter).init();
     }
 
     tracing::info!("HighBeam server v{}", env!("CARGO_PKG_VERSION"));
-    
+
     // Validate config parameters
     validation::validate_server_config(
         config.general.max_players,
@@ -51,7 +61,7 @@ async fn main() -> Result<()> {
         config.general.port,
         config.network.tick_rate,
     )?;
-    
+
     tracing::info!(
         name = %config.general.name,
         port = config.general.port,
@@ -76,19 +86,30 @@ async fn main() -> Result<()> {
 
     // Spawn signal handler task
     tokio::spawn(async move {
-        use tokio::signal::unix::{signal, SignalKind};
-        let mut sigterm = signal(SignalKind::terminate())
-            .expect("Failed to setup SIGTERM handler");
-        let mut sigint = signal(SignalKind::interrupt())
-            .expect("Failed to setup SIGINT handler");
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut sigterm =
+                signal(SignalKind::terminate()).expect("Failed to setup SIGTERM handler");
+            let mut sigint =
+                signal(SignalKind::interrupt()).expect("Failed to setup SIGINT handler");
 
-        tokio::select! {
-            _ = sigterm.recv() => {
-                tracing::info!("Received SIGTERM, shutting down gracefully");
+            tokio::select! {
+                _ = sigterm.recv() => {
+                    tracing::info!("Received SIGTERM, shutting down gracefully");
+                }
+                _ = sigint.recv() => {
+                    tracing::info!("Received SIGINT, shutting down gracefully");
+                }
             }
-            _ = sigint.recv() => {
-                tracing::info!("Received SIGINT, shutting down gracefully");
-            }
+        }
+
+        #[cfg(windows)]
+        {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("Failed to setup Ctrl+C handler");
+            tracing::info!("Received Ctrl+C, shutting down gracefully");
         }
 
         let _ = shutdown_tx_clone.send(());

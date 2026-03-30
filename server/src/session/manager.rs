@@ -58,11 +58,15 @@ impl SessionManager {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_nanos();
-            format!("{:x}:{}", timestamp, bytes.iter().map(|b| format!("{b:02x}")).collect::<String>())
+            format!(
+                "{:x}:{}",
+                timestamp,
+                bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+            )
         };
 
         let session_hash = compute_session_hash(&token);
-        
+
         // Verify collision didn't occur (paranoia check)
         if self.session_hashes.contains_key(&session_hash) {
             tracing::warn!("Session hash collision detected (extremely rare), retrying...");
