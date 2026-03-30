@@ -4,6 +4,7 @@ use anyhow::Result;
 
 mod config;
 mod game;
+mod installer;
 mod mod_cache;
 mod mod_sync;
 mod transfer;
@@ -92,6 +93,21 @@ fn main() -> Result<()> {
         missing_mods = report.missing_mods,
         downloaded_mods = report.downloaded_mods,
         "Mod sync completed"
+    );
+
+    let workspace_root = std::env::current_dir()?;
+    let install_report = installer::install_all(
+        cfg.beamng_userfolder.as_deref(),
+        &cache_dir,
+        &cache_index,
+        &report.server_mods,
+        &workspace_root,
+    )?;
+    tracing::info!(
+        installed_server_mods = install_report.installed_server_mods,
+        installed_client_mod = install_report.installed_client_mod,
+        mods_dir = %install_report.mods_dir.display(),
+        "Mod installation completed"
     );
 
     mod_cache::save_index(&cache_dir, &cache_index)?;

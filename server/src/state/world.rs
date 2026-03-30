@@ -114,4 +114,12 @@ impl WorldState {
     pub fn is_owner(&self, player_id: u32, vehicle_id: u16) -> bool {
         self.vehicles.contains_key(&(player_id, vehicle_id))
     }
+    /// Get the number of vehicles owned by a player.
+    pub fn vehicle_count_for_player(&self, player_id: u32) -> u32 {
+        self.vehicles
+            .iter()
+            .filter(|e| e.value().owner_id == player_id)
+            .count() as u32
+    }
+
 }

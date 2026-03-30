@@ -11,11 +11,19 @@ use sha2::{Digest, Sha256};
 
 use crate::mod_cache::{CacheEntry, CacheIndex};
 
+#[derive(Debug, Clone)]
+pub struct ServerMod {
+    pub name: String,
+    pub hash: String,
+    pub size: u64,
+}
+
 #[derive(Debug, Default)]
 pub struct SyncReport {
     pub total_server_mods: usize,
     pub missing_mods: usize,
     pub downloaded_mods: usize,
+    pub server_mods: Vec<ServerMod>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,10 +111,20 @@ pub fn sync_mods(
         downloaded += 1;
     }
 
+    let synced_mods = server_mods
+        .iter()
+        .map(|m| ServerMod {
+            name: m.name.clone(),
+            hash: m.hash.clone(),
+            size: m.size,
+        })
+        .collect();
+
     Ok(SyncReport {
         total_server_mods: server_mods.len(),
         missing_mods: missing.len(),
         downloaded_mods: downloaded,
+        server_mods: synced_mods,
     })
 }
 

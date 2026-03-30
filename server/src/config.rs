@@ -40,6 +40,10 @@ pub struct AuthConfig {
     pub max_auth_attempts: u32,
     #[serde(rename = "AuthTimeoutSec", default = "default_auth_timeout")]
     pub auth_timeout_sec: u64,
+    #[serde(rename = "Password", default)]
+    pub password: Option<String>,
+    #[serde(rename = "Allowlist", default)]
+    pub allowlist: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -142,6 +146,8 @@ impl Default for ServerConfig {
                 mode: "open".into(),
                 max_auth_attempts: 5,
                 auth_timeout_sec: 30,
+                password: None,
+                allowlist: None,
             },
             network: NetworkConfig {
                 tick_rate: 20,

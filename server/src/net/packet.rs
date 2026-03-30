@@ -112,6 +112,18 @@ pub enum TcpPacket {
         players: Vec<PlayerInfo>,
         vehicles: Vec<VehicleInfo>,
     },
+
+    /// Chat message from client.
+    #[serde(rename = "chat_message")]
+    ChatMessage { text: String },
+
+    /// Chat message broadcast to all players (includes sender info).
+    #[serde(rename = "chat_broadcast")]
+    ChatBroadcast {
+        player_id: u32,
+        player_name: String,
+        text: String,
+    },
 }
 
 /// Player info included in WorldState.
@@ -327,5 +339,21 @@ mod tests {
     #[test]
     fn test_protocol_version() {
         assert_eq!(PROTOCOL_VERSION, 1);
+    }
+
+    #[test]
+    fn test_chat_message_round_trip() {
+        round_trip(&TcpPacket::ChatMessage {
+            text: "Hello, world!".into(),
+        });
+    }
+
+    #[test]
+    fn test_chat_broadcast_round_trip() {
+        round_trip(&TcpPacket::ChatBroadcast {
+            player_id: 1,
+            player_name: "Alice".into(),
+            text: "Hello, everyone!".into(),
+        });
     }
 }
