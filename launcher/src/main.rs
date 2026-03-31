@@ -151,6 +151,41 @@ fn expand_tilde(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
+fn resolve_client_source_root() -> Result<PathBuf> {
+    let mut candidates = Vec::new();
+
+    // 1) Current working directory (developer workflow)
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join("client"));
+    }
+
+    // 2) Next to launcher executable (release archive workflow)
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            candidates.push(exe_dir.join("client"));
+            candidates.push(exe_dir.join("..").join("client"));
+        }
+    }
+
+    for candidate in &candidates {
+        if candidate.exists() && candidate.is_dir() {
+            tracing::info!(path = %candidate.display(), "Resolved HighBeam client source directory");
+            return Ok(candidate.clone());
+        }
+    }
+
+    let searched = candidates
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    Err(anyhow::anyhow!(
+        "Could not locate HighBeam client directory. Searched: {}",
+        searched
+    ))
+}
+
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -238,12 +273,7 @@ fn main() -> Result<()> {
                     let ping_ms = started.elapsed().as_millis();
                     println!(
                         "- {} | {} | map={} | players={}/{} | ping={}ms",
-                        addr,
-                        info.name,
-                        info.map,
-                        info.players,
-                        info.max_players,
-                        ping_ms
+                        addr, info.name, info.map, info.players, info.max_players, ping_ms
                     );
                 }
                 Err(e) => println!("- {} | unavailable ({})", addr, e),
@@ -266,12 +296,7 @@ fn main() -> Result<()> {
                     let ping_ms = started.elapsed().as_millis();
                     println!(
                         "- {} | {} | map={} | players={}/{} | ping={}ms",
-                        addr,
-                        info.name,
-                        info.map,
-                        info.players,
-                        info.max_players,
-                        ping_ms
+                        addr, info.name, info.map, info.players, info.max_players, ping_ms
                     );
                 }
                 Err(e) => println!("- {} | unavailable ({})", addr, e),
@@ -295,12 +320,7 @@ fn main() -> Result<()> {
                     let ping_ms = started.elapsed().as_millis();
                     println!(
                         "- {} | {} | map={} | players={}/{} | ping={}ms",
-                        entry.addr,
-                        info.name,
-                        info.map,
-                        info.players,
-                        info.max_players,
-                        ping_ms
+                        entry.addr, info.name, info.map, info.players, info.max_players, ping_ms
                     );
                 }
                 Err(e) => {
@@ -362,13 +382,13 @@ fn main() -> Result<()> {
         "Mod sync completed"
     );
 
-    let workspace_root = std::env::current_dir()?;
+    let client_source_root = resolve_client_source_root()?;
     let install_report = installer::install_all(
         cfg.beamng_userfolder.as_deref(),
         &cache_dir,
         &cache_index,
         &report.server_mods,
-        &workspace_root,
+        &client_source_root,
     )?;
     tracing::info!(
         installed_server_mods = install_report.installed_server_mods,

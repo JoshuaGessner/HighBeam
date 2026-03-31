@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
@@ -123,8 +123,7 @@ fn copy_if_changed(src: &Path, dst: &Path, expected_hash: &str) -> Result<()> {
     Ok(())
 }
 
-fn install_highbeam_client_mod(workspace_root: &Path, mods_dir: &Path) -> Result<bool> {
-    let client_root = workspace_root.join("client");
+fn install_highbeam_client_mod(client_root: &Path, mods_dir: &Path) -> Result<bool> {
     if !client_root.exists() {
         tracing::warn!(
             path = %client_root.display(),
@@ -135,6 +134,17 @@ fn install_highbeam_client_mod(workspace_root: &Path, mods_dir: &Path) -> Result
 
     let out_zip = mods_dir.join(HIGHBEAM_CLIENT_ZIP);
     create_zip_from_dir(&client_root, &out_zip)?;
+
+    verify_client_zip(&out_zip)?;
+    let bytes = std::fs::metadata(&out_zip)
+        .with_context(|| format!("Failed to read zip metadata: {}", out_zip.display()))?
+        .len();
+    tracing::info!(
+        path = %out_zip.display(),
+        bytes,
+        "Installed HighBeam client mod archive"
+    );
+
     Ok(true)
 }
 
@@ -171,6 +181,42 @@ fn create_zip_from_dir(src_root: &Path, out_zip: &Path) -> Result<()> {
     Ok(())
 }
 
+fn verify_client_zip(out_zip: &Path) -> Result<()> {
+    let file = File::open(out_zip)
+        .with_context(|| format!("Failed to open client mod zip: {}", out_zip.display()))?;
+    verify_client_zip_reader(file)
+}
+
+fn verify_client_zip_reader<R>(reader: R) -> Result<()>
+where
+    R: Read + Seek,
+{
+    let mut archive = zip::ZipArchive::new(reader).context("Failed to open zip archive")?;
+    let mut has_mod_script = false;
+    let mut has_extension = false;
+
+    for i in 0..archive.len() {
+        let entry = archive.by_index(i).context("Failed to read zip entry")?;
+        let name = entry.name();
+        if name == "scripts/highbeam/modScript.lua" {
+            has_mod_script = true;
+        }
+        if name == "lua/ge/extensions/highbeam.lua" {
+            has_extension = true;
+        }
+    }
+
+    if !has_mod_script || !has_extension {
+        return Err(anyhow!(
+            "HighBeam client zip is missing required files (modScript={}, extension={})",
+            has_mod_script,
+            has_extension
+        ));
+    }
+
+    Ok(())
+}
+
 fn sha256_file_hex(path: &Path) -> Result<String> {
     let mut file = File::open(path)
         .with_context(|| format!("Failed to open file for hashing: {}", path.display()))?;
@@ -191,10 +237,57 @@ fn sha256_file_hex(path: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
 
     #[test]
     fn test_expand_tilde_plain_path() {
         let p = expand_tilde("abc/def");
         assert_eq!(p, PathBuf::from("abc/def"));
+    }
+
+    #[test]
+    fn verify_client_zip_reader_accepts_required_files() {
+        let mut cursor = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut cursor);
+            let options =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("scripts/highbeam/modScript.lua", options)
+                .expect("write modScript entry");
+            zip.write_all(b"load('highbeam')")
+                .expect("write modScript contents");
+            zip.start_file("lua/ge/extensions/highbeam.lua", options)
+                .expect("write extension entry");
+            zip.write_all(b"return {}")
+                .expect("write extension contents");
+            zip.finish().expect("finish zip");
+        }
+
+        cursor.set_position(0);
+        verify_client_zip_reader(cursor).expect("zip with required files should verify");
+    }
+
+    #[test]
+    fn verify_client_zip_reader_rejects_missing_required_files() {
+        let mut cursor = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut cursor);
+            let options =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("scripts/highbeam/modScript.lua", options)
+                .expect("write modScript entry");
+            zip.write_all(b"load('highbeam')")
+                .expect("write modScript contents");
+            zip.finish().expect("finish zip");
+        }
+
+        cursor.set_position(0);
+        let err = verify_client_zip_reader(cursor).expect_err("zip missing extension should fail");
+        assert!(
+            err.to_string().contains("missing required files"),
+            "unexpected error: {err}"
+        );
     }
 }
