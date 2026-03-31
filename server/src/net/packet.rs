@@ -403,4 +403,40 @@ mod tests {
             text: "Welcome to the server!".into(),
         });
     }
+
+    #[test]
+    fn test_decode_rejects_malformed_json_corpus() {
+        // Corpus of malformed payloads used to validate decode hardening.
+        let corpus: Vec<&[u8]> = vec![
+            b"",
+            b"{",
+            b"[]",
+            b"{\"type\":}",
+            b"{\"type\":\"unknown\"}",
+            b"{\"type\":123}",
+            b"{\"success\":true}",
+            b"\x00\x01\x02\x03",
+            b"not json",
+        ];
+
+        for payload in corpus {
+            assert!(decode(payload).is_err(), "payload should fail decode: {payload:?}");
+        }
+    }
+
+    #[test]
+    fn test_decode_fuzz_like_random_bytes_do_not_panic() {
+        // Deterministic pseudo-random corpus for malformed payload coverage.
+        let mut seed: u64 = 0xBAD5EED;
+        for len in [1usize, 2, 3, 4, 8, 16, 32, 64, 128] {
+            let mut payload = vec![0u8; len];
+            for byte in &mut payload {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                *byte = (seed >> 56) as u8;
+            }
+
+            // Any result is acceptable (Err expected in practice); the key is no panic.
+            let _ = decode(&payload);
+        }
+    }
 }

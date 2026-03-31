@@ -167,7 +167,6 @@ mod tests {
 
     #[test]
     fn test_should_rotate_by_size_nonexistent() {
-        let policy = LogRotationPolicy::new(100, 7);
         assert!(!LogRotationPolicy::should_rotate_by_size(Path::new(
             "/tmp/nonexistent.log"
         )));

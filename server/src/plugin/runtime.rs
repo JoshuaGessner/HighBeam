@@ -51,6 +51,13 @@ impl PluginRuntime {
         self.plugins.read().map(|v| v.len()).unwrap_or(0)
     }
 
+    pub fn plugin_names(&self) -> Vec<String> {
+        self.plugins
+            .read()
+            .map(|plugins| plugins.iter().map(|p| p.name.clone()).collect())
+            .unwrap_or_default()
+    }
+
     pub fn reload(&self) -> Result<()> {
         let server_plugins_dir = self.resource_folder.join("Server");
         if !server_plugins_dir.exists() {

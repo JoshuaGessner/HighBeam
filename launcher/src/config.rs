@@ -9,6 +9,14 @@ pub struct LauncherConfig {
     pub cache_dir: String,
     pub beamng_exe: Option<String>,
     pub beamng_userfolder: Option<String>,
+    #[serde(default)]
+    pub discovery_relays: Vec<String>,
+    #[serde(default)]
+    pub favorite_servers: Vec<String>,
+    #[serde(default)]
+    pub recent_servers: Vec<String>,
+    #[serde(default = "default_query_timeout_ms")]
+    pub query_timeout_ms: u64,
     pub connect_timeout_sec: u64,
 }
 
@@ -34,6 +42,43 @@ impl LauncherConfig {
             Ok(Self::default())
         }
     }
+
+    pub fn save(&self, path: &Path) -> Result<()> {
+        let content = toml::to_string_pretty(self)
+            .with_context(|| format!("Failed to serialize launcher config: {}", path.display()))?;
+        std::fs::write(path, content)
+            .with_context(|| format!("Failed to write launcher config: {}", path.display()))?;
+        Ok(())
+    }
+
+    pub fn add_favorite_server(&mut self, addr: &str) -> bool {
+        let trimmed = addr.trim();
+        if trimmed.is_empty() {
+            return false;
+        }
+        if self.favorite_servers.iter().any(|s| s == trimmed) {
+            return false;
+        }
+        self.favorite_servers.push(trimmed.to_string());
+        self.favorite_servers.sort();
+        true
+    }
+
+    pub fn remove_favorite_server(&mut self, addr: &str) -> bool {
+        let before = self.favorite_servers.len();
+        self.favorite_servers.retain(|s| s != addr.trim());
+        before != self.favorite_servers.len()
+    }
+
+    pub fn note_recent_server(&mut self, addr: &str) {
+        let trimmed = addr.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        self.recent_servers.retain(|s| s != trimmed);
+        self.recent_servers.insert(0, trimmed.to_string());
+        self.recent_servers.truncate(20);
+    }
 }
 
 impl Default for LauncherConfig {
@@ -46,7 +91,46 @@ impl Default for LauncherConfig {
                 .to_string(),
             beamng_exe: None,
             beamng_userfolder: None,
+            discovery_relays: Vec::new(),
+            favorite_servers: Vec::new(),
+            recent_servers: Vec::new(),
+            query_timeout_ms: default_query_timeout_ms(),
             connect_timeout_sec: 10,
         }
+    }
+}
+
+fn default_query_timeout_ms() -> u64 {
+    1500
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn add_and_remove_favorite_server_is_idempotent() {
+        let mut cfg = LauncherConfig::default();
+
+        assert!(cfg.add_favorite_server("127.0.0.1:18860"));
+        assert!(!cfg.add_favorite_server("127.0.0.1:18860"));
+        assert_eq!(cfg.favorite_servers.len(), 1);
+
+        assert!(cfg.remove_favorite_server("127.0.0.1:18860"));
+        assert!(!cfg.remove_favorite_server("127.0.0.1:18860"));
+        assert!(cfg.favorite_servers.is_empty());
+    }
+
+    #[test]
+    fn recent_servers_are_deduplicated_and_capped() {
+        let mut cfg = LauncherConfig::default();
+
+        for idx in 1..=25 {
+            cfg.note_recent_server(&format!("127.0.0.1:{}", 18000 + idx));
+        }
+        assert_eq!(cfg.recent_servers.len(), 20);
+
+        cfg.note_recent_server("127.0.0.1:18010");
+        assert_eq!(cfg.recent_servers[0], "127.0.0.1:18010");
     }
 }

@@ -10,6 +10,7 @@ use tokio::time::{timeout, Instant};
 use tokio_rustls::TlsAcceptor;
 
 use crate::config::ServerConfig;
+use crate::control::ControlPlane;
 use crate::metrics;
 use crate::plugin::events::PluginEvent;
 use crate::plugin::runtime::PluginRuntime;
@@ -23,6 +24,7 @@ use super::packet::{self, TcpPacket, MAX_PACKET_SIZE, PROTOCOL_VERSION};
 /// Start the TCP listener. Runs forever, accepting connections.
 pub async fn start_listener(
     config: Arc<ServerConfig>,
+    control: Arc<ControlPlane>,
     sessions: Arc<SessionManager>,
     world: Arc<WorldState>,
     plugins: Arc<PluginRuntime>,
@@ -70,6 +72,7 @@ pub async fn start_listener(
         let sessions = sessions.clone();
         let world = world.clone();
         let plugins = plugins.clone();
+        let control = control.clone();
         let rate_limiters = rate_limiters.clone();
         let tls_acceptor = tls_acceptor.clone();
 
@@ -78,6 +81,7 @@ pub async fn start_listener(
                 stream,
                 addr,
                 config,
+                control,
                 sessions,
                 world,
                 plugins,
@@ -94,9 +98,10 @@ pub async fn start_listener(
 
 /// Wrapper that handles both plain TCP and TLS connections
 async fn handle_connection_wrapper(
-    mut stream: TcpStream,
+    stream: TcpStream,
     addr: SocketAddr,
     config: Arc<ServerConfig>,
+    control: Arc<ControlPlane>,
     sessions: Arc<SessionManager>,
     world: Arc<WorldState>,
     plugins: Arc<PluginRuntime>,
@@ -116,6 +121,7 @@ async fn handle_connection_wrapper(
             tls_stream,
             addr,
             config,
+            control,
             sessions,
             world,
             plugins,
@@ -128,6 +134,7 @@ async fn handle_connection_wrapper(
             stream,
             addr,
             config,
+            control,
             sessions,
             world,
             plugins,
@@ -143,6 +150,7 @@ async fn handle_connection_core<S>(
     stream: S,
     addr: SocketAddr,
     config: Arc<ServerConfig>,
+    control: Arc<ControlPlane>,
     sessions: Arc<SessionManager>,
     world: Arc<WorldState>,
     plugins: Arc<PluginRuntime>,
@@ -159,7 +167,7 @@ where
     let hello = TcpPacket::ServerHello {
         version: PROTOCOL_VERSION,
         name: config.general.name.clone(),
-        map: config.general.map.clone(),
+        map: control.get_active_map(),
         players: sessions.player_count() as u32,
         max_players: config.general.max_players,
         max_cars: config.general.max_cars_per_player,

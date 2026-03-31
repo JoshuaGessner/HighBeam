@@ -8,4 +8,11 @@ cache_dir = "~/.highbeam/cache"
 beamng_exe = ""
 # Path to BeamNG.drive user data folder. Leave empty to auto-detect.
 beamng_userfolder = ""
+# Optional community relay URLs used by --browse-relay when no URL is passed.
+discovery_relays = []
+# Saved servers for --favorites/--browse-favorites flows.
+favorite_servers = []
+# Last connected/queried servers (automatically maintained).
+recent_servers = []
+query_timeout_ms = 1500
 connect_timeout_sec = 10

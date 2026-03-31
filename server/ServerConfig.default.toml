@@ -6,6 +6,7 @@ MaxCarsPerPlayer = 3
 Map = "/levels/gridmap_v2/info.json"
 Description = "A HighBeam server"
 ResourceFolder = "Resources"
+StateFile = "server_state.json"
 
 [Auth]
 Mode = "open"
@@ -33,3 +34,8 @@ AutoGenerate = false
 
 [Updates]
 AutoUpdate = true
+
+[Discovery]
+EnableRelay = false
+RelayUrls = []
+RegistrationIntervalSec = 30

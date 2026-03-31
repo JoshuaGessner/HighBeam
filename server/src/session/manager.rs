@@ -21,6 +21,14 @@ pub struct SessionManager {
     next_id: AtomicU32,
 }
 
+#[derive(Debug, Clone)]
+pub struct PlayerAdminSnapshot {
+    pub player_id: u32,
+    pub name: String,
+    pub addr: SocketAddr,
+    pub connected_secs: u64,
+}
+
 /// Compute the 16-byte session hash from a session token.
 fn compute_session_hash(token: &str) -> [u8; 16] {
     let digest = Sha256::digest(token.as_bytes());
@@ -156,6 +164,21 @@ impl SessionManager {
             .collect()
     }
 
+    pub fn get_player_admin_snapshot(&self) -> Vec<PlayerAdminSnapshot> {
+        self.players
+            .iter()
+            .map(|entry| {
+                let p = entry.value();
+                PlayerAdminSnapshot {
+                    player_id: p.id,
+                    name: p.name.clone(),
+                    addr: p.addr,
+                    connected_secs: p.connected_at.elapsed().as_secs(),
+                }
+            })
+            .collect()
+    }
+
     /// Send a TCP packet to all connected players, optionally excluding one.
     pub fn broadcast(&self, packet: TcpPacket, exclude: Option<u32>) {
         for entry in self.players.iter() {
@@ -190,5 +213,64 @@ impl SessionManager {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rapid_connect_disconnect_cycles() {
+        let manager = SessionManager::new();
+        let addr: SocketAddr = "127.0.0.1:18860".parse().expect("valid socket addr");
+
+        let mut ids = Vec::new();
+        for i in 0..500 {
+            let (tx, _rx) = mpsc::channel(8);
+            let username = format!("player_{i}");
+            let (player_id, _token) = manager
+                .add_player(username, addr, tx)
+                .expect("add player should succeed");
+            ids.push(player_id);
+
+            assert_eq!(manager.player_count(), 1);
+            manager.remove_player(player_id);
+            assert_eq!(manager.player_count(), 0);
+        }
+
+        for win in ids.windows(2) {
+            assert!(win[1] > win[0], "player IDs should increase monotonically");
+        }
+    }
+
+    #[test]
+    fn test_session_cleanup_after_bulk_disconnect() {
+        let manager = SessionManager::new();
+        let addr: SocketAddr = "127.0.0.1:18861".parse().expect("valid socket addr");
+
+        let mut player_ids = Vec::new();
+        for i in 0..100 {
+            let (tx, _rx) = mpsc::channel(8);
+            let (player_id, token) = manager
+                .add_player(format!("bulk_{i}"), addr, tx)
+                .expect("add player should succeed");
+            player_ids.push((player_id, token));
+        }
+
+        assert_eq!(manager.player_count(), 100);
+
+        for (player_id, token) in &player_ids {
+            let hash = compute_session_hash(token);
+            assert_eq!(manager.lookup_by_hash(&hash), Some(*player_id));
+        }
+
+        for (player_id, token) in player_ids {
+            manager.remove_player(player_id);
+            let hash = compute_session_hash(&token);
+            assert_eq!(manager.lookup_by_hash(&hash), None);
+        }
+
+        assert_eq!(manager.player_count(), 0);
     }
 }

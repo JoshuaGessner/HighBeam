@@ -4,6 +4,7 @@ use anyhow::Result;
 
 mod config;
 mod detect;
+mod discovery;
 mod game;
 mod installer;
 mod mod_cache;
@@ -14,6 +15,14 @@ mod updater;
 
 struct CliArgs {
     server: Option<String>,
+    query_server: Option<String>,
+    browse_relay: Option<String>,
+    favorite_add: Option<String>,
+    favorite_remove: Option<String>,
+    list_favorites: bool,
+    list_recent: bool,
+    browse_favorites: bool,
+    browse_recent: bool,
     config: PathBuf,
     no_launch: bool,
     clear_cache: bool,
@@ -21,13 +30,28 @@ struct CliArgs {
 }
 
 fn parse_args() -> CliArgs {
+    parse_args_from(std::env::args().skip(1))
+}
+
+fn parse_args_from<I>(args: I) -> CliArgs
+where
+    I: IntoIterator<Item = String>,
+{
     let mut server = None;
+    let mut query_server = None;
+    let mut browse_relay = None;
+    let mut favorite_add = None;
+    let mut favorite_remove = None;
+    let mut list_favorites = false;
+    let mut list_recent = false;
+    let mut browse_favorites = false;
+    let mut browse_recent = false;
     let mut config = PathBuf::from("LauncherConfig.toml");
     let mut no_launch = false;
     let mut clear_cache = false;
     let mut no_update = false;
 
-    let mut args = std::env::args().skip(1);
+    let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--server" => {
@@ -35,6 +59,30 @@ fn parse_args() -> CliArgs {
                     server = Some(v);
                 }
             }
+            "--query-server" => {
+                if let Some(v) = args.next() {
+                    query_server = Some(v);
+                }
+            }
+            "--browse-relay" => {
+                if let Some(v) = args.next() {
+                    browse_relay = Some(v);
+                }
+            }
+            "--favorite-add" => {
+                if let Some(v) = args.next() {
+                    favorite_add = Some(v);
+                }
+            }
+            "--favorite-remove" => {
+                if let Some(v) = args.next() {
+                    favorite_remove = Some(v);
+                }
+            }
+            "--favorites" => list_favorites = true,
+            "--recent" => list_recent = true,
+            "--browse-favorites" => browse_favorites = true,
+            "--browse-recent" => browse_recent = true,
             "--config" => {
                 if let Some(v) = args.next() {
                     config = PathBuf::from(v);
@@ -49,10 +97,48 @@ fn parse_args() -> CliArgs {
 
     CliArgs {
         server,
+        query_server,
+        browse_relay,
+        favorite_add,
+        favorite_remove,
+        list_favorites,
+        list_recent,
+        browse_favorites,
+        browse_recent,
         config,
         no_launch,
         clear_cache,
         no_update,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_args_does_not_enable_relay_browse_by_default() {
+        let parsed = parse_args_from(vec![]);
+        assert!(parsed.browse_relay.is_none());
+    }
+
+    #[test]
+    fn parse_args_sets_browse_relay_only_when_flag_present() {
+        let parsed = parse_args_from(vec![
+            "--browse-relay".to_string(),
+            "https://relay.example/servers".to_string(),
+        ]);
+        assert_eq!(
+            parsed.browse_relay.as_deref(),
+            Some("https://relay.example/servers")
+        );
+    }
+
+    #[test]
+    fn parse_args_allows_server_without_browse_relay() {
+        let parsed = parse_args_from(vec!["--server".to_string(), "127.0.0.1:18860".to_string()]);
+        assert_eq!(parsed.server.as_deref(), Some("127.0.0.1:18860"));
+        assert!(parsed.browse_relay.is_none());
     }
 }
 
@@ -73,6 +159,157 @@ fn main() -> Result<()> {
         .init();
 
     let args = parse_args();
+    let mut cfg = config::LauncherConfig::load(&args.config)?;
+
+    if let Some(addr) = args.query_server.as_deref() {
+        let started = std::time::Instant::now();
+        let info = discovery::query_server(addr, cfg.query_timeout_ms)?;
+        let ping_ms = started.elapsed().as_millis();
+        println!(
+            "{} | map={} | players={}/{} | protocol=v{} | port={} | ping={}ms",
+            info.name,
+            info.map,
+            info.players,
+            info.max_players,
+            info.protocol_version,
+            info.port,
+            ping_ms
+        );
+        cfg.note_recent_server(addr);
+        cfg.save(&args.config)?;
+        return Ok(());
+    }
+
+    if let Some(addr) = args.favorite_add.as_deref() {
+        if cfg.add_favorite_server(addr) {
+            cfg.save(&args.config)?;
+            println!("Added favorite server: {}", addr);
+        } else {
+            println!("Favorite already exists or invalid: {}", addr);
+        }
+        return Ok(());
+    }
+
+    if let Some(addr) = args.favorite_remove.as_deref() {
+        if cfg.remove_favorite_server(addr) {
+            cfg.save(&args.config)?;
+            println!("Removed favorite server: {}", addr);
+        } else {
+            println!("Favorite not found: {}", addr);
+        }
+        return Ok(());
+    }
+
+    if args.list_favorites {
+        if cfg.favorite_servers.is_empty() {
+            println!("No favorite servers configured.");
+        } else {
+            println!("Favorite servers:");
+            for server in &cfg.favorite_servers {
+                println!("- {}", server);
+            }
+        }
+        return Ok(());
+    }
+
+    if args.list_recent {
+        if cfg.recent_servers.is_empty() {
+            println!("No recent servers.");
+        } else {
+            println!("Recent servers:");
+            for server in &cfg.recent_servers {
+                println!("- {}", server);
+            }
+        }
+        return Ok(());
+    }
+
+    if args.browse_favorites {
+        if cfg.favorite_servers.is_empty() {
+            println!("No favorite servers configured.");
+            return Ok(());
+        }
+
+        println!("Favorite servers (live):");
+        for addr in &cfg.favorite_servers {
+            let started = std::time::Instant::now();
+            match discovery::query_server(addr, cfg.query_timeout_ms) {
+                Ok(info) => {
+                    let ping_ms = started.elapsed().as_millis();
+                    println!(
+                        "- {} | {} | map={} | players={}/{} | ping={}ms",
+                        addr,
+                        info.name,
+                        info.map,
+                        info.players,
+                        info.max_players,
+                        ping_ms
+                    );
+                }
+                Err(e) => println!("- {} | unavailable ({})", addr, e),
+            }
+        }
+        return Ok(());
+    }
+
+    if args.browse_recent {
+        if cfg.recent_servers.is_empty() {
+            println!("No recent servers.");
+            return Ok(());
+        }
+
+        println!("Recent servers (live):");
+        for addr in &cfg.recent_servers {
+            let started = std::time::Instant::now();
+            match discovery::query_server(addr, cfg.query_timeout_ms) {
+                Ok(info) => {
+                    let ping_ms = started.elapsed().as_millis();
+                    println!(
+                        "- {} | {} | map={} | players={}/{} | ping={}ms",
+                        addr,
+                        info.name,
+                        info.map,
+                        info.players,
+                        info.max_players,
+                        ping_ms
+                    );
+                }
+                Err(e) => println!("- {} | unavailable ({})", addr, e),
+            }
+        }
+        return Ok(());
+    }
+
+    if let Some(relay_url) = args.browse_relay.as_deref() {
+        let entries = discovery::fetch_relay_servers(relay_url, cfg.query_timeout_ms)?;
+        if entries.is_empty() {
+            println!("Relay returned no servers: {}", relay_url);
+            return Ok(());
+        }
+
+        println!("Servers from relay {}:", relay_url);
+        for entry in entries {
+            let started = std::time::Instant::now();
+            match discovery::query_server(&entry.addr, cfg.query_timeout_ms) {
+                Ok(info) => {
+                    let ping_ms = started.elapsed().as_millis();
+                    println!(
+                        "- {} | {} | map={} | players={}/{} | ping={}ms",
+                        entry.addr,
+                        info.name,
+                        info.map,
+                        info.players,
+                        info.max_players,
+                        ping_ms
+                    );
+                }
+                Err(e) => {
+                    println!("- {} | unavailable ({})", entry.addr, e);
+                }
+            }
+        }
+        return Ok(());
+    }
 
     // Clean up leftover binary from a previous update
     updater::cleanup_previous_update();
@@ -96,10 +333,10 @@ fn main() -> Result<()> {
         }
     }
 
-    let mut cfg = config::LauncherConfig::load(&args.config)?;
-
     if let Some(server) = args.server {
+        cfg.note_recent_server(&server);
         cfg.server_addr = server;
+        cfg.save(&args.config)?;
     }
 
     let cache_dir = expand_tilde(&cfg.cache_dir);

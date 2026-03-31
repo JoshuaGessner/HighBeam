@@ -21,6 +21,30 @@ impl WorldState {
         }
     }
 
+    pub fn restore_vehicle_snapshot(&self, vehicles: &[VehicleInfo]) {
+        self.vehicles.clear();
+
+        let mut max_vehicle_id = 0u16;
+        for vehicle in vehicles {
+            max_vehicle_id = max_vehicle_id.max(vehicle.vehicle_id);
+            self.vehicles.insert(
+                (vehicle.player_id, vehicle.vehicle_id),
+                Vehicle {
+                    id: vehicle.vehicle_id,
+                    owner_id: vehicle.player_id,
+                    config: vehicle.data.clone(),
+                    position: vehicle.position,
+                    rotation: vehicle.rotation,
+                    velocity: vehicle.velocity,
+                    last_update: Instant::now(),
+                },
+            );
+        }
+
+        self.next_vehicle_id
+            .store(max_vehicle_id.saturating_add(1), Ordering::Relaxed);
+    }
+
     /// Spawn a new vehicle for the given player. Returns the assigned vehicle_id.
     pub fn spawn_vehicle(&self, owner_id: u32, config: String) -> u16 {
         let vid = self.next_vehicle_id.fetch_add(1, Ordering::Relaxed);
@@ -124,5 +148,41 @@ impl WorldState {
 
     pub fn vehicle_count(&self) -> usize {
         self.vehicles.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restore_vehicle_snapshot_rebuilds_world_and_next_id() {
+        let world = WorldState::new();
+        let snapshot = vec![
+            VehicleInfo {
+                player_id: 7,
+                vehicle_id: 20,
+                data: "{\"model\":\"pickup\"}".into(),
+                position: [1.0, 2.0, 3.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                velocity: [0.1, 0.2, 0.3],
+            },
+            VehicleInfo {
+                player_id: 8,
+                vehicle_id: 31,
+                data: "{\"model\":\"sunburst\"}".into(),
+                position: [4.0, 5.0, 6.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                velocity: [0.0, 0.0, 0.0],
+            },
+        ];
+
+        world.restore_vehicle_snapshot(&snapshot);
+        assert_eq!(world.vehicle_count(), 2);
+        assert!(world.is_owner(7, 20));
+        assert!(world.is_owner(8, 31));
+
+        let new_vid = world.spawn_vehicle(9, "{}".into());
+        assert_eq!(new_vid, 32);
     }
 }

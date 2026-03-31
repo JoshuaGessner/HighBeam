@@ -4,18 +4,23 @@ use anyhow::{bail, Result};
 pub struct CliArgs {
     pub config_path: String,
     pub headless: bool,
+    pub protocol_benchmark: bool,
 }
 
 impl CliArgs {
     pub fn parse() -> Result<Self> {
         let mut config_path = String::from("ServerConfig.toml");
         let mut headless = false;
+        let mut protocol_benchmark = false;
 
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--headless" => {
                     headless = true;
+                }
+                "--protocol-benchmark" => {
+                    protocol_benchmark = true;
                 }
                 "--config" | "-c" => {
                     let Some(path) = args.next() else {
@@ -25,7 +30,7 @@ impl CliArgs {
                 }
                 "--help" | "-h" => {
                     println!(
-                        "HighBeam Server\n\nUsage:\n  highbeam-server [--config <path>] [--headless]\n\nOptions:\n  -c, --config <path>  Path to ServerConfig.toml\n      --headless       Run without future GUI features\n  -h, --help           Show this help message"
+                        "HighBeam Server\n\nUsage:\n  highbeam-server [--config <path>] [--headless] [--protocol-benchmark]\n\nOptions:\n  -c, --config <path>     Path to ServerConfig.toml\n      --headless          Run without GUI\n      --protocol-benchmark  Run JSON protocol baseline benchmark and exit\n  -h, --help              Show this help message"
                     );
                     std::process::exit(0);
                 }
@@ -41,6 +46,7 @@ impl CliArgs {
         Ok(Self {
             config_path,
             headless,
+            protocol_benchmark,
         })
     }
 }

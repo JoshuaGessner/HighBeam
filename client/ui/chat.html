@@ -51,6 +51,41 @@
             font-size: 12px;
             color: #aaa;
         }
+
+        #qualityStatus {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: #aaa;
+            padding: 3px 8px;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 999px;
+            background: rgba(0, 0, 0, 0.2);
+        }
+
+        #qualityBadge {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: #888;
+        }
+
+        #qualityBadge.good { background-color: #66bb6a; }
+        #qualityBadge.fair { background-color: #ffa726; }
+        #qualityBadge.poor { background-color: #ef5350; }
+        #qualityBadge.disconnected { background-color: #888; }
+
+        #settingsToggle {
+            font-size: 12px;
+            color: #aaa;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        #settingsToggle:hover {
+            color: #e94560;
+        }
         
         #statusDot {
             width: 8px;
@@ -98,6 +133,71 @@
             border-left: 1px solid #e94560;
             overflow-y: auto;
             display: none;
+        }
+
+        #settingsPanel {
+            width: 220px;
+            background-color: rgba(15, 52, 96, 0.75);
+            border-left: 1px solid #e94560;
+            overflow-y: auto;
+            display: none;
+            padding: 10px 12px;
+        }
+
+        #settingsPanel.visible {
+            display: block;
+        }
+
+        .settingsHeader {
+            font-size: 12px;
+            font-weight: bold;
+            color: #e94560;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .settingsRow {
+            margin-bottom: 10px;
+            font-size: 12px;
+            color: #d0d0d0;
+        }
+
+        .settingsRow label {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .settingsRow input[type="number"] {
+            width: 72px;
+            padding: 5px 6px;
+            background-color: #16213e;
+            border: 1px solid #e94560;
+            border-radius: 4px;
+            color: #e0e0e0;
+            font-size: 12px;
+        }
+
+        .settingsRow input[type="checkbox"] {
+            accent-color: #e94560;
+        }
+
+        #settingsApply {
+            width: 100%;
+            margin-top: 4px;
+            padding: 8px;
+            background-color: #e94560;
+            border: none;
+            border-radius: 4px;
+            color: #fff;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        #settingsApply:hover {
+            background-color: #ff6b9d;
         }
         
         #playerList.visible {
@@ -229,7 +329,12 @@
                     <div id="statusDot"></div>
                     <span id="statusText">Disconnected</span>
                 </div>
+                <div id="qualityStatus" title="Connection quality">
+                    <div id="qualityBadge" class="disconnected"></div>
+                    <span id="qualityText">Quality: N/A</span>
+                </div>
                 <div id="playerCount" onclick="togglePlayerList()">Players: 0</div>
+                <div id="settingsToggle" onclick="toggleSettingsPanel()">Settings</div>
             </div>
         </div>
         <div id="chatBody">
@@ -237,6 +342,22 @@
             <div id="playerList">
                 <div id="playerListHeader">Online Players</div>
                 <div id="playerListEntries"></div>
+            </div>
+            <div id="settingsPanel">
+                <div class="settingsHeader">Network Settings</div>
+                <div class="settingsRow">
+                    <label>
+                        Update Rate
+                        <input id="updateRateInput" type="number" min="5" max="60" step="1" value="20" />
+                    </label>
+                </div>
+                <div class="settingsRow">
+                    <label>
+                        Interpolation
+                        <input id="interpolationInput" type="checkbox" checked />
+                    </label>
+                </div>
+                <button id="settingsApply">Apply</button>
             </div>
         </div>
         <div id="inputContainer">
@@ -250,10 +371,21 @@
         const chatInput = document.getElementById('chatInput');
         const sendButton = document.getElementById('sendButton');
         const playerCountEl = document.getElementById('playerCount');
+        const updateRateInput = document.getElementById('updateRateInput');
+        const interpolationInput = document.getElementById('interpolationInput');
+        const settingsApply = document.getElementById('settingsApply');
         
         // Reference to BeamNG game API (injected by highbeam.lua)
         let highbeamAPI = window.highbeamAPI || null;
         let playerCount = 0;
+        let lastKnownSettings = {
+            updateRate: 20,
+            interpolation: true,
+        };
+
+        function clamp(value, min, max) {
+            return Math.max(min, Math.min(max, value));
+        }
         
         function addMessage(playerName, messageText, isSystem = false) {
             const message = document.createElement('div');
@@ -354,6 +486,39 @@
             };
             text.textContent = labels[status] || status;
         };
+
+        window.updateConnectionQuality = function(qualityInfo) {
+            const badge = document.getElementById('qualityBadge');
+            const text = document.getElementById('qualityText');
+            if (!qualityInfo || typeof qualityInfo !== 'object') {
+                badge.className = 'disconnected';
+                text.textContent = 'Quality: N/A';
+                return;
+            }
+
+            const quality = qualityInfo.quality || 'disconnected';
+            const sincePacket = qualityInfo.sinceLastServerPacketSec;
+            const sinceLabel = typeof sincePacket === 'number'
+                ? ` | last ${sincePacket.toFixed(1)}s`
+                : '';
+
+            badge.className = quality;
+            text.textContent = `Quality: ${quality.toUpperCase()}${sinceLabel}`;
+        };
+
+        window.updateClientSettings = function(settings) {
+            if (!settings || typeof settings !== 'object') {
+                return;
+            }
+            if (typeof settings.updateRate === 'number') {
+                lastKnownSettings.updateRate = clamp(Math.round(settings.updateRate), 5, 60);
+                updateRateInput.value = String(lastKnownSettings.updateRate);
+            }
+            if (typeof settings.interpolation === 'boolean') {
+                lastKnownSettings.interpolation = settings.interpolation;
+                interpolationInput.checked = settings.interpolation;
+            }
+        };
         
         // Global function for Lua to update player list
         window.updatePlayerList = function(players) {
@@ -376,9 +541,51 @@
             const pl = document.getElementById('playerList');
             pl.classList.toggle('visible');
         }
+
+        function toggleSettingsPanel() {
+            const panel = document.getElementById('settingsPanel');
+            panel.classList.toggle('visible');
+        }
+
+        function readSettingsFromForm() {
+            return {
+                updateRate: clamp(parseInt(updateRateInput.value || '20', 10) || 20, 5, 60),
+                interpolation: !!interpolationInput.checked,
+            };
+        }
+
+        function applySettings() {
+            const settings = readSettingsFromForm();
+            lastKnownSettings = settings;
+
+            if (highbeamAPI && highbeamAPI.config && typeof highbeamAPI.config.set === 'function') {
+                highbeamAPI.config.set('updateRate', settings.updateRate);
+                highbeamAPI.config.set('interpolation', settings.interpolation);
+                addSystemMessage(`Settings applied: rate=${settings.updateRate}, interpolation=${settings.interpolation}`);
+                return;
+            }
+
+            addSystemMessage('Settings stored locally (API bridge unavailable in this context)');
+        }
+
+        settingsApply.addEventListener('click', applySettings);
+
+        setInterval(() => {
+            if (highbeamAPI && highbeamAPI.connection && typeof highbeamAPI.connection.getQuality === 'function') {
+                const quality = highbeamAPI.connection.getQuality();
+                window.updateConnectionQuality(quality);
+            }
+            if (highbeamAPI && highbeamAPI.config && typeof highbeamAPI.config.get === 'function') {
+                window.updateClientSettings({
+                    updateRate: highbeamAPI.config.get('updateRate'),
+                    interpolation: highbeamAPI.config.get('interpolation'),
+                });
+            }
+        }, 1000);
         
         // Initialize
         chatInput.focus();
+        window.updateClientSettings(lastKnownSettings);
         addSystemMessage('Connected to HighBeam server');
     </script>
 </body>

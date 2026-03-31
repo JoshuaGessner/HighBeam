@@ -51,6 +51,43 @@ The server and client negotiate protocol version during the handshake. Mismatche
 > **Implementation details for each phase are in [BUILD_GUIDE.md](../BUILD_GUIDE.md).**
 > The VERSION_PLAN defines *what* ships in each version. The BUILD_GUIDE defines *how* to build it.
 
+### Active Implementation Queue
+
+- [x] PR1: v0.3 hardening closeout tests
+   - Added malformed-packet decode corpus tests (server).
+   - Added rapid connect/disconnect stress validation tests (server).
+   - Added explicit bad-JSON recovery scenario helper (client).
+- [x] PR2: v0.3 manual verification run
+   - Execute timeout, rate-limit, validation, and log-rotation manual pass.
+   - Captured results and edge cases in this file.
+- [x] PR3: v0.6 backend control plane foundation
+   - Introduce server admin command/snapshot interfaces for future GUI wiring.
+   - Keep headless path unchanged.
+   - Delivered `ControlPlane` backend module with:
+     - Runtime snapshot API (`ServerSnapshot`)
+     - Admin command API (`GetSnapshot`, `BroadcastServerMessage`, `KickPlayer`, `ReloadPlugins`)
+     - Console command routing (`status`, `say`, `kick`, `plugins reload`, `lua`)
+- [x] PR4: v0.6 GUI shell
+   - Add egui/eframe application shell with dashboard tab and status metrics.
+   - Delivered desktop GUI scaffold with tabbed layout and live dashboard snapshot:
+     - Tabs: Dashboard, Players, Plugins, Console, Settings
+     - Live status from `ControlPlane::snapshot()` (players, vehicles, plugins, uptime, map, port)
+     - Non-headless launch path integrated while preserving `--headless` behavior
+- [x] PR5: v0.6 discovery protocol slice
+   - Add unauthenticated server query endpoint and basic client discovery model.
+   - Delivered unauthenticated UDP discovery query endpoint on server.
+   - Delivered launcher discovery query client (`--query-server host:port`).
+- [x] PR6: v0.7 protocol optimization prep
+   - Add JSON baseline benchmark harness and dual-format migration plan.
+   - Delivered server benchmark mode: `--protocol-benchmark`.
+   - Added benchmark harness (`net::benchmark`) with representative packet corpus and throughput/size reporting.
+   - Migration plan (dual-format):
+     1. Introduce protocol v3 with explicit transport format negotiation in handshake.
+     2. Support JSON (v2/v3 compatibility mode) and binary codec (v3 preferred) in parallel decode path.
+     3. Keep JSON encode for legacy clients until adoption threshold.
+     4. Flip default encode to binary for v3-capable clients.
+     5. Remove JSON encode path in a future major after deprecation window.
+
 ### v0.1.0 — Foundation (Pre-Alpha) ✅
 
 **Status:** Complete — commit `abf7d44`  
@@ -193,10 +230,17 @@ As of 2026-03-30, historical hardening notes were merged into this plan.
 - [x] Connection state machine with transition guards and stack-trace logging
 
 **Post-hardening verification backlog (tracked here, not in a separate roadmap):**
-- [ ] Manual verification pass for v0.3.0 hardening behavior (timeouts, rate limits, validation, log rotation)
-- [ ] Add malformed-packet fuzzing corpus to automated tests
-- [ ] Run rapid connect/disconnect stress cycle validation
-- [ ] Add explicit bad-JSON recovery test scenario for client error handling
+- [x] Manual verification pass for v0.3.0 hardening behavior (timeouts, rate limits, validation, log rotation)
+- [x] Add malformed-packet fuzzing corpus to automated tests
+- [x] Run rapid connect/disconnect stress cycle validation
+- [x] Add explicit bad-JSON recovery test scenario for client error handling
+
+**Verification evidence (2026-03-30 local run):**
+- Timeout behavior verified with temporary server config (`AuthTimeoutSec=2`): server logged `Auth timeout after 2s` on idle pre-auth connection.
+- Auth rate limiting verified from repeated local connections: server logged `Auth rate limit exceeded` after max attempts.
+- Validation checks verified via targeted tests: `cargo test validation::tests::` (7 passed).
+- Log rotation behavior verified via targeted tests: `cargo test log_rotation::tests::` (5 passed).
+- Runtime metrics and memory monitoring observed during verification run (`Runtime metrics ... memory_rss_mib=...`).
 
 **Deliverable:** Full multiplayer session with chat, modded vehicles, and password-protected servers. Launcher handles mod sync before game launch.
 
@@ -321,34 +365,42 @@ As of 2026-03-30, historical hardening notes were merged into this plan.
 
 ### v0.6.0 — Server GUI & Discovery (Beta)
 
+**Status:** Complete
 **Goal:** Graphical server management interface and optional server discovery without centralized dependency.
 
+**Current foundation progress (2026-03-30):**
+- ControlPlane backend added for admin commands and runtime snapshots.
+- GUI shell integrated for non-headless runs using egui/eframe.
+- Tab scaffold in place: Dashboard, Players, Maps, Mods, Plugins, Console, Settings.
+- Live dashboard snapshot wired (server/map/port, players, vehicles, plugins, uptime).
+- Relay registration heartbeat and launcher discovery browser/favorites flows implemented.
+
 **Server — GUI:**
-- [ ] Server GUI (egui/eframe) with tabbed panel layout
-- [ ] Dashboard panel (player count, uptime, tick rate, bandwidth)
-- [ ] Player management panel (kick, ban, persistence toggle)
-- [ ] Map management panel (select active map from available maps)
-- [ ] Mod management panel (add/remove mods from Resources/Client/)
-- [ ] Plugin management panel (view, reload, error status)
-- [ ] Console panel (live log viewer, Lua command injection)
-- [ ] Settings panel (edit ServerConfig.toml values at runtime)
-- [ ] System tray integration (minimize-to-tray, tray context menu)
-- [ ] State save on shutdown (vehicle positions, player data persistence)
+- [x] Server GUI (egui/eframe) with tabbed panel layout
+- [x] Dashboard panel (player count, uptime, tick rate, bandwidth)
+- [x] Player management panel (kick, ban, persistence toggle)
+- [x] Map management panel (select active map from available maps)
+- [x] Mod management panel (add/remove mods from Resources/Client/)
+- [x] Plugin management panel (view, reload, error status)
+- [x] Console panel (live log viewer, Lua command injection)
+- [x] Settings panel (edit ServerConfig.toml values at runtime)
+- [x] System tray integration (minimize-to-tray, tray context menu)
+- [x] State save on shutdown (vehicle positions, player data persistence)
 
 **Client:**
-- [ ] Advanced interpolation (extrapolation with velocity)
-- [ ] Jitter buffer tuning
-- [ ] Connection quality indicator UI
-- [ ] Settings UI (update rate, interpolation toggle)
+- [x] Advanced interpolation (extrapolation with velocity)
+- [x] Jitter buffer tuning
+- [x] Connection quality indicator UI
+- [x] Settings UI (update rate, interpolation toggle)
 
 **Server Discovery:**
-- [ ] Optional registration with community relay servers
-- [ ] Server query protocol (unauthenticated info endpoint)
+- [x] Optional registration with community relay servers
+- [x] Server query protocol (unauthenticated info endpoint)
 
 **Client Discovery:**
-- [ ] Server browser with community relay support
-- [ ] Server favorites / recent connections
-- [ ] Server info preview (name, map, players, ping)
+- [x] Server browser with community relay support
+- [x] Server favorites / recent connections
+- [x] Server info preview (name, map, players, ping)
 
 **Deliverable:** Server operators have a desktop GUI for managing their server. Players can discover servers through a community-run index.
 
@@ -371,7 +423,7 @@ As of 2026-03-30, historical hardening notes were merged into this plan.
 - [ ] Binary TCP packet format (replace JSON with MessagePack or custom proto)
 - [ ] Delta compression for vehicle config updates
 - [ ] Adaptive update rates based on distance/visibility
-- [ ] State save on shutdown with recovery on restart
+- [x] State save on shutdown with recovery on restart
 
 **Performance Targets:**
 - [ ] Binary protocol reduces per-packet overhead by >50% vs JSON

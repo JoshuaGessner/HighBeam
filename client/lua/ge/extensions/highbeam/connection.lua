@@ -45,11 +45,38 @@ M._serverEventHandlers = {}  -- event_name -> callback(payload)
 -- Error tracking for diagnostics (Phase 2.4)
 M._errorCount = 0
 M._lastErrorTime = nil
+M._droppedMalformedPackets = 0
+M._lastServerPacketTime = nil
 
 M.getErrorStats = function()
   return {
     count = M._errorCount,
-    lastError = M._lastErrorTime
+    lastError = M._lastErrorTime,
+    droppedMalformedPackets = M._droppedMalformedPackets,
+  }
+end
+
+M.getConnectionQuality = function()
+  local now = os.clock()
+  local sincePacket = nil
+  if M._lastServerPacketTime then
+    sincePacket = now - M._lastServerPacketTime
+  end
+
+  local quality = "good"
+  if M.state ~= M.STATE_CONNECTED then
+    quality = "disconnected"
+  elseif sincePacket and sincePacket > 10 then
+    quality = "poor"
+  elseif sincePacket and sincePacket > 4 then
+    quality = "fair"
+  end
+
+  return {
+    quality = quality,
+    sinceLastServerPacketSec = sincePacket,
+    reconnectAttempt = M._reconnectAttempt,
+    droppedMalformedPackets = M._droppedMalformedPackets,
   }
 end
 
@@ -397,16 +424,18 @@ local function _validatePacket(packet)
 end
 
 M._handlePacket = function(jsonStr)
+  M._lastServerPacketTime = os.clock()
   local ok, packet = pcall(function()
     return require("highbeam/lib/json").decode(jsonStr)
   end)
   if not ok or not packet then
     -- Log parse error with hex dump for debugging (Phase 2.3)
     M._reportError('W', 'packet_decode', 'Failed to decode packet (Phase 2.3): ' .. tostring(packet))
+    M._droppedMalformedPackets = M._droppedMalformedPackets + 1
     local hexDump = _hexDump(jsonStr)
     log('D', logTag, 'Hex dump of malformed packet: ' .. hexDump)
-    -- Gracefully disconnect on parse error
-    M._onDisconnect("Malformed packet received (JSON parse failed)")
+    -- Drop malformed payload and continue running; this is recoverable.
+    M._reportError('I', 'packet_recovery', 'Dropped malformed JSON packet and continued')
     return
   end
 
@@ -570,6 +599,22 @@ M._handlePacket = function(jsonStr)
   else
     log('D', logTag, 'Unhandled packet type: ' .. tostring(ptype))
   end
+end
+
+-- Explicit test scenario helper for v0.3 hardening verification.
+M.runBadJsonRecoveryScenario = function()
+  if M.state == M.STATE_DISCONNECTED then
+    return false, "Not connected"
+  end
+
+  local beforeState = M.state
+  M._handlePacket("{bad-json-payload")
+
+  if M.state == beforeState then
+    return true, "Recovered: malformed JSON was dropped without disconnect"
+  end
+
+  return false, "State changed unexpectedly during malformed JSON recovery"
 end
 
 -- ── UDP ──────────────────────────────────────────────────────────────

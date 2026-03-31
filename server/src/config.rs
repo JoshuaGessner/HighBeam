@@ -16,6 +16,8 @@ pub struct ServerConfig {
     pub tls: Option<TlsConfigData>,
     #[serde(rename = "Updates", default)]
     pub updates: UpdatesConfig,
+    #[serde(rename = "Discovery", default)]
+    pub discovery: DiscoveryConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -34,6 +36,8 @@ pub struct GeneralConfig {
     pub description: String,
     #[serde(rename = "ResourceFolder", default = "default_resource_folder")]
     pub resource_folder: String,
+    #[serde(rename = "StateFile", default = "default_state_file")]
+    pub state_file: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -107,10 +111,33 @@ pub struct UpdatesConfig {
     pub auto_update: bool,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct DiscoveryConfig {
+    #[serde(rename = "EnableRelay", default)]
+    pub enable_relay: bool,
+    #[serde(rename = "RelayUrls", default)]
+    pub relay_urls: Vec<String>,
+    #[serde(
+        rename = "RegistrationIntervalSec",
+        default = "default_discovery_registration_interval_sec"
+    )]
+    pub registration_interval_sec: u64,
+}
+
 impl Default for UpdatesConfig {
     fn default() -> Self {
         Self {
             auto_update: default_auto_update(),
+        }
+    }
+}
+
+impl Default for DiscoveryConfig {
+    fn default() -> Self {
+        Self {
+            enable_relay: false,
+            relay_urls: Vec::new(),
+            registration_interval_sec: default_discovery_registration_interval_sec(),
         }
     }
 }
@@ -126,6 +153,9 @@ fn default_max_cars() -> u32 {
 }
 fn default_resource_folder() -> String {
     "Resources".into()
+}
+fn default_state_file() -> String {
+    "server_state.json".into()
 }
 fn default_auth_mode() -> String {
     "open".into()
@@ -172,6 +202,9 @@ fn default_auto_generate() -> bool {
 fn default_auto_update() -> bool {
     true
 }
+fn default_discovery_registration_interval_sec() -> u64 {
+    30
+}
 
 impl ServerConfig {
     pub fn load() -> Result<Self> {
@@ -209,6 +242,7 @@ impl Default for ServerConfig {
                 map: "/levels/gridmap_v2/info.json".into(),
                 description: String::new(),
                 resource_folder: "Resources".into(),
+                state_file: default_state_file(),
             },
             auth: AuthConfig {
                 mode: "open".into(),
@@ -233,6 +267,7 @@ impl Default for ServerConfig {
             },
             tls: Some(TlsConfigData::default()),
             updates: UpdatesConfig::default(),
+            discovery: DiscoveryConfig::default(),
         }
     }
 }

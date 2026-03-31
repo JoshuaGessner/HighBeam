@@ -2,17 +2,33 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use serde::Serialize;
 use tokio::net::UdpSocket;
 use tokio::time::Instant;
 
+use crate::control::ControlPlane;
 use crate::metrics;
+use crate::net::packet::PROTOCOL_VERSION;
 use crate::session::manager::SessionManager;
 use crate::state::world::WorldState;
+
+const DISCOVERY_QUERY_PACKET: u8 = 0x7A;
+
+#[derive(Serialize)]
+struct DiscoveryResponse {
+    name: String,
+    map: String,
+    players: usize,
+    max_players: u32,
+    port: u16,
+    protocol_version: u32,
+}
 
 /// Start the UDP receiver loop. Runs forever, routing packets between players.
 pub async fn start_udp(
     port: u16,
     tick_rate: u32,
+    control: Arc<ControlPlane>,
     sessions: Arc<SessionManager>,
     world: Arc<WorldState>,
 ) -> Result<()> {
@@ -30,6 +46,24 @@ pub async fn start_udp(
         let (len, addr) = socket.recv_from(&mut buf).await?;
         if let Some(metrics) = metrics::global() {
             metrics.record_udp_rx();
+        }
+
+        // Unauthenticated server discovery query.
+        if len >= 1 && buf[0] == DISCOVERY_QUERY_PACKET {
+            let snap = control.snapshot();
+            let payload = DiscoveryResponse {
+                name: snap.server_name,
+                map: snap.map,
+                players: snap.player_count,
+                max_players: snap.max_players,
+                port: snap.port,
+                protocol_version: PROTOCOL_VERSION,
+            };
+
+            if let Ok(data) = serde_json::to_vec(&payload) {
+                let _ = socket.send_to(&data, addr).await;
+            }
+            continue;
         }
 
         // Minimum packet: 16-byte session hash + 1-byte type

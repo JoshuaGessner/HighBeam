@@ -9,10 +9,14 @@ use tokio::sync::broadcast;
 
 mod cli;
 mod config;
+mod control;
+mod discovery_relay;
+mod gui;
 mod log_rotation;
 mod metrics;
 mod mods;
 mod net;
+mod persistence;
 mod plugin;
 mod session;
 mod state;
@@ -66,6 +70,22 @@ async fn main() -> Result<()> {
     tracing::info!("HighBeam server v{}", env!("CARGO_PKG_VERSION"));
     tracing::info!(config_path = %cli.config_path, headless = cli.headless, "CLI arguments parsed");
 
+    if cli.protocol_benchmark {
+        let report = net::benchmark::run_json_baseline_benchmark(10_000)?;
+        tracing::info!(
+            iterations = report.iterations,
+            corpus_size = report.corpus_size,
+            total_packets = report.total_packets,
+            total_bytes = report.total_bytes,
+            elapsed_ms = report.elapsed_ms,
+            packets_per_sec = report.packets_per_sec,
+            mb_per_sec = report.mb_per_sec,
+            avg_packet_bytes = report.avg_packet_bytes,
+            "JSON protocol baseline benchmark"
+        );
+        return Ok(());
+    }
+
     // Clean up leftover binary from a previous update
     updater::cleanup_previous_update();
 
@@ -109,6 +129,29 @@ async fn main() -> Result<()> {
         sessions.clone(),
         world.clone(),
     )?);
+    let control_plane = Arc::new(control::ControlPlane::new(
+        config.clone(),
+        sessions.clone(),
+        world.clone(),
+        Some(plugins.clone()),
+    ));
+
+    discovery_relay::spawn_registration_task(config.clone(), control_plane.clone());
+
+    match persistence::load_state(&config.general.state_file, &control_plane, &world) {
+        Ok(true) => {
+            tracing::info!(state_file = %config.general.state_file, "Persistent state loaded")
+        }
+        Ok(false) => {
+            tracing::info!(state_file = %config.general.state_file, "No persistent state loaded")
+        }
+        Err(e) => tracing::warn!(error = %e, state_file = %config.general.state_file, "State load failed"),
+    }
+
+    if !cli.headless {
+        gui::launch(control_plane.clone());
+        tracing::info!("GUI shell launched (v0.6 scaffold)");
+    }
 
     metrics::spawn_metrics_logger(
         config.logging.metrics_interval_sec,
@@ -140,36 +183,21 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Local console injection: `lua <plugin_name> <code>`.
-    let plugins_for_console = plugins.clone();
+    // Local admin console for control-plane commands.
+    let control_for_console = control_plane.clone();
     tokio::task::spawn_blocking(move || {
         let stdin = std::io::stdin();
         for line in stdin.lock().lines() {
             let Ok(line) = line else {
                 continue;
             };
-            let trimmed = line.trim();
-            if !trimmed.starts_with("lua ") {
-                continue;
-            }
-
-            let rest = trimmed[4..].trim();
-            let mut parts = rest.splitn(2, ' ');
-            let Some(plugin_name) = parts.next() else {
-                tracing::warn!("Usage: lua <plugin_name> <code>");
-                continue;
-            };
-            let Some(code) = parts.next() else {
-                tracing::warn!("Usage: lua <plugin_name> <code>");
-                continue;
-            };
-
-            match plugins_for_console.eval_in_plugin(plugin_name, code) {
-                Ok(result) => {
-                    tracing::info!(plugin = %plugin_name, result = %result, "Lua console eval ok")
+            match control_for_console.execute_console_line(&line) {
+                Ok(output) if !output.is_empty() => {
+                    tracing::info!(command = %line.trim(), output = %output, "Console command processed");
                 }
+                Ok(_) => {}
                 Err(e) => {
-                    tracing::error!(plugin = %plugin_name, error = %e, "Lua console eval failed")
+                    tracing::warn!(command = %line.trim(), error = %e, "Console command failed");
                 }
             }
         }
@@ -183,9 +211,26 @@ async fn main() -> Result<()> {
         "Mod manifest loaded"
     );
 
+    // Periodic autosave for persistent server state.
+    let autosave_control = control_plane.clone();
+    let autosave_world = world.clone();
+    let autosave_path = config.general.state_file.clone();
+    tokio::spawn(async move {
+        let interval = std::time::Duration::from_secs(30);
+        loop {
+            tokio::time::sleep(interval).await;
+            if let Err(e) = persistence::save_state(&autosave_path, &autosave_control, &autosave_world) {
+                tracing::warn!(error = %e, state_file = %autosave_path, "Autosave failed");
+            }
+        }
+    });
+
     // Graceful shutdown signal
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
     let shutdown_tx_clone = shutdown_tx.clone();
+    let signal_control = control_plane.clone();
+    let signal_world = world.clone();
+    let signal_state_path = config.general.state_file.clone();
 
     // Spawn signal handler task
     tokio::spawn(async move {
@@ -215,6 +260,12 @@ async fn main() -> Result<()> {
             tracing::info!("Received Ctrl+C, shutting down gracefully");
         }
 
+        if let Err(e) = persistence::save_state(&signal_state_path, &signal_control, &signal_world) {
+            tracing::warn!(error = %e, state_file = %signal_state_path, "Save on shutdown signal failed");
+        } else {
+            tracing::info!(state_file = %signal_state_path, "State saved on shutdown signal");
+        }
+
         let _ = shutdown_tx_clone.send(());
     });
 
@@ -237,12 +288,14 @@ async fn main() -> Result<()> {
     // Start UDP receiver in background
     let udp_sessions = sessions.clone();
     let udp_world = world.clone();
+    let udp_control = control_plane.clone();
     let udp_port = config.general.port;
     let udp_config = config.clone();
     tokio::spawn(async move {
         if let Err(e) = net::udp::start_udp(
             udp_port,
             udp_config.network.tick_rate,
+            udp_control,
             udp_sessions,
             udp_world,
         )
@@ -254,7 +307,16 @@ async fn main() -> Result<()> {
 
     // Start TCP listener (blocks until shutdown signal)
     // Start TCP listener (blocks forever, accepting connections)
-    net::tcp::start_listener(config, sessions, world, plugins).await?;
+    let final_state_path = config.general.state_file.clone();
+    net::tcp::start_listener(config, control_plane.clone(), sessions, world.clone(), plugins).await?;
+
+    if let Err(e) = persistence::save_state(&final_state_path, &control_plane, &world) {
+        tracing::warn!(
+            error = %e,
+            state_file = %final_state_path,
+            "Final state save on shutdown failed"
+        );
+    }
 
     tracing::info!("Server shut down complete");
     Ok(())
