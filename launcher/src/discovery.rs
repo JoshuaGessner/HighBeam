@@ -51,8 +51,8 @@ pub fn query_server(addr: &str, timeout_ms: u64) -> Result<ServerQueryResponse> 
         .recv_from(&mut buf)
         .context("No discovery response received before timeout")?;
 
-    let response: ServerQueryResponse = serde_json::from_slice(&buf[..len])
-        .context("Failed to parse discovery response JSON")?;
+    let response: ServerQueryResponse =
+        serde_json::from_slice(&buf[..len]).context("Failed to parse discovery response JSON")?;
     Ok(response)
 }
 
