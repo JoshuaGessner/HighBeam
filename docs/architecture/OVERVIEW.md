@@ -172,7 +172,7 @@ See [PROTOCOL.md](PROTOCOL.md) for the full protocol specification.
 | Aspect | BeamMP | HighBeam |
 |--------|--------|----------|
 | **Authentication** | Centralized — requires auth key from BeamMP Keymaster (Discord login) | Decentralized — server issues its own tokens, optional password protection |
-| **Server list** | Centralized — servers must register with BeamMP backend to appear in list | Optional — community relay for discovery, or direct IP connect |
+| **Server list** | Centralized — servers must register with BeamMP backend to appear in list | Optional — community relay for discovery, or direct IP connect (see [RELAY.md](RELAY.md)) |
 | **Launcher** | Separate C++ launcher binary that bridges game ↔ server (always-running proxy) | Lightweight Rust CLI — syncs mods, launches game, then exits (not a proxy) |
 | **Server binary** | C++ with embedded Lua 5.3 | Rust with embedded Lua 5.4 |
 | **Server management** | Terminal-only (headless console) | Built-in desktop GUI (egui) with system tray, plus headless mode |

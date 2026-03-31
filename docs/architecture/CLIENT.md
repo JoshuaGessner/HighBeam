@@ -90,6 +90,8 @@ IMGUI-based server browser window. Renders inside the BeamNG GE context (no CEF 
 - Persist favorites to `userdata/highbeam/favorites.json` and recents to `userdata/highbeam/recents.json`
 - Save/load relay URL, username, and last host/port via `config.save()` / `config.load()`
 
+See [RELAY.md](RELAY.md) for the relay JSON API format and the full community server list architecture.
+
 ---
 
 ### Connection Manager (`connection.lua`)

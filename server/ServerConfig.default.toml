@@ -35,7 +35,25 @@ AutoGenerate = false
 [Updates]
 AutoUpdate = true
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Community Relay — optional public server listing
+#
+# When EnableRelay is true the server POSTs a registration heartbeat to each
+# URL in RelayUrls every RegistrationIntervalSec seconds so that players can
+# discover this server from the in-game Browse Servers tab.
+#
+# No central HighBeam relay exists — RelayUrls must point to a community-run
+# relay service.  The relay only needs to expose two endpoints:
+#   POST /          — receive and store the registration payload
+#   GET  /servers   — return a JSON list of registered servers
+#
+# See docs/architecture/RELAY.md for the full relay protocol and an example
+# relay implementation.
+#
+# Setting EnableRelay = false (the default) means this server is never listed
+# anywhere publicly.  Players can still join via Direct Connect at any time.
+# ──────────────────────────────────────────────────────────────────────────────
 [Discovery]
-EnableRelay = false
-RelayUrls = []
+EnableRelay             = false
+RelayUrls               = []
 RegistrationIntervalSec = 30
