@@ -35,6 +35,10 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('server/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
+      - name: Install Linux system deps (tray-item requires libdbus)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -y && sudo apt-get install -y pkg-config libdbus-1-dev
+
       - name: Build
         working-directory: server
         run: cargo build --verbose
@@ -51,6 +55,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+      - name: Install Linux system deps (tray-item requires libdbus)
+        run: sudo apt-get update -y && sudo apt-get install -y pkg-config libdbus-1-dev
       - name: Clippy check
         working-directory: server
         run: cargo clippy -- -D warnings

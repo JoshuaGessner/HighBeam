@@ -11,6 +11,7 @@ local vehicles     -- highbeam/vehicles.lua
 local state        -- highbeam/state.lua
 local chat         -- highbeam/chat.lua
 local config       -- highbeam/config.lua
+local browser      -- highbeam/browser.lua
 
 local function _safeRequire(moduleName)
   local ok, mod = pcall(require, moduleName)
@@ -30,6 +31,7 @@ M.onExtensionLoaded = function()
   state      = _safeRequire("highbeam/state")
   chat       = _safeRequire("highbeam/chat")
   config     = _safeRequire("highbeam/config")
+  browser    = _safeRequire("highbeam/browser")
 
   if not connection or not protocol or not vehicles or not state or not chat or not config then
     log('E', logTag, 'HighBeam startup aborted due to module load failure')
@@ -40,11 +42,22 @@ M.onExtensionLoaded = function()
     log(level or 'E', logTag, '[ConnectionError][' .. tostring(context) .. '] ' .. tostring(message))
   end)
 
+  -- Notify browser when connection succeeds so it can record the recent entry
+  connection.setStatusCallback(function(status, detail)
+    if status == "connected" and browser then
+      browser.onConnected()
+    end
+  end)
+
   -- Wire subsystem cross-references
   connection.setSubsystems(vehicles, state)
   state.setSubsystems(connection, config)
 
   config.load()
+
+  if browser then
+    browser.load(connection, config)
+  end
 end
 
 M.onExtensionUnloaded = function()
@@ -69,4 +82,35 @@ M.onUpdate = function(dtReal, dtSim, dtRaw)
   end
 end
 
+M.onPreRender = function(dtReal, dtSim, dtRaw)
+  -- Render the server browser IMGUI window every frame when it is open
+  if browser then
+    browser.renderUI()
+  end
+end
+
+-- ──────────────────── Public API (callable from GE Lua console) ──────────────
+
+-- Open the server browser window
+M.openBrowser = function()
+  if browser then browser.open() end
+end
+
+-- Close the server browser window
+M.closeBrowser = function()
+  if browser then browser.close() end
+end
+
+-- Quick connect shortcut (for external scripts / launcher integration)
+M.connect = function(host, port, username, password)
+  if browser then
+    return browser.connect(host, port, username, password)
+  elseif connection then
+    connection.connect(host, port, username, password)
+    return true
+  end
+  return false, "not initialised"
+end
+
 return M
+

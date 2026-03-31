@@ -2,8 +2,8 @@
 
 > **Last updated:** 2026-03-30
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.5.0 (protocol v2)
-> **Status:** v0.5.0 Complete — Stability & deployment foundation ready
+> **Current version:** v0.6.1 (protocol v2)
+> **Status:** v0.6.1 Complete — In-game client UX and CI build fixes
 
 ---
 
@@ -87,6 +87,18 @@ The server and client negotiate protocol version during the handshake. Mismatche
      3. Keep JSON encode for legacy clients until adoption threshold.
      4. Flip default encode to binary for v3-capable clients.
      5. Remove JSON encode path in a future major after deprecation window.
+- [x] PR7: v0.6.1 in-game client UX
+   - Add IMGUI server browser window to client mod GE extension.
+   - Direct Connect tab: host / port / username / password fields, values persisted to config JSON.
+   - Browse Servers tab: relay URL input, Refresh button, live server table (name, map, players, ping).
+   - Favorites tab: saved servers with one-click connect and remove buttons.
+   - Recent tab: last 10 connections with timestamps, quick reconnect, and favorite-toggle.
+   - Favorites list persists to `userdata/highbeam/favorites.json` in BeamNG user folder.
+   - Recent list persists to `userdata/highbeam/recents.json`.
+   - Relay fetch via plain HTTP GET over LuaSocket TCP; UDP 0x7A ping for per-server latency.
+   - Config save/load: username, last host/port, and relay URL are remembered between sessions.
+   - Browser auto-opens when HighBeam loads and user is not connected; closes on successful connect.
+   - Reopenable from GE Lua console: `extensions.highbeam.openBrowser()`.
 
 ### v0.1.0 — Foundation (Pre-Alpha) ✅
 
@@ -415,6 +427,52 @@ As of 2026-03-30, historical hardening notes were merged into this plan.
 
 ---
 
+### v0.6.1 — In-Game Client UX (Beta)
+
+**Status:** Complete
+**Goal:** Complete the in-game multiplayer interface so players can discover, connect, and manage servers entirely from within BeamNG without using the GE Lua console.
+
+**Context:** v0.6.0 delivered discovery and server browser support at the launcher CLI level, but the in-game client mod had no user-facing join or browse UI. Connecting to a server required calling `require("highbeam/connection").connect(...)` manually from the BeamNG GE Lua console. v0.6.1 closes this gap with a fully self-contained IMGUI server browser embedded in the GE extension.
+
+**Why IMGUI (not HTML/CEF):** The client mod runs as a BeamNG GE extension. IMGUI (`ui_imgui`) is the native, self-contained rendering path for GE extensions and does not require registering a CEF app module or managing a browser window lifecycle. The existing `chat.html` remains as the connected-state chat overlay; the server browser is a separate modal window.
+
+**Client — Server Browser (IMGUI window):**
+- [x] `browser.lua` GE extension module added with IMGUI window rendering
+- [x] Window auto-opens when HighBeam loads if not already connected
+- [x] Window closes automatically on successful connect; reopenable via `extensions.highbeam.openBrowser()` from GE console
+- [x] **Direct Connect tab:** host, port, username, password fields; values saved to config JSON between sessions; one-click Connect button
+- [x] **Browse Servers tab:** relay URL input field (remembered), Refresh button, live server table showing name / map / player count / ping; per-server Favorite toggle; per-server Connect button
+- [x] **Favorites tab:** persisted saved servers with one-click connect and Remove button
+- [x] **Recent tab:** last 10 connections with timestamps, quick reconnect button, and favorite toggle
+
+**Client — Persistence:**
+- [x] Favorites persist to `userdata/highbeam/favorites.json` via `FS:writeFile` / `FS:readFileToString` (io.open fallback)
+- [x] Recents persist to `userdata/highbeam/recents.json`
+- [x] Config save/load: `config.save()` and `config.load()` serialize the full config to `userdata/highbeam/config.json`
+
+**Client — Relay & Discovery Integration:**
+- [x] Relay HTTP fetch via plain TCP socket (no TLS dependency) — GET `<relayUrl>/servers` → JSON list
+- [x] Relay response parses both `{ servers: [...] }` and bare array formats for compatibility
+- [x] Per-server UDP 0x7A ping for real-time latency display; colours: green ≤80 ms, yellow ≤150 ms, red >150 ms
+- [x] Relay URL configurable per-session and persisted to config
+
+**Client — config.lua Enhancements:**
+- [x] `relayUrl` added to config defaults
+- [x] `config.save()` serializes current config to `userdata/highbeam/config.json`
+- [x] `config.load()` reads saved config on startup, falling back to defaults for missing keys
+
+**Deliverable:** Players can launch BeamNG, see the HighBeam browser window immediately, type a server address (or pick from the relay list / favorites / recents), enter their username, and connect — all without touching the Lua console.
+
+**Acceptance Criteria:**
+- [x] Player can join a server entirely within BeamNG without using the GE console
+- [x] Server browser shows live relay list with name, map, player count, and colour-coded ping
+- [x] Favorites and recents are preserved across BeamNG restarts
+- [x] Username, last host/port, and relay URL are remembered between sessions
+- [x] Connect from Browse / Favorites / Recent uses the username from the Direct Connect tab
+- [x] Adding/removing favorites updates the Favorites tab immediately without restart
+
+---
+
 ### v0.7.0 — Protocol Optimization (Beta)
 
 **Goal:** Reduce bandwidth overhead and improve performance at scale.
@@ -500,6 +558,24 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.6.1 — 2026-03-30
+- Added in-game server browser (IMGUI, 4 tabs: Direct Connect / Browse Servers / Favorites / Recent).
+- Server browser auto-opens on extension load; closes automatically on successful connect.
+- Relay HTTP fetch, per-server UDP ping, favorites/recents persisted to `userdata/highbeam/` JSON files.
+- Config save/load (`config.json`) — username, last host/port, relay URL remembered between sessions.
+- Bug fixes (hardening sweep): HTTP partial-body truncation, URL normalization, blocking ping timeout (2 s → 0.5 s, capped to 8 servers), connect-while-connected guard, IMGUI row ID uniqueness, server name propagation to favorites and recents.
+- CI/release workflow fixes: added `libdbus-1-dev` install step for Linux builds (tray-item dependency); fixed `TrayItem::new` second argument to use `IconSource::Resource` (tray-item 0.10 API change).
+- Server and launcher version bumped to `0.6.1`; protocol remains `v2`.
+
+### v0.6.0 — 2026-03-30
+- Server GUI and discovery release completed.
+- Added egui/eframe desktop GUI with 7-tab layout (Dashboard, Players, Maps, Mods, Plugins, Console, Settings).
+- Added ControlPlane admin abstraction, persistence (state save/restore on shutdown/startup), and discovery relay registration.
+- Added UDP discovery query endpoint (0x7A) and launcher-side relay fetch and favorites/recents CLI flows.
+- Added JSON protocol benchmark harness (`--protocol-benchmark` mode).
+- Server and launcher version: `0.6.0`; protocol remains `v2`.
+- **Note:** In-game client join UI was not delivered in v0.6.0 — connecting requires a manual GE Lua console call. This gap is addressed in v0.6.1.
 
 ### v0.5.0 — 2026-03-30
 - Stability and deployment polish release completed.

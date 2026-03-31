@@ -10,7 +10,7 @@ use crate::session::manager::PlayerAdminSnapshot;
 use std::sync::mpsc::{self, Receiver};
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]
-use tray_item::TrayItem;
+use tray_item::{IconSource, TrayItem};
 
 #[derive(Clone, Copy)]
 enum TrayCommand {
@@ -30,7 +30,7 @@ struct TrayBridge;
 fn setup_system_tray_bridge() -> TrayBridge {
     let (tx, rx) = mpsc::channel::<TrayCommand>();
 
-    let mut tray = match TrayItem::new("HighBeam Server", "network-workgroup") {
+    let mut tray = match TrayItem::new("HighBeam Server", IconSource::Resource("network-workgroup")) {
         Ok(item) => item,
         Err(e) => {
             tracing::warn!(error = %e, "System tray unavailable; running without tray integration");
