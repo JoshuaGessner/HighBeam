@@ -13,6 +13,9 @@ local chat         -- highbeam/chat.lua
 local config       -- highbeam/config.lua
 local browser      -- highbeam/browser.lua
 
+local MENU_ENTRY_ID = "highbeam.multiplayer"
+local _menuRegistered = false
+
 local function _safeRequire(moduleName)
   local ok, mod = pcall(require, moduleName)
   if not ok then
@@ -20,6 +23,64 @@ local function _safeRequire(moduleName)
     return nil
   end
   return mod
+end
+
+local function _openBrowserFromMenu()
+  if browser then
+    browser.open()
+  end
+end
+
+local function _menuController()
+  return (extensions and extensions.core_quickAccess) or core_quickAccess
+end
+
+local function _registerMenuEntry()
+  local qa = _menuController()
+  if not qa then
+    return false
+  end
+
+  local entry = {
+    title = "HighBeam Multiplayer",
+    desc = "Open server browser",
+    icon = "multiplayer_gamemode",
+    onSelect = _openBrowserFromMenu,
+  }
+
+  -- BeamNG builds differ in addEntry/removeEntry signatures; try common variants.
+  local ok = false
+  if qa.addEntry then
+    ok = pcall(qa.addEntry, MENU_ENTRY_ID, entry)
+    if not ok then
+      ok = pcall(qa.addEntry, entry)
+    end
+  end
+
+  if ok then
+    _menuRegistered = true
+    log('I', logTag, 'Registered More menu button: HighBeam Multiplayer')
+  else
+    log('W', logTag, 'Could not register More menu button (core_quickAccess API unavailable)')
+  end
+
+  return ok
+end
+
+local function _unregisterMenuEntry()
+  if not _menuRegistered then
+    return
+  end
+
+  local qa = _menuController()
+  if qa and qa.removeEntry then
+    local ok = pcall(qa.removeEntry, MENU_ENTRY_ID)
+    if not ok then
+      pcall(qa.removeEntry, "HighBeam Multiplayer")
+    end
+  end
+
+  _menuRegistered = false
 end
 
 M.onExtensionLoaded = function()
@@ -58,10 +119,15 @@ M.onExtensionLoaded = function()
   if browser then
     browser.load(connection, config)
   end
+
+  _registerMenuEntry()
 end
 
 M.onExtensionUnloaded = function()
   log('I', logTag, 'HighBeam extension unloaded')
+
+  _unregisterMenuEntry()
+
   if connection then
     connection.disconnect()
   end
