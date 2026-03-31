@@ -122,7 +122,7 @@ impl LogRotationPolicy {
 
                 // Check if it's an archived log file (matches stem pattern)
                 if file_name.starts_with(&stem)
-                    && file_name != log_path.file_name().unwrap().to_string_lossy().to_string()
+                    && file_name != log_path.file_name().unwrap().to_string_lossy()
                 {
                     if let Ok(metadata) = fs::metadata(&path) {
                         if let Ok(modified) = metadata.modified() {

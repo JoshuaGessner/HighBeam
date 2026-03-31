@@ -213,7 +213,7 @@ impl ServerConfig {
 
     pub fn load_from_path(path: &str) -> Result<Self> {
         if Path::new(&path).exists() {
-            let contents = std::fs::read_to_string(&path)
+            let contents = std::fs::read_to_string(path)
                 .with_context(|| format!("Failed to read config file: {path}"))?;
             toml::from_str(&contents)
                 .with_context(|| format!("Failed to parse config file: {path}"))

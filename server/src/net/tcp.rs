@@ -97,6 +97,7 @@ pub async fn start_listener(
 }
 
 /// Wrapper that handles both plain TCP and TLS connections
+#[allow(clippy::too_many_arguments)]
 async fn handle_connection_wrapper(
     stream: TcpStream,
     addr: SocketAddr,
