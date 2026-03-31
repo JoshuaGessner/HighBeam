@@ -63,26 +63,29 @@ fn setup_system_tray_bridge() -> TrayBridge {
     TrayBridge
 }
 
-pub fn launch(control: Arc<ControlPlane>) {
-    std::thread::spawn(move || {
-        let tray_bridge = setup_system_tray_bridge();
+/// Run the GUI event loop on the **calling thread**.
+///
+/// This must be called from the main thread because winit (used by eframe)
+/// requires the event loop to be created there on Windows and most platforms.
+/// The function blocks until the window is closed.
+pub fn run(control: Arc<ControlPlane>) {
+    let tray_bridge = setup_system_tray_bridge();
 
-        let native_options = eframe::NativeOptions {
-            viewport: egui::ViewportBuilder::default().with_inner_size([1024.0, 720.0]),
-            ..Default::default()
-        };
+    let native_options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default().with_inner_size([1024.0, 720.0]),
+        ..Default::default()
+    };
 
-        let app_name = "HighBeam Server";
-        let result = eframe::run_native(
-            app_name,
-            native_options,
-            Box::new(move |_cc| Ok(Box::new(ServerGuiApp::new(control.clone(), tray_bridge)))),
-        );
+    let app_name = "HighBeam Server";
+    let result = eframe::run_native(
+        app_name,
+        native_options,
+        Box::new(move |_cc| Ok(Box::new(ServerGuiApp::new(control.clone(), tray_bridge)))),
+    );
 
-        if let Err(e) = result {
-            tracing::warn!(error = %e, "Failed to start GUI shell");
-        }
-    });
+    if let Err(e) = result {
+        tracing::warn!(error = %e, "Failed to start GUI shell");
+    }
 }
 
 struct ServerGuiApp {

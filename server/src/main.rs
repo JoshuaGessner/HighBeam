@@ -24,8 +24,7 @@ mod tls;
 mod updater;
 mod validation;
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let cli = cli::CliArgs::parse()?;
 
     // Load config first (before complete logging setup)
@@ -89,17 +88,26 @@ async fn main() -> Result<()> {
     // Clean up leftover binary from a previous update
     updater::cleanup_previous_update();
 
+    // Build the async runtime. We construct it manually so that we can run
+    // the GUI event loop on the main thread (winit/eframe require this on
+    // Windows and most other platforms).
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+
     // Check for updates if enabled
     if config.updates.auto_update {
-        match updater::check_and_update().await {
-            Ok(true) => {
-                tracing::info!("Server binary updated — please restart to run the new version");
+        rt.block_on(async {
+            match updater::check_and_update().await {
+                Ok(true) => {
+                    tracing::info!("Server binary updated — please restart to run the new version");
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    tracing::warn!(error = %e, "Auto-update failed, continuing with current version")
+                }
             }
-            Ok(false) => {}
-            Err(e) => {
-                tracing::warn!(error = %e, "Auto-update failed, continuing with current version")
-            }
-        }
+        });
     }
 
     // Validate config parameters
@@ -136,8 +144,6 @@ async fn main() -> Result<()> {
         Some(plugins.clone()),
     ));
 
-    discovery_relay::spawn_registration_task(config.clone(), control_plane.clone());
-
     match persistence::load_state(&config.general.state_file, &control_plane, &world) {
         Ok(true) => {
             tracing::info!(state_file = %config.general.state_file, "Persistent state loaded")
@@ -150,10 +156,34 @@ async fn main() -> Result<()> {
         }
     }
 
-    if !cli.headless {
-        gui::launch(control_plane.clone());
+    if cli.headless {
+        // Headless: run the async server directly on the main thread.
+        rt.block_on(run_server(config, control_plane, sessions, world, plugins))?;
+    } else {
+        // GUI mode: the async server runs on a background thread so that
+        // eframe's event loop can own the main thread (required by winit).
         tracing::info!("GUI shell launched (v0.6 scaffold)");
+        let control_for_gui = control_plane.clone();
+        std::thread::spawn(move || {
+            if let Err(e) = rt.block_on(run_server(config, control_plane, sessions, world, plugins))
+            {
+                tracing::error!(error = %e, "Server exited with error");
+            }
+        });
+        gui::run(control_for_gui);
     }
+
+    Ok(())
+}
+
+async fn run_server(
+    config: Arc<config::ServerConfig>,
+    control_plane: Arc<control::ControlPlane>,
+    sessions: Arc<session::manager::SessionManager>,
+    world: Arc<state::world::WorldState>,
+    plugins: Arc<plugin::runtime::PluginRuntime>,
+) -> Result<()> {
+    discovery_relay::spawn_registration_task(config.clone(), control_plane.clone());
 
     metrics::spawn_metrics_logger(
         config.logging.metrics_interval_sec,
@@ -236,7 +266,6 @@ async fn main() -> Result<()> {
     let signal_world = world.clone();
     let signal_state_path = config.general.state_file.clone();
 
-    // Spawn signal handler task
     tokio::spawn(async move {
         #[cfg(unix)]
         {
@@ -311,7 +340,6 @@ async fn main() -> Result<()> {
     });
 
     // Start TCP listener (blocks until shutdown signal)
-    // Start TCP listener (blocks forever, accepting connections)
     let final_state_path = config.general.state_file.clone();
     net::tcp::start_listener(
         config,
