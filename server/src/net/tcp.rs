@@ -77,7 +77,13 @@ pub async fn start_listener(
             result = listener.accept() => result,
         };
 
-        let (stream, addr) = accept_result?;
+        let (stream, addr) = match accept_result {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(error = %e, "TCP accept failed; continuing listener loop");
+                continue;
+            }
+        };
         let config = config.clone();
         let sessions = sessions.clone();
         let world = world.clone();

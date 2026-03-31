@@ -46,7 +46,7 @@ pub fn query_server(addr: &str, timeout_ms: u64) -> Result<ServerQueryResponse> 
         .send_to(&[DISCOVERY_QUERY_PACKET], target)
         .with_context(|| format!("Failed to send discovery query to {}", target))?;
 
-    let mut buf = [0u8; 4096];
+    let mut buf = [0u8; 65535];
     let (len, _src) = socket
         .recv_from(&mut buf)
         .context("No discovery response received before timeout")?;

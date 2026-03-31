@@ -7,7 +7,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::metrics;
-use crate::net::packet::{self, ModDescriptor, TcpPacket};
+use crate::net::packet::{self, ModDescriptor, TcpPacket, MAX_PACKET_SIZE};
+
+const MAX_MOD_REQUEST_NAMES: usize = 256;
 
 pub async fn start_listener(
     port: u16,
@@ -53,6 +55,14 @@ async fn handle_connection(
             );
         }
     };
+
+    if names.len() > MAX_MOD_REQUEST_NAMES {
+        anyhow::bail!(
+            "Too many requested mods: {} (max {})",
+            names.len(),
+            MAX_MOD_REQUEST_NAMES
+        );
+    }
 
     for name in names {
         if !is_safe_mod_name(&name) {
@@ -120,6 +130,9 @@ async fn read_packet(stream: &mut TcpStream) -> Result<TcpPacket> {
     let mut len_buf = [0u8; 4];
     stream.read_exact(&mut len_buf).await?;
     let len = u32::from_le_bytes(len_buf);
+    if len > MAX_PACKET_SIZE {
+        anyhow::bail!("Mod transfer control packet too large: {len} bytes");
+    }
     let mut payload = vec![0u8; len as usize];
     stream.read_exact(&mut payload).await?;
     if let Some(metrics) = metrics::global() {

@@ -105,6 +105,11 @@ pub async fn start_udp(
                 let rot = read_f32x4(&buf[31..47]);
                 let vel = read_f32x3(&buf[47..59]);
 
+                if !all_finite3(&pos) || !all_finite4(&rot) || !all_finite3(&vel) {
+                    tracing::debug!(player_id, vid, "Dropping non-finite UDP position payload");
+                    continue;
+                }
+
                 // Update world state
                 world.update_position(player_id, vid, pos, rot, vel);
 
@@ -157,4 +162,12 @@ fn read_f32x4(data: &[u8]) -> [f32; 4] {
         f32::from_le_bytes([data[8], data[9], data[10], data[11]]),
         f32::from_le_bytes([data[12], data[13], data[14], data[15]]),
     ]
+}
+
+fn all_finite3(values: &[f32; 3]) -> bool {
+    values.iter().all(|v| v.is_finite())
+}
+
+fn all_finite4(values: &[f32; 4]) -> bool {
+    values.iter().all(|v| v.is_finite())
 }

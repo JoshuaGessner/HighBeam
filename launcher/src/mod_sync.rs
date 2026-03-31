@@ -11,6 +11,8 @@ use sha2::{Digest, Sha256};
 
 use crate::mod_cache::{CacheEntry, CacheIndex};
 
+const MAX_CONTROL_PACKET_BYTES: u32 = 1024 * 1024;
+
 #[derive(Debug, Clone)]
 pub struct ServerMod {
     pub name: String,
@@ -141,6 +143,13 @@ fn read_packet(stream: &mut TcpStream) -> Result<ModPacket> {
     let mut len_buf = [0u8; 4];
     stream.read_exact(&mut len_buf)?;
     let len = u32::from_le_bytes(len_buf);
+    if len > MAX_CONTROL_PACKET_BYTES {
+        return Err(anyhow!(
+            "Control packet too large: {} bytes (max {})",
+            len,
+            MAX_CONTROL_PACKET_BYTES
+        ));
+    }
     let mut payload = vec![0u8; len as usize];
     stream.read_exact(&mut payload)?;
     let packet: ModPacket = serde_json::from_slice(&payload)?;
@@ -176,6 +185,13 @@ fn receive_file_frame(
     let expected = expected_by_name
         .get(&name)
         .ok_or_else(|| anyhow!("Received mod frame for unknown file: {name}"))?;
+
+    if file_size != expected.size {
+        return Err(anyhow!(
+            "Mod frame size mismatch for {name}: got {file_size}, expected {}",
+            expected.size
+        ));
+    }
 
     let temp_path = cache_dir.join(format!("{}.part", expected.hash));
     let final_path = cache_dir.join(format!("{}.zip", expected.hash));
