@@ -56,7 +56,8 @@ jobs:
       - name: Package (Unix)
         if: runner.os != 'Windows'
         run: |
-          mkdir -p staging
+          mkdir -p staging/Resources/Client
+          mkdir -p staging/Resources/Server
           cp server/target/${{ matrix.target }}/release/${{ matrix.binary }} staging/
           cp server/ServerConfig.default.toml staging/ServerConfig.toml
           cd staging
@@ -66,7 +67,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path staging
+          New-Item -ItemType Directory -Force -Path staging/Resources/Client
+          New-Item -ItemType Directory -Force -Path staging/Resources/Server
           Copy-Item "server/target/${{ matrix.target }}/release/${{ matrix.binary }}" staging/
           Copy-Item "server/ServerConfig.default.toml" staging/ServerConfig.toml
           Compress-Archive -Path staging/* -DestinationPath ${{ matrix.archive }}

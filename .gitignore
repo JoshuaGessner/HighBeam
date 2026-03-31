@@ -24,7 +24,12 @@ client/build/
 # Server runtime files
 server.log
 ServerConfig.toml
-Resources/
+
+# Server Resources — track folder structure, ignore actual mod/plugin files
+server/Resources/Client/*
+!server/Resources/Client/.gitkeep
+server/Resources/Server/*
+!server/Resources/Server/.gitkeep
 
 # Documentation (local dev reference only)
 docs/
