@@ -145,7 +145,9 @@ async fn main() -> Result<()> {
         Ok(false) => {
             tracing::info!(state_file = %config.general.state_file, "No persistent state loaded")
         }
-        Err(e) => tracing::warn!(error = %e, state_file = %config.general.state_file, "State load failed"),
+        Err(e) => {
+            tracing::warn!(error = %e, state_file = %config.general.state_file, "State load failed")
+        }
     }
 
     if !cli.headless {
@@ -219,7 +221,9 @@ async fn main() -> Result<()> {
         let interval = std::time::Duration::from_secs(30);
         loop {
             tokio::time::sleep(interval).await;
-            if let Err(e) = persistence::save_state(&autosave_path, &autosave_control, &autosave_world) {
+            if let Err(e) =
+                persistence::save_state(&autosave_path, &autosave_control, &autosave_world)
+            {
                 tracing::warn!(error = %e, state_file = %autosave_path, "Autosave failed");
             }
         }
@@ -260,7 +264,8 @@ async fn main() -> Result<()> {
             tracing::info!("Received Ctrl+C, shutting down gracefully");
         }
 
-        if let Err(e) = persistence::save_state(&signal_state_path, &signal_control, &signal_world) {
+        if let Err(e) = persistence::save_state(&signal_state_path, &signal_control, &signal_world)
+        {
             tracing::warn!(error = %e, state_file = %signal_state_path, "Save on shutdown signal failed");
         } else {
             tracing::info!(state_file = %signal_state_path, "State saved on shutdown signal");
@@ -308,7 +313,14 @@ async fn main() -> Result<()> {
     // Start TCP listener (blocks until shutdown signal)
     // Start TCP listener (blocks forever, accepting connections)
     let final_state_path = config.general.state_file.clone();
-    net::tcp::start_listener(config, control_plane.clone(), sessions, world.clone(), plugins).await?;
+    net::tcp::start_listener(
+        config,
+        control_plane.clone(),
+        sessions,
+        world.clone(),
+        plugins,
+    )
+    .await?;
 
     if let Err(e) = persistence::save_state(&final_state_path, &control_plane, &world) {
         tracing::warn!(

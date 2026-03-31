@@ -326,7 +326,8 @@ impl ControlPlane {
                 .unwrap_or("Kicked by admin")
                 .to_string();
 
-            let result = self.execute_admin_command(AdminCommand::KickPlayer { player_id, reason })?;
+            let result =
+                self.execute_admin_command(AdminCommand::KickPlayer { player_id, reason })?;
             if let AdminCommandResult::Kicked {
                 player_id,
                 delivered,

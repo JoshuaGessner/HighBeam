@@ -27,7 +27,11 @@ impl PersistedState {
     const VERSION: u32 = 1;
 }
 
-pub fn load_state(path: &str, control: &Arc<ControlPlane>, world: &Arc<WorldState>) -> Result<bool> {
+pub fn load_state(
+    path: &str,
+    control: &Arc<ControlPlane>,
+    world: &Arc<WorldState>,
+) -> Result<bool> {
     let state_path = Path::new(path);
     if !state_path.exists() {
         return Ok(false);
@@ -116,12 +120,7 @@ mod tests {
         let config = Arc::new(ServerConfig::default());
         let sessions = Arc::new(SessionManager::new());
         let world = Arc::new(WorldState::new());
-        let control = Arc::new(ControlPlane::new(
-            config,
-            sessions,
-            world.clone(),
-            None,
-        ));
+        let control = Arc::new(ControlPlane::new(config, sessions, world.clone(), None));
 
         control
             .set_active_map("/levels/west_coast_usa/info.json".into())

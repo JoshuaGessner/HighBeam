@@ -420,7 +420,10 @@ mod tests {
         ];
 
         for payload in corpus {
-            assert!(decode(payload).is_err(), "payload should fail decode: {payload:?}");
+            assert!(
+                decode(payload).is_err(),
+                "payload should fail decode: {payload:?}"
+            );
         }
     }
 

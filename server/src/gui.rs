@@ -30,7 +30,8 @@ struct TrayBridge;
 fn setup_system_tray_bridge() -> TrayBridge {
     let (tx, rx) = mpsc::channel::<TrayCommand>();
 
-    let mut tray = match TrayItem::new("HighBeam Server", IconSource::Resource("network-workgroup")) {
+    let mut tray = match TrayItem::new("HighBeam Server", IconSource::Resource("network-workgroup"))
+    {
         Ok(item) => item,
         Err(e) => {
             tracing::warn!(error = %e, "System tray unavailable; running without tray integration");
@@ -280,9 +281,7 @@ impl ServerGuiApp {
                                 self.push_console_line(format!("Removed mod: {}", item.name));
                                 self.mods = self.control.list_client_mods().unwrap_or_default();
                             }
-                            Err(e) => {
-                                self.push_console_line(format!("Remove mod failed: {}", e))
-                            }
+                            Err(e) => self.push_console_line(format!("Remove mod failed: {}", e)),
                         }
                     }
                 });
@@ -297,7 +296,10 @@ impl ServerGuiApp {
         ui.heading("Map Management");
         ui.separator();
 
-        ui.label(format!("Current active map: {}", self.control.get_active_map()));
+        ui.label(format!(
+            "Current active map: {}",
+            self.control.get_active_map()
+        ));
         if ui.button("Refresh available maps").clicked() {
             self.maps = self.control.list_available_maps().unwrap_or_default();
         }
