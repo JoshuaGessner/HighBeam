@@ -75,6 +75,21 @@ impl RateLimiter {
     pub async fn clear(&self) {
         self.records.write().await.clear();
     }
+
+    /// Remove records whose window has expired to keep memory bounded.
+    pub async fn prune_expired(&self) -> usize {
+        let mut records = self.records.write().await;
+        let before = records.len();
+        let now = SystemTime::now();
+
+        records.retain(|_, record| {
+            now.duration_since(record.window_start)
+                .map(|elapsed| elapsed <= self.window_duration)
+                .unwrap_or(true)
+        });
+
+        before.saturating_sub(records.len())
+    }
 }
 
 /// Specialized rate limiters for auth, chat, and vehicle spawn.
@@ -116,6 +131,13 @@ impl ServerRateLimiters {
     pub async fn check_spawn_limit(&self, player_id: u32) -> bool {
         let key = format!("spawn:{}", player_id);
         self.spawn_limiter.check_and_record(&key).await
+    }
+
+    pub async fn prune_expired(&self) -> usize {
+        let auth = self.auth_limiter.prune_expired().await;
+        let chat = self.chat_limiter.prune_expired().await;
+        let spawn = self.spawn_limiter.prune_expired().await;
+        auth + chat + spawn
     }
 }
 
@@ -161,5 +183,17 @@ mod tests {
         assert!(limiter.check_and_record("key1").await);
         assert!(!limiter.check_and_record("key1").await);
         assert!(limiter.check_and_record("key2").await);
+    }
+
+    #[tokio::test]
+    async fn test_prune_expired_removes_old_records() {
+        let limiter = RateLimiter::new(Duration::from_millis(50), 2);
+        assert!(limiter.check_and_record("old").await);
+        tokio::time::sleep(Duration::from_millis(75)).await;
+
+        let removed = limiter.prune_expired().await;
+
+        assert_eq!(removed, 1);
+        assert_eq!(limiter.get_attempt_count("old").await, 0);
     }
 }

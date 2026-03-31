@@ -1,0 +1,16 @@
+[Unit]
+Description=HighBeam dedicated server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/highbeam
+ExecStart=/opt/highbeam/highbeam-server --config /opt/highbeam/ServerConfig.toml --headless
+Restart=on-failure
+RestartSec=5
+User=highbeam
+Group=highbeam
+
+[Install]
+WantedBy=multi-user.target

@@ -25,4 +25,11 @@ mlua = { version = "0.10", features = ["lua54", "vendored", "send"] }
 reqwest = { version = "0.12", features = ["json"] }
 flate2 = "1"
 tar = "0.4"
+sysinfo = "0.37"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+rustls = { version = "0.23", features = ["std"] }
+tokio-rustls = "0.25"
+rustls-pemfile = "2"
+
+[dev-dependencies]
+tempfile = "3"

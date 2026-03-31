@@ -7,13 +7,16 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::time::{timeout, Instant};
+use tokio_rustls::TlsAcceptor;
 
 use crate::config::ServerConfig;
+use crate::metrics;
 use crate::plugin::events::PluginEvent;
 use crate::plugin::runtime::PluginRuntime;
 use crate::session::manager::SessionManager;
 use crate::session::rate_limiter::ServerRateLimiters;
 use crate::state::world::WorldState;
+use crate::tls;
 
 use super::packet::{self, TcpPacket, MAX_PACKET_SIZE, PROTOCOL_VERSION};
 
@@ -31,8 +34,35 @@ pub async fn start_listener(
 
     tracing::info!(port = config.general.port, "TCP listener started");
 
+    // Initialize TLS acceptor if enabled
+    let tls_acceptor = if let Some(tls_cfg) = &config.tls {
+        if tls_cfg.enabled {
+            let tls_config = tls::TlsConfig::new(&tls_cfg.cert_path, &tls_cfg.key_path)
+                .with_autogenerate(tls_cfg.auto_generate);
+            let acceptor = tls::load_or_generate_acceptor(&tls_config)?;
+            tracing::info!("TLS enabled for TCP connections");
+            Some(acceptor)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let tls_acceptor = Arc::new(tls_acceptor);
+
     // Create rate limiters
     let rate_limiters = Arc::new(ServerRateLimiters::new());
+    let cleanup_limiters = rate_limiters.clone();
+    tokio::spawn(async move {
+        let interval = Duration::from_secs(60);
+        loop {
+            tokio::time::sleep(interval).await;
+            let removed = cleanup_limiters.prune_expired().await;
+            if removed > 0 {
+                tracing::debug!(removed, "Pruned expired rate limiter records");
+            }
+        }
+    });
 
     loop {
         let (stream, addr) = listener.accept().await?;
@@ -41,8 +71,10 @@ pub async fn start_listener(
         let world = world.clone();
         let plugins = plugins.clone();
         let rate_limiters = rate_limiters.clone();
+        let tls_acceptor = tls_acceptor.clone();
+
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(
+            if let Err(e) = handle_connection_wrapper(
                 stream,
                 addr,
                 config,
@@ -50,6 +82,7 @@ pub async fn start_listener(
                 world,
                 plugins,
                 rate_limiters,
+                tls_acceptor,
             )
             .await
             {
@@ -59,9 +92,8 @@ pub async fn start_listener(
     }
 }
 
-/// Handle a single client TCP connection through the full lifecycle:
-/// handshake → auth → main loop → disconnect.
-async fn handle_connection(
+/// Wrapper that handles both plain TCP and TLS connections
+async fn handle_connection_wrapper(
     mut stream: TcpStream,
     addr: SocketAddr,
     config: Arc<ServerConfig>,
@@ -69,11 +101,59 @@ async fn handle_connection(
     world: Arc<WorldState>,
     plugins: Arc<PluginRuntime>,
     rate_limiters: Arc<ServerRateLimiters>,
+    tls_acceptor: Arc<Option<TlsAcceptor>>,
 ) -> Result<()> {
-    tracing::info!(%addr, "New TCP connection");
-
-    // 1. Set TCP_NODELAY for low-latency packet delivery
+    // Set TCP_NODELAY before TLS wrapping
     stream.set_nodelay(true)?;
+
+    if let Some(acceptor) = tls_acceptor.as_ref() {
+        // TLS connection
+        let tls_stream = acceptor
+            .accept(stream)
+            .await
+            .context("Failed to establish TLS connection")?;
+        handle_connection_core(
+            tls_stream,
+            addr,
+            config,
+            sessions,
+            world,
+            plugins,
+            rate_limiters,
+        )
+        .await
+    } else {
+        // Plain TCP connection
+        handle_connection_core(
+            stream,
+            addr,
+            config,
+            sessions,
+            world,
+            plugins,
+            rate_limiters,
+        )
+        .await
+    }
+}
+
+/// Generic connection handler that works with both plain TCP and TLS streams
+#[allow(clippy::too_many_arguments)]
+async fn handle_connection_core<S>(
+    stream: S,
+    addr: SocketAddr,
+    config: Arc<ServerConfig>,
+    sessions: Arc<SessionManager>,
+    world: Arc<WorldState>,
+    plugins: Arc<PluginRuntime>,
+    rate_limiters: Arc<ServerRateLimiters>,
+) -> Result<()>
+where
+    S: AsyncReadExt + AsyncWriteExt + Unpin + std::fmt::Debug + Send + 'static,
+{
+    tracing::info!(%addr, "New connection");
+
+    let mut stream = stream;
 
     // 3. Send ServerHello immediately
     let hello = TcpPacket::ServerHello {
@@ -84,7 +164,7 @@ async fn handle_connection(
         max_players: config.general.max_players,
         max_cars: config.general.max_cars_per_player,
     };
-    write_packet(&mut stream, &hello).await?;
+    write_packet_generic(&mut stream, &hello).await?;
 
     // Check auth rate limit before processing
     if !rate_limiters.check_auth_limit(&addr).await {
@@ -95,13 +175,13 @@ async fn handle_connection(
             session_token: None,
             error: Some("Too many auth attempts. Try again later.".into()),
         };
-        write_packet(&mut stream, &response).await?;
+        write_packet_generic(&mut stream, &response).await?;
         return Ok(());
     }
 
     // 4. Wait for AuthRequest with timeout
     let auth_timeout = Duration::from_secs(config.auth.auth_timeout_sec);
-    let auth_packet = timeout(auth_timeout, read_packet(&mut stream))
+    let auth_packet = timeout(auth_timeout, read_packet_from(&mut stream))
         .await
         .with_context(|| format!("Auth timeout after {}s", config.auth.auth_timeout_sec))?
         .context("Failed to read auth request")?;
@@ -126,7 +206,7 @@ async fn handle_connection(
                 session_token: None,
                 error: Some(format!("Invalid username: {}", e)),
             };
-            write_packet(&mut stream, &response).await?;
+            write_packet_generic(&mut stream, &response).await?;
             return Ok(());
         }
     };
@@ -150,7 +230,7 @@ async fn handle_connection(
                         session_token: None,
                         error: Some("Incorrect password.".into()),
                     };
-                    write_packet(&mut stream, &response).await?;
+                    write_packet_generic(&mut stream, &response).await?;
                     return Ok(());
                 }
             }
@@ -168,7 +248,7 @@ async fn handle_connection(
                     session_token: None,
                     error: Some("You are not on the server's allowlist.".into()),
                 };
-                write_packet(&mut stream, &response).await?;
+                write_packet_generic(&mut stream, &response).await?;
                 return Ok(());
             }
         }
@@ -186,7 +266,7 @@ async fn handle_connection(
             session_token: None,
             error: Some("Server is full.".into()),
         };
-        write_packet(&mut stream, &response).await?;
+        write_packet_generic(&mut stream, &response).await?;
         return Ok(());
     }
 
@@ -202,7 +282,7 @@ async fn handle_connection(
             session_token: None,
             error: Some(reason),
         };
-        write_packet(&mut stream, &response).await?;
+        write_packet_generic(&mut stream, &response).await?;
         return Ok(());
     }
 
@@ -221,7 +301,7 @@ async fn handle_connection(
                     session_token: None,
                     error: Some(format!("Session creation failed: {e}")),
                 };
-                write_packet(&mut stream, &response).await?;
+                write_packet_generic(&mut stream, &response).await?;
                 return Ok(());
             }
         };
@@ -235,11 +315,11 @@ async fn handle_connection(
         session_token: Some(session_token.clone()),
         error: None,
     };
-    write_packet(&mut stream, &auth_response).await?;
+    write_packet_generic(&mut stream, &auth_response).await?;
 
     // 8. Wait for Ready packet
     let ready_timeout = Duration::from_secs(10);
-    let ready_packet = timeout(ready_timeout, read_packet(&mut stream))
+    let ready_packet = timeout(ready_timeout, read_packet_from(&mut stream))
         .await
         .context("Timeout waiting for Ready packet")?
         .context("Failed to read Ready packet")?;
@@ -258,7 +338,7 @@ async fn handle_connection(
         players: sessions.get_player_snapshot(),
         vehicles: world.get_vehicle_snapshot(),
     };
-    write_packet(&mut stream, &world_snapshot).await?;
+    write_packet_generic(&mut stream, &world_snapshot).await?;
 
     // 10. Broadcast PlayerJoin to all other connected players
     sessions.broadcast(
@@ -270,10 +350,11 @@ async fn handle_connection(
     );
 
     // Split stream for concurrent read/write
-    let (read_half, mut write_half) = stream.into_split();
+    let (read_half, write_half) = tokio::io::split(stream);
 
     // Spawn a task to forward outbound packets from the channel to the TCP stream
     let write_task = tokio::spawn(async move {
+        let mut write_half = write_half;
         while let Some(packet) = tcp_rx.recv().await {
             if let Err(e) = write_packet_to(&mut write_half, &packet).await {
                 tracing::warn!(player_id, "Write error: {e}");
@@ -572,6 +653,20 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
 
 // ── Wire helpers ─────────────────────────────────────────────────────
 
+/// Write a packet to any AsyncWrite type (works with both TcpStream and TlsStream)
+async fn write_packet_generic<W: AsyncWriteExt + Unpin>(
+    writer: &mut W,
+    packet: &TcpPacket,
+) -> Result<()> {
+    let data = packet::encode(packet)?;
+    writer.write_all(&data).await?;
+    writer.flush().await?;
+    if let Some(metrics) = metrics::global() {
+        metrics.record_tcp_tx();
+    }
+    Ok(())
+}
+
 /// Read exactly one length-prefixed packet from a reader.
 async fn read_packet(stream: &mut TcpStream) -> Result<TcpPacket> {
     read_packet_from(stream).await
@@ -587,6 +682,9 @@ async fn read_packet_from<R: AsyncReadExt + Unpin>(reader: &mut R) -> Result<Tcp
     }
     let mut payload = vec![0u8; len as usize];
     reader.read_exact(&mut payload).await?;
+    if let Some(metrics) = metrics::global() {
+        metrics.record_tcp_rx();
+    }
     packet::decode(&payload)
 }
 
@@ -595,6 +693,9 @@ async fn write_packet(stream: &mut TcpStream, packet: &TcpPacket) -> Result<()> 
     let data = packet::encode(packet)?;
     stream.write_all(&data).await?;
     stream.flush().await?;
+    if let Some(metrics) = metrics::global() {
+        metrics.record_tcp_tx();
+    }
     Ok(())
 }
 
@@ -606,5 +707,8 @@ async fn write_packet_to<W: AsyncWriteExt + Unpin>(
     let data = packet::encode(packet)?;
     writer.write_all(&data).await?;
     writer.flush().await?;
+    if let Some(metrics) = metrics::global() {
+        metrics.record_tcp_tx();
+    }
     Ok(())
 }

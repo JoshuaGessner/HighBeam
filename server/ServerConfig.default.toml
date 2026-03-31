@@ -21,6 +21,13 @@ TcpKeepAliveSec = 15
 Level = "info"
 LogFile = "server.log"
 LogChat = true
+MetricsIntervalSec = 60
+
+[TLS]
+Enabled = false
+CertPath = "certs/server.pem"
+KeyPath = "certs/key.pem"
+AutoGenerate = false
 
 [Updates]
 AutoUpdate = true

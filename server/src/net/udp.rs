@@ -1,14 +1,18 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use tokio::net::UdpSocket;
+use tokio::time::Instant;
 
+use crate::metrics;
 use crate::session::manager::SessionManager;
 use crate::state::world::WorldState;
 
 /// Start the UDP receiver loop. Runs forever, routing packets between players.
 pub async fn start_udp(
     port: u16,
+    tick_rate: u32,
     sessions: Arc<SessionManager>,
     world: Arc<WorldState>,
 ) -> Result<()> {
@@ -20,8 +24,13 @@ pub async fn start_udp(
     tracing::info!(port, "UDP socket bound");
 
     let mut buf = vec![0u8; 65535];
+    let relay_interval = Duration::from_secs_f64(1.0 / tick_rate.max(1) as f64);
+    let mut last_relay_at = std::collections::HashMap::<u32, Instant>::new();
     loop {
         let (len, addr) = socket.recv_from(&mut buf).await?;
+        if let Some(metrics) = metrics::global() {
+            metrics.record_udp_rx();
+        }
 
         // Minimum packet: 16-byte session hash + 1-byte type
         if len < 17 {
@@ -65,6 +74,17 @@ pub async fn start_udp(
                 // Update world state
                 world.update_position(player_id, vid, pos, rot, vel);
 
+                let now = Instant::now();
+                let should_relay = last_relay_at
+                    .get(&player_id)
+                    .map(|last| now.duration_since(*last) >= relay_interval)
+                    .unwrap_or(true);
+
+                if !should_relay {
+                    continue;
+                }
+                last_relay_at.insert(player_id, now);
+
                 // Build relay packet: insert player_id (u16 LE) after type byte
                 let mut relay = Vec::with_capacity(65);
                 relay.extend_from_slice(&buf[..17]); // hash + type
@@ -72,6 +92,10 @@ pub async fn start_udp(
                 relay.extend_from_slice(&buf[17..len]); // vid + pos + rot + vel + time
 
                 // Relay to all other players' registered UDP addresses
+                let relay_targets = sessions.player_count().saturating_sub(1) as u64;
+                if let Some(metrics) = metrics::global() {
+                    metrics.record_udp_tx(relay_targets);
+                }
                 sessions
                     .broadcast_udp(&socket, &relay, Some(player_id))
                     .await;

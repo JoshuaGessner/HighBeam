@@ -121,4 +121,8 @@ impl WorldState {
             .filter(|e| e.value().owner_id == player_id)
             .count() as u32
     }
+
+    pub fn vehicle_count(&self) -> usize {
+        self.vehicles.len()
+    }
 }

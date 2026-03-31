@@ -6,6 +6,7 @@ use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
+use crate::metrics;
 use crate::net::packet::{self, ModDescriptor, TcpPacket};
 
 pub async fn start_listener(
@@ -86,6 +87,10 @@ async fn send_file_frame(stream: &mut TcpStream, name: &str, path: &Path) -> Res
     stream.write_all(&name_len.to_le_bytes()).await?;
     stream.write_all(name_bytes).await?;
     stream.write_all(&metadata.len().to_le_bytes()).await?;
+    if let Some(metrics) = metrics::global() {
+        metrics.record_mod_sync_packet();
+        metrics.record_mod_sync_bytes(2 + name_bytes.len() as u64 + 8);
+    }
 
     let mut buf = [0u8; 64 * 1024];
     loop {
@@ -94,6 +99,9 @@ async fn send_file_frame(stream: &mut TcpStream, name: &str, path: &Path) -> Res
             break;
         }
         stream.write_all(&buf[..n]).await?;
+        if let Some(metrics) = metrics::global() {
+            metrics.record_mod_sync_bytes(n as u64);
+        }
     }
     stream.flush().await?;
     Ok(())
@@ -114,6 +122,10 @@ async fn read_packet(stream: &mut TcpStream) -> Result<TcpPacket> {
     let len = u32::from_le_bytes(len_buf);
     let mut payload = vec![0u8; len as usize];
     stream.read_exact(&mut payload).await?;
+    if let Some(metrics) = metrics::global() {
+        metrics.record_mod_sync_packet();
+        metrics.record_mod_sync_bytes(4 + len as u64);
+    }
     packet::decode(&payload)
 }
 
@@ -121,5 +133,9 @@ async fn write_packet(stream: &mut TcpStream, packet: &TcpPacket) -> Result<()> 
     let data = packet::encode(packet)?;
     stream.write_all(&data).await?;
     stream.flush().await?;
+    if let Some(metrics) = metrics::global() {
+        metrics.record_mod_sync_packet();
+        metrics.record_mod_sync_bytes(data.len() as u64);
+    }
     Ok(())
 }

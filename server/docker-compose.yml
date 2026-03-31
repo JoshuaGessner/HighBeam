@@ -1,0 +1,15 @@
+services:
+  highbeam-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: highbeam-server
+    restart: unless-stopped
+    ports:
+      - "18860:18860/tcp"
+      - "18860:18860/udp"
+      - "18861:18861/tcp"
+    volumes:
+      - ./ServerConfig.toml:/opt/highbeam/ServerConfig.toml
+      - ./Resources:/opt/highbeam/Resources
+    command: ["./highbeam-server", "--headless"]

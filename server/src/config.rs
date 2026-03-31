@@ -12,6 +12,8 @@ pub struct ServerConfig {
     pub network: NetworkConfig,
     #[serde(rename = "Logging")]
     pub logging: LoggingConfig,
+    #[serde(rename = "TLS", default)]
+    pub tls: Option<TlsConfigData>,
     #[serde(rename = "Updates", default)]
     pub updates: UpdatesConfig,
 }
@@ -68,6 +70,31 @@ pub struct LoggingConfig {
     pub log_file: String,
     #[serde(rename = "LogChat", default)]
     pub log_chat: bool,
+    #[serde(rename = "MetricsIntervalSec", default = "default_metrics_interval")]
+    pub metrics_interval_sec: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TlsConfigData {
+    #[serde(rename = "Enabled", default)]
+    pub enabled: bool,
+    #[serde(rename = "CertPath", default = "default_cert_path")]
+    pub cert_path: String,
+    #[serde(rename = "KeyPath", default = "default_key_path")]
+    pub key_path: String,
+    #[serde(rename = "AutoGenerate", default = "default_auto_generate")]
+    pub auto_generate: bool,
+}
+
+impl Default for TlsConfigData {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            cert_path: default_cert_path(),
+            key_path: default_key_path(),
+            auto_generate: default_auto_generate(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -120,16 +147,28 @@ fn default_log_level() -> String {
 fn default_log_file() -> String {
     "server.log".into()
 }
+fn default_metrics_interval() -> u64 {
+    60
+}
+fn default_cert_path() -> String {
+    "certs/server.pem".into()
+}
+fn default_key_path() -> String {
+    "certs/key.pem".into()
+}
+fn default_auto_generate() -> bool {
+    false
+}
 fn default_auto_update() -> bool {
     true
 }
 
 impl ServerConfig {
     pub fn load() -> Result<Self> {
-        let path = std::env::args()
-            .nth(1)
-            .unwrap_or_else(|| "ServerConfig.toml".into());
+        Self::load_from_path("ServerConfig.toml")
+    }
 
+    pub fn load_from_path(path: &str) -> Result<Self> {
         if Path::new(&path).exists() {
             let contents = std::fs::read_to_string(&path)
                 .with_context(|| format!("Failed to read config file: {path}"))?;
@@ -178,7 +217,9 @@ impl Default for ServerConfig {
                 level: "info".into(),
                 log_file: "server.log".into(),
                 log_chat: false,
+                metrics_interval_sec: 60,
             },
+            tls: Some(TlsConfigData::default()),
             updates: UpdatesConfig::default(),
         }
     }

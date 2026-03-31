@@ -7,19 +7,24 @@ use std::io::BufRead;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
+mod cli;
 mod config;
+mod metrics;
 mod mods;
 mod net;
 mod plugin;
 mod session;
 mod state;
+mod tls;
 mod updater;
 mod validation;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let cli = cli::CliArgs::parse()?;
+
     // Load config first (before complete logging setup)
-    let config = config::ServerConfig::load()?;
+    let config = config::ServerConfig::load_from_path(&cli.config_path)?;
 
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         config
@@ -58,6 +63,7 @@ async fn main() -> Result<()> {
     }
 
     tracing::info!("HighBeam server v{}", env!("CARGO_PKG_VERSION"));
+    tracing::info!(config_path = %cli.config_path, headless = cli.headless, "CLI arguments parsed");
 
     // Clean up leftover binary from a previous update
     updater::cleanup_previous_update();
@@ -95,11 +101,19 @@ async fn main() -> Result<()> {
     let config = Arc::new(config);
     let sessions = Arc::new(session::manager::SessionManager::new());
     let world = Arc::new(state::world::WorldState::new());
+    let runtime_metrics = Arc::new(metrics::ServerMetrics::new());
+    metrics::install_global(runtime_metrics);
     let plugins = Arc::new(plugin::runtime::PluginRuntime::load_from_resource(
         &config.general.resource_folder,
         sessions.clone(),
         world.clone(),
     )?);
+
+    metrics::spawn_metrics_logger(
+        config.logging.metrics_interval_sec,
+        sessions.clone(),
+        world.clone(),
+    );
 
     tracing::info!(
         plugin_count = plugins.plugin_count(),
@@ -219,8 +233,16 @@ async fn main() -> Result<()> {
     let udp_sessions = sessions.clone();
     let udp_world = world.clone();
     let udp_port = config.general.port;
+    let udp_config = config.clone();
     tokio::spawn(async move {
-        if let Err(e) = net::udp::start_udp(udp_port, udp_sessions, udp_world).await {
+        if let Err(e) = net::udp::start_udp(
+            udp_port,
+            udp_config.network.tick_rate,
+            udp_sessions,
+            udp_world,
+        )
+        .await
+        {
             tracing::error!(error = %e, "UDP socket error");
         }
     });
