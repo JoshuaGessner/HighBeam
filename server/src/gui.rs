@@ -429,13 +429,11 @@ impl eframe::App for ServerGuiApp {
 
         #[cfg(any(target_os = "windows", target_os = "linux"))]
         {
-            if ctx.input(|i| i.viewport().close_requested()) {
-                if !self.allow_window_close {
-                    // Keep server running and hide the GUI to tray.
-                    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-                    self.tray_hidden = true;
-                }
+            if ctx.input(|i| i.viewport().close_requested()) && !self.allow_window_close {
+                // Keep server running and hide the GUI to tray.
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                self.tray_hidden = true;
             }
         }
 
