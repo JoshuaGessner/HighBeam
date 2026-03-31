@@ -19,7 +19,7 @@ HighBeam is an open-source multiplayer mod and server for BeamNG.drive that lets
 
 ## Current Status
 
-**v0.4.1** — Core multiplayer, chat, mod sync via launcher, and server-side Lua plugin system all implemented. Production hardening applied across server and client.
+**v0.5.0-dev** — Operational foundation complete: CLI, runtime metrics, TLS, log rotation, graceful shutdown, and deployment infrastructure. Ready for production deployments.
 
 | Feature | Status |
 |---------|--------|
@@ -30,7 +30,14 @@ HighBeam is an open-source multiplayer mod and server for BeamNG.drive that lets
 | Server-side Lua plugins | ✅ Done |
 | Auto-update (server & launcher) | ✅ Done |
 | BeamNG.drive auto-detection | ✅ Done |
-| Server management GUI | ⏳ Planned (v0.5.0) |
+| CLI with --config and --headless flags | ✅ Done (v0.5.0) |
+| Runtime metrics logging (TCP/UDP/memory) | ✅ Done (v0.5.0) |
+| Bandwidth throttling (tick-rate-based) | ✅ Done (v0.5.0) |
+| Log rotation with configurable retention | ✅ Done (v0.5.0) |
+| Optional TLS for TCP connections | ✅ Done (v0.5.0) |
+| Graceful shutdown (SIGTERM/SIGINT) | ✅ Done (v0.5.0) |
+| Deployment assets (Docker, systemd) | ✅ Done (v0.5.0) |
+| Server management GUI | ⏳ Planned (v0.5.0 Phase 2) |
 | Server browser / discovery | ⏳ Planned (v0.6.0) |
 | Stable v1.0.0 release | 🔭 Target |
 
