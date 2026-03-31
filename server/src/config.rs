@@ -72,6 +72,10 @@ pub struct LoggingConfig {
     pub log_chat: bool,
     #[serde(rename = "MetricsIntervalSec", default = "default_metrics_interval")]
     pub metrics_interval_sec: u64,
+    #[serde(rename = "RotationMaxSizeMb", default = "default_rotation_max_size_mb")]
+    pub rotation_max_size_mb: u64,
+    #[serde(rename = "RotationMaxDays", default = "default_rotation_max_days")]
+    pub rotation_max_days: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -150,6 +154,12 @@ fn default_log_file() -> String {
 fn default_metrics_interval() -> u64 {
     60
 }
+fn default_rotation_max_size_mb() -> u64 {
+    100
+}
+fn default_rotation_max_days() -> u64 {
+    7
+}
 fn default_cert_path() -> String {
     "certs/server.pem".into()
 }
@@ -218,6 +228,8 @@ impl Default for ServerConfig {
                 log_file: "server.log".into(),
                 log_chat: false,
                 metrics_interval_sec: 60,
+                rotation_max_size_mb: 100,
+                rotation_max_days: 7,
             },
             tls: Some(TlsConfigData::default()),
             updates: UpdatesConfig::default(),

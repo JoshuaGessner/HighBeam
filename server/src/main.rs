@@ -9,6 +9,7 @@ use tokio::sync::broadcast;
 
 mod cli;
 mod config;
+mod log_rotation;
 mod metrics;
 mod mods;
 mod net;
@@ -113,6 +114,10 @@ async fn main() -> Result<()> {
         config.logging.metrics_interval_sec,
         sessions.clone(),
         world.clone(),
+        Some(log_rotation::LogRotationPolicy::new(
+            config.logging.rotation_max_size_mb,
+            config.logging.rotation_max_days,
+        )),
     );
 
     tracing::info!(

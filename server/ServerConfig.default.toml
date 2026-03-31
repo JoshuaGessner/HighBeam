@@ -22,6 +22,8 @@ Level = "info"
 LogFile = "server.log"
 LogChat = true
 MetricsIntervalSec = 60
+RotationMaxSizeMb = 100
+RotationMaxDays = 7
 
 [TLS]
 Enabled = false

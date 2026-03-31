@@ -88,6 +88,7 @@ pub fn spawn_metrics_logger(
     interval_sec: u64,
     sessions: Arc<SessionManager>,
     world: Arc<WorldState>,
+    log_rotation_policy: Option<crate::log_rotation::LogRotationPolicy>,
 ) {
     if interval_sec == 0 {
         tracing::info!("Runtime metrics logging disabled (MetricsIntervalSec=0)");
@@ -133,6 +134,13 @@ pub fn spawn_metrics_logger(
                 interval_sec,
                 "Runtime metrics"
             );
+
+            // Perform log rotation if policy is configured
+            if let Some(ref policy) = log_rotation_policy {
+                if let Err(e) = policy.rotate_and_clean(std::path::Path::new("server.log")) {
+                    tracing::warn!(error = %e, "Log rotation failed");
+                }
+            }
         }
     });
 }
