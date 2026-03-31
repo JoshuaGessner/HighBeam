@@ -18,7 +18,7 @@ HighBeam lets you host and join real-time multiplayer sessions in BeamNG.drive �
 
 ---
 
-## Current Status — v0.6.1
+## Current Status — v0.6.5 (In Progress)
 
 | Feature | Status |
 |---------|--------|
@@ -35,6 +35,9 @@ HighBeam lets you host and join real-time multiplayer sessions in BeamNG.drive �
 | Docker & systemd deployment | ✅ Done |
 | In-game server browser (Direct Connect, Browse, Favorites, Recent) | ✅ Done |
 | Community relay server listing | ✅ Done |
+| More menu button (in-game quick access) | ✅ Done |
+| Join-scoped mod sync (session staging & cleanup) | ✅ Done |
+| Server GUI close-to-tray & graceful quit | ✅ Done |
 | Binary protocol (bandwidth optimization) | 📋 v0.7.0 |
 | Stable v1.0.0 release | 🔭 Target |
 
@@ -49,8 +52,9 @@ HighBeam lets you host and join real-time multiplayer sessions in BeamNG.drive �
    ```
    highbeam-launcher.exe --server <server-ip>:18860
    ```
-3. The launcher syncs required mods and launches BeamNG.drive automatically.
+3. The launcher downloads only the mods required by that specific server, installs them as a temporary session, and launches BeamNG.drive.
 4. The **HighBeam Multiplayer** browser window opens in-game. Enter your username and the server address, then click **Connect**.
+5. When the game exits, the launcher automatically removes the session-staged server mods from your BeamNG mods folder (downloaded files stay in the launcher cache for future joins).
 
 > If BeamNG.drive is not on Steam, set `beamng_exe` in `LauncherConfig.toml` to the full path of the BeamNG.drive executable.
 
@@ -67,7 +71,7 @@ Once in BeamNG, the HighBeam window opens automatically with four tabs:
 
 Your username, last server address, and relay URL are remembered between sessions.
 
-The browser can be reopened any time from the BeamNG GE console:
+The browser can be reopened any time from the BeamNG **More** menu (look for **HighBeam Multiplayer** in the quick-access list), or from the GE console:
 ```lua
 extensions.highbeam.openBrowser()
 ```
@@ -79,7 +83,7 @@ extensions.highbeam.openBrowser()
 3. Run `highbeam-server` (or `highbeam-server.exe` on Windows).
    - Add `--headless` for Docker/systemd deployments.
 
-The server opens a GUI window by default (minimize-to-tray on Windows and Linux). Port **18860** (TCP + UDP) must be open in your firewall.
+The server opens a GUI window by default. **Closing the window hides it to the system tray** — the server keeps running. Right-click the tray icon and choose **Quit** to stop the server fully. On Windows, the release build suppresses the CLI console window entirely. Port **18860** (TCP + UDP) must be open in your firewall.
 
 #### Key config options
 
@@ -118,7 +122,7 @@ For Linux servers, a `highbeam-server.service` systemd unit and a `docker-compos
 | v0.3.0 | Chat, mod distribution, launcher | ✅ Done |
 | v0.4.x | Server-side Lua plugins, auto-update, auto-detection | ✅ Done |
 | v0.5.0 | Stability & deployment polish | ✅ Done |
-| v0.6.x | Server GUI, discovery, in-game browser | ✅ Done |
+| v0.6.x | Server GUI, discovery, in-game browser, join-scoped mod sync | 🔧 In Progress (v0.6.5) |
 | v0.7.0 | Binary protocol (bandwidth optimization) | 📋 Next |
 | v1.0.0 | Stable release | 🔭 Target |
 

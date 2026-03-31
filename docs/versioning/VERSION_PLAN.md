@@ -1,9 +1,9 @@
 # HighBeam Version Plan
 
-> **Last updated:** 2026-03-30
+> **Last updated:** 2026-03-31
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.6.1 (protocol v2)
-> **Status:** v0.6.1 Complete — In-game client UX and CI build fixes
+> **Current version:** v0.6.5 (protocol v2)
+> **Status:** v0.6.5 In Progress — Join-scoped launcher sync & GUI tray UX hardening (Phases A/B/D/E complete; Phase C pending)
 
 ---
 
@@ -100,12 +100,14 @@ The server and client negotiate protocol version during the handshake. Mismatche
    - Browser auto-opens when HighBeam loads and user is not connected; closes on successful connect.
    - Reopenable from GE Lua console: `extensions.highbeam.openBrowser()`.
 - [ ] PR8: v0.6.5 launcher join-scoped sync + GUI tray UX hardening
-   - Remove launcher startup hardwire sync to configured server address.
-   - Trigger mod sync only when user joins a specific server from UI flow.
-   - Stage server mods per join-session and clean staged mods on close.
-   - Keep cache entries for reuse, but avoid reinstalling into BeamNG mods unless session requires it.
-   - Fix GUI close behavior to hide to tray reliably and keep Quit in tray as full exit path.
-   - Ensure Windows GUI mode does not show CLI console window.
+- [~] PR8: v0.6.5 launcher join-scoped sync + GUI tray UX hardening (Phases A/B/D/E complete; Phase C pending)
+   - [x] Remove launcher startup hardwire sync to configured server address.
+   - [x] Trigger mod sync only when user joins a specific server (`--server` flag).
+   - [x] Stage server mods per join-session (`highbeam-session-*` prefix + session manifest).
+   - [x] Keep cache entries for reuse; clean staged BeamNG mods on session end and on stale-session recovery.
+   - [x] Fix GUI close behavior to hide to tray reliably and keep Quit in tray as full exit path.
+   - [x] Ensure Windows GUI mode does not show CLI console window (release build).
+   - [ ] Phase C: Wire in-game join action to launcher join-sync-ready handshake (IPC bridge).
 
 ### v0.1.0 — Foundation (Pre-Alpha) ✅
 
@@ -649,6 +651,18 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.6.1 — 2026-03-30
+### v0.6.5 — In Progress (2026-03-31)
+- **Join-scoped launcher sync:** mod sync/install now only runs when user explicitly joins a server via `--server`; startup no longer touches mods.
+- **Session staging:** server-required mods staged into BeamNG mods dir as `highbeam-session-*` files with a JSON session manifest; staged mods are removed after game exits.
+- **Stale session recovery:** orphaned session mods (e.g. from a launcher crash) are detected and cleaned up on next startup.
+- **Server GUI close-to-tray:** closing the server window now hides to system tray (`Visible(false)`) instead of terminating the server; tray Quit triggers graceful full shutdown.
+- **Windows no-CLI:** `windows_subsystem = "windows"` attribute applied for release builds — GUI mode no longer shows a CLI console window.
+- **More menu button:** registered `HighBeam Multiplayer` entry in BeamNG's More quick-access menu via `core_quickAccess` API (dual-signature fallback).
+- **Network endpoint hardening:** TCP accept errors non-fatal (continues listening), UDP NaN/inf float rejection, mod-transfer packet/request bounds, launcher control-packet size guard, discovery UDP buffer enlarged to 65535 bytes.
+- All 55 server + 13 launcher tests passing; zero clippy warnings at `-D warnings`.
+- Commits: `5f7527d` (v0.6.5 implementation), `29a6b7b` (endpoint hardening).
 
 ### v0.6.1 — 2026-03-30
 - Added in-game server browser (IMGUI, 4 tabs: Direct Connect / Browse Servers / Favorites / Recent).
