@@ -35,7 +35,7 @@ server/
 │   ├── cli.rs                  # CLI argument parsing (--headless, --config, --protocol-benchmark)
 │   ├── config.rs               # TOML config parsing and runtime-editable settings
 │   ├── control.rs              # ControlPlane: admin command API and runtime snapshot
-│   ├── discovery_relay.rs      # Optional community relay registration heartbeat
+│   ├── discovery_relay.rs      # Optional community relay registration heartbeat (see RELAY.md)
 │   ├── gui.rs                  # egui/eframe GUI shell with close-to-tray behavior
 │   ├── log_rotation.rs         # Log file size/age rotation policy
 │   ├── metrics.rs              # Periodic runtime metrics collection and logging
@@ -293,6 +293,25 @@ Resources/
 ```
 
 Plugins are loaded alphabetically by directory name. Each plugin must have a `main.lua` entry point. The `HB.*` API namespace is available in all plugin scripts.
+
+---
+
+## Community Relay (Optional Server Listing)
+
+Servers can optionally register with a community-run relay so players can discover them from the in-game **Browse Servers** tab. This is entirely opt-in and requires no central HighBeam service.
+
+Enable it in `ServerConfig.toml`:
+
+```toml
+[Discovery]
+EnableRelay             = true
+RelayUrls               = ["http://relay.example.com"]
+RegistrationIntervalSec = 30
+```
+
+The server sends a periodic HTTP POST heartbeat to each relay URL containing the server's name, map, player count, and port. Players browse the relay from the in-game browser or via `highbeam-launcher --browse-relay <url>`.
+
+See [RELAY.md](RELAY.md) for the full relay architecture, JSON API contract, and an example relay implementation.
 
 ---
 

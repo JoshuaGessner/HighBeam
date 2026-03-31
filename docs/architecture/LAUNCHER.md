@@ -194,7 +194,7 @@ OPTIONS:
     --cache-clean                   Remove old cache entries
     --no-update                     Skip self-update check
     --query-server <HOST:PORT>      Query a server's info (name, map, players) and exit
-    --browse-relay <URL>            Fetch and print the server list from a relay URL
+    --browse-relay <URL>            Fetch and print the server list from a relay URL (see docs/architecture/RELAY.md)
     --favorite-add <HOST:PORT>      Add a server to favorites
     --favorite-remove <HOST:PORT>   Remove a server from favorites
     --favorites                     List saved favorite servers
