@@ -5,6 +5,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::time::{timeout, Instant};
 use tokio_rustls::TlsAcceptor;
@@ -28,6 +29,7 @@ pub async fn start_listener(
     sessions: Arc<SessionManager>,
     world: Arc<WorldState>,
     plugins: Arc<PluginRuntime>,
+    mut shutdown_rx: broadcast::Receiver<()>,
 ) -> Result<()> {
     let addr = format!("0.0.0.0:{}", config.general.port);
     let listener = TcpListener::bind(&addr)
@@ -67,7 +69,15 @@ pub async fn start_listener(
     });
 
     loop {
-        let (stream, addr) = listener.accept().await?;
+        let accept_result = tokio::select! {
+            _ = shutdown_rx.recv() => {
+                tracing::info!("TCP listener received shutdown signal");
+                break;
+            }
+            result = listener.accept() => result,
+        };
+
+        let (stream, addr) = accept_result?;
         let config = config.clone();
         let sessions = sessions.clone();
         let world = world.clone();
@@ -94,6 +104,8 @@ pub async fn start_listener(
             }
         });
     }
+
+    Ok(())
 }
 
 /// Wrapper that handles both plain TCP and TLS connections

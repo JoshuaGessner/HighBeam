@@ -92,6 +92,7 @@ struct ServerGuiApp {
     control: Arc<ControlPlane>,
     tray_bridge: TrayBridge,
     tray_hidden: bool,
+    allow_window_close: bool,
     selected_tab: Tab,
     last_refresh_at: Instant,
     snapshot: ServerSnapshot,
@@ -125,6 +126,7 @@ impl ServerGuiApp {
             control,
             tray_bridge,
             tray_hidden: false,
+            allow_window_close: false,
             selected_tab: Tab::Dashboard,
             last_refresh_at: Instant::now(),
             players: Vec::new(),
@@ -169,15 +171,17 @@ impl ServerGuiApp {
                 match cmd {
                     TrayCommand::Toggle => {
                         if self.tray_hidden {
+                            _ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                             _ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                             _ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                             self.tray_hidden = false;
                         } else {
-                            _ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                            _ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
                             self.tray_hidden = true;
                         }
                     }
                     TrayCommand::Quit => {
+                        self.allow_window_close = true;
                         _ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 }
@@ -426,10 +430,12 @@ impl eframe::App for ServerGuiApp {
         #[cfg(any(target_os = "windows", target_os = "linux"))]
         {
             if ctx.input(|i| i.viewport().close_requested()) {
-                // Keep server running and minimize the GUI to tray.
-                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-                self.tray_hidden = true;
+                if !self.allow_window_close {
+                    // Keep server running and hide the GUI to tray.
+                    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                    self.tray_hidden = true;
+                }
             }
         }
 

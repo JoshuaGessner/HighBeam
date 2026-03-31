@@ -353,9 +353,10 @@ fn main() -> Result<()> {
         }
     }
 
-    if let Some(server) = args.server {
-        cfg.note_recent_server(&server);
-        cfg.server_addr = server;
+    let join_server = args.server.clone();
+    if let Some(server) = join_server.as_deref() {
+        cfg.note_recent_server(server);
+        cfg.server_addr = server.to_string();
         cfg.save(&args.config)?;
     }
 
@@ -367,37 +368,64 @@ fn main() -> Result<()> {
         tracing::info!(cache_dir = %cache_dir.display(), "Cache cleared");
     }
 
-    let mut cache_index = mod_cache::load_index(&cache_dir)?;
-    let report = mod_sync::sync_mods(
-        &cfg.server_addr,
-        cfg.mod_sync_addr.as_deref(),
-        cfg.connect_timeout_sec,
-        &cache_dir,
-        &mut cache_index,
-    )?;
-    tracing::info!(
-        total_server_mods = report.total_server_mods,
-        missing_mods = report.missing_mods,
-        downloaded_mods = report.downloaded_mods,
-        "Mod sync completed"
-    );
+    // Recover from prior interrupted sessions by removing staged join mods.
+    match installer::cleanup_staged_server_mods(cfg.beamng_userfolder.as_deref()) {
+        Ok(report) => {
+            if report.removed_files > 0 || report.missing_files > 0 {
+                tracing::info!(
+                    removed_files = report.removed_files,
+                    missing_files = report.missing_files,
+                    mods_dir = %report.mods_dir.display(),
+                    "Recovered stale staged mods from previous session"
+                );
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed stale staged-mod cleanup recovery; continuing");
+        }
+    }
 
-    let client_source_root = resolve_client_source_root()?;
-    let install_report = installer::install_all(
-        cfg.beamng_userfolder.as_deref(),
-        &cache_dir,
-        &cache_index,
-        &report.server_mods,
-        &client_source_root,
-    )?;
-    tracing::info!(
-        installed_server_mods = install_report.installed_server_mods,
-        installed_client_mod = install_report.installed_client_mod,
-        mods_dir = %install_report.mods_dir.display(),
-        "Mod installation completed"
-    );
+    let mut joined_server = false;
+    if let Some(server_addr) = join_server.as_deref() {
+        joined_server = true;
+        tracing::info!(server = %server_addr, "Join requested; starting server-scoped mod sync");
 
-    mod_cache::save_index(&cache_dir, &cache_index)?;
+        let mut cache_index = mod_cache::load_index(&cache_dir)?;
+        let report = mod_sync::sync_mods(
+            server_addr,
+            cfg.mod_sync_addr.as_deref(),
+            cfg.connect_timeout_sec,
+            &cache_dir,
+            &mut cache_index,
+        )?;
+        tracing::info!(
+            server = %server_addr,
+            total_server_mods = report.total_server_mods,
+            missing_mods = report.missing_mods,
+            downloaded_mods = report.downloaded_mods,
+            "Mod sync completed"
+        );
+
+        let client_source_root = resolve_client_source_root()?;
+        let install_report = installer::install_all(
+            cfg.beamng_userfolder.as_deref(),
+            &cache_dir,
+            &cache_index,
+            &report.server_mods,
+            &client_source_root,
+        )?;
+        tracing::info!(
+            server = %server_addr,
+            installed_server_mods = install_report.installed_server_mods,
+            installed_client_mod = install_report.installed_client_mod,
+            mods_dir = %install_report.mods_dir.display(),
+            "Mod installation completed"
+        );
+
+        mod_cache::save_index(&cache_dir, &cache_index)?;
+    } else {
+        tracing::info!("No explicit join requested; skipping mod sync/install startup path");
+    }
 
     if args.no_launch {
         tracing::info!("--no-launch specified; exiting after sync");
@@ -406,5 +434,17 @@ fn main() -> Result<()> {
 
     game::launch_game(cfg.beamng_exe.as_deref())?;
     tracing::info!("BeamNG launched successfully");
+
+    if joined_server {
+        let cleanup_report =
+            installer::cleanup_staged_server_mods(cfg.beamng_userfolder.as_deref())?;
+        tracing::info!(
+            removed_files = cleanup_report.removed_files,
+            missing_files = cleanup_report.missing_files,
+            mods_dir = %cleanup_report.mods_dir.display(),
+            "Cleaned up staged server mods after game exit"
+        );
+    }
+
     Ok(())
 }

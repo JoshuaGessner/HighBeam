@@ -1,6 +1,10 @@
 // Allow dead code for fields/methods scaffolded for upcoming phases.
 // Remove this once Phase 2+ fills in usage.
 #![allow(dead_code)]
+#![cfg_attr(
+    all(target_os = "windows", not(debug_assertions)),
+    windows_subsystem = "windows"
+)]
 
 use anyhow::Result;
 use std::io::BufRead;
@@ -95,6 +99,8 @@ fn main() -> Result<()> {
         .enable_all()
         .build()?;
 
+    let (shutdown_tx, _) = broadcast::channel::<()>(8);
+
     // Check for updates if enabled
     if config.updates.auto_update {
         rt.block_on(async {
@@ -158,19 +164,39 @@ fn main() -> Result<()> {
 
     if cli.headless {
         // Headless: run the async server directly on the main thread.
-        rt.block_on(run_server(config, control_plane, sessions, world, plugins))?;
+        rt.block_on(run_server(
+            config,
+            control_plane,
+            sessions,
+            world,
+            plugins,
+            true,
+            shutdown_tx.clone(),
+        ))?;
     } else {
         // GUI mode: the async server runs on a background thread so that
         // eframe's event loop can own the main thread (required by winit).
         tracing::info!("GUI shell launched (v0.6 scaffold)");
         let control_for_gui = control_plane.clone();
-        std::thread::spawn(move || {
-            if let Err(e) = rt.block_on(run_server(config, control_plane, sessions, world, plugins))
-            {
+        let shutdown_for_server = shutdown_tx.clone();
+        let server_thread = std::thread::spawn(move || {
+            if let Err(e) = rt.block_on(run_server(
+                config,
+                control_plane,
+                sessions,
+                world,
+                plugins,
+                false,
+                shutdown_for_server,
+            )) {
                 tracing::error!(error = %e, "Server exited with error");
             }
         });
+
         gui::run(control_for_gui);
+
+        let _ = shutdown_tx.send(());
+        let _ = server_thread.join();
     }
 
     Ok(())
@@ -182,6 +208,8 @@ async fn run_server(
     sessions: Arc<session::manager::SessionManager>,
     world: Arc<state::world::WorldState>,
     plugins: Arc<plugin::runtime::PluginRuntime>,
+    enable_console_input: bool,
+    shutdown_tx: broadcast::Sender<()>,
 ) -> Result<()> {
     discovery_relay::spawn_registration_task(config.clone(), control_plane.clone());
 
@@ -215,25 +243,27 @@ async fn run_server(
         }
     });
 
-    // Local admin console for control-plane commands.
-    let control_for_console = control_plane.clone();
-    tokio::task::spawn_blocking(move || {
-        let stdin = std::io::stdin();
-        for line in stdin.lock().lines() {
-            let Ok(line) = line else {
-                continue;
-            };
-            match control_for_console.execute_console_line(&line) {
-                Ok(output) if !output.is_empty() => {
-                    tracing::info!(command = %line.trim(), output = %output, "Console command processed");
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    tracing::warn!(command = %line.trim(), error = %e, "Console command failed");
+    // Local admin console for control-plane commands (headless mode only).
+    if enable_console_input {
+        let control_for_console = control_plane.clone();
+        tokio::task::spawn_blocking(move || {
+            let stdin = std::io::stdin();
+            for line in stdin.lock().lines() {
+                let Ok(line) = line else {
+                    continue;
+                };
+                match control_for_console.execute_console_line(&line) {
+                    Ok(output) if !output.is_empty() => {
+                        tracing::info!(command = %line.trim(), output = %output, "Console command processed");
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::warn!(command = %line.trim(), error = %e, "Console command failed");
+                    }
                 }
             }
-        }
-    });
+        });
+    }
 
     // Build mod manifest once at startup (Phase 3 groundwork for launcher sync).
     let mod_manifest = Arc::new(mods::build_manifest(&config.general.resource_folder)?);
@@ -260,7 +290,6 @@ async fn run_server(
     });
 
     // Graceful shutdown signal
-    let (shutdown_tx, _) = broadcast::channel::<()>(1);
     let shutdown_tx_clone = shutdown_tx.clone();
     let signal_control = control_plane.clone();
     let signal_world = world.clone();
@@ -347,6 +376,7 @@ async fn run_server(
         sessions,
         world.clone(),
         plugins,
+        shutdown_tx.subscribe(),
     )
     .await?;
 

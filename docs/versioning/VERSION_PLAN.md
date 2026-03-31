@@ -99,6 +99,13 @@ The server and client negotiate protocol version during the handshake. Mismatche
    - Config save/load: username, last host/port, and relay URL are remembered between sessions.
    - Browser auto-opens when HighBeam loads and user is not connected; closes on successful connect.
    - Reopenable from GE Lua console: `extensions.highbeam.openBrowser()`.
+- [ ] PR8: v0.6.5 launcher join-scoped sync + GUI tray UX hardening
+   - Remove launcher startup hardwire sync to configured server address.
+   - Trigger mod sync only when user joins a specific server from UI flow.
+   - Stage server mods per join-session and clean staged mods on close.
+   - Keep cache entries for reuse, but avoid reinstalling into BeamNG mods unless session requires it.
+   - Fix GUI close behavior to hide to tray reliably and keep Quit in tray as full exit path.
+   - Ensure Windows GUI mode does not show CLI console window.
 
 ### v0.1.0 — Foundation (Pre-Alpha) ✅
 
@@ -470,6 +477,90 @@ As of 2026-03-30, historical hardening notes were merged into this plan.
 - [x] Username, last host/port, and relay URL are remembered between sessions
 - [x] Connect from Browse / Favorites / Recent uses the username from the Direct Connect tab
 - [x] Adding/removing favorites updates the Favorites tab immediately without restart
+
+---
+
+### v0.6.5 — Join-Scoped Launcher Flow & GUI Tray UX Hardening (Beta)
+
+**Status:** In Progress
+**Goal:** Correct launcher/session behavior so mods are only synced for the server being actively joined, and harden server GUI tray/close UX for production use.
+
+**Problem Statement:**
+- Launcher currently performs sync/install work from configured startup server context, which can recreate client-side mod artifacts even when users expect no sync to occur.
+- Mod installation behavior is not explicitly session-scoped for per-server joins.
+- Server GUI close/tray behavior is inconsistent with user expectations (close should hide to tray, Quit should fully exit).
+- Windows GUI mode should not present a CLI console window to end users.
+
+**Scope Boundaries:**
+- This milestone is a behavior-correction and UX-hardening release; no protocol bump planned.
+- Primary targets: launcher join flow, cache/install lifecycle, server GUI tray behavior, Windows packaging UX.
+- Existing headless/server-service workflows must remain backward-compatible.
+
+**Launcher — Join-Scoped Sync & Install Policy:**
+- [x] Remove auto-sync from normal launcher startup path.
+- [x] Deprecate hardwired startup dependency on configured `server_addr` for mod syncing.
+- [x] Introduce explicit join-triggered sync path (`--server` join intent).
+- [x] Sync only when user initiates join for a specific server.
+- [x] Persist last-used server as convenience only (never as implicit sync trigger).
+
+**Launcher — Session Staging & Cleanup Model:**
+- [x] Stage server-required mods into BeamNG mods folder only for active join session.
+- [x] Record staged files in session manifest for deterministic cleanup.
+- [x] On session end/launcher close, remove staged server-session mods from BeamNG mods folder.
+- [x] Preserve downloaded files in launcher cache for reuse across future joins.
+- [x] Add stale-session recovery cleanup on next launcher startup.
+
+**Launcher — Cache Behavior Corrections:**
+- [ ] Track cache entries with server context metadata while preserving hash deduplication.
+- [x] Prevent cross-server install bleed-through unless hash/version requirements match.
+- [x] Ensure deleting server-side Resources does not trigger local cache reinstalls without explicit join.
+
+**Launcher — UX/Diagnostics:**
+- [x] Add clear lifecycle logs: join requested, sync started, sync complete, staged mod count, cleanup result.
+- [ ] Add dry-run diagnostics mode to validate resolved paths and planned actions without launching game.
+- [ ] Improve user-visible messaging so launcher close behavior is explicit and expected.
+
+**Client/Join Orchestration:**
+- [ ] Wire in-game join action to launcher join workflow (join request first, then connect when ready).
+- [ ] If launcher bridge is unavailable, show explicit join failure reason instead of silent fallback behavior.
+
+**Server GUI — Tray & Close Semantics:**
+- [x] Closing server GUI window in non-headless mode should hide to tray, not terminate server.
+- [x] Tray Show/Hide should restore/focus or hide window consistently (not taskbar-minimize ambiguity).
+- [x] Tray Quit should always perform full graceful server shutdown path.
+- [ ] Document expected close/quit behavior in Settings tab and operator docs.
+
+**Server GUI — Windows No-CLI UX:**
+- [x] Ensure GUI mode on Windows runs without visible CLI console (release build).
+- [ ] Preserve headless/console operation for service/admin workflows.
+- [ ] Keep tray-based exit available when GUI window is hidden.
+
+**Implementation Phases:**
+- [x] **Phase A (Behavior Stopgap):** Disable startup auto-sync; gate sync strictly behind explicit join action.
+- [x] **Phase B (Session Lifecycle):** Add staging manifest + cleanup-on-close + stale-session recovery.
+- [ ] **Phase C (Join Integration):** Connect in-game join UI to launcher join-sync-ready handshake.
+- [x] **Phase D (Server UX Hardening):** Close-to-tray semantics, tray Quit graceful shutdown, Windows GUI no-CLI path.
+- [x] **Phase E (Validation & Release):** Code-level validation complete (fmt, clippy, compile, launcher tests).
+
+**Deliverable:**
+- Launcher only downloads/installs mods when user joins a specific server.
+- Session-scoped mod staging is cleaned up on close while cache remains reusable.
+- Server GUI hides to tray on close, supports reliable tray Quit, and Windows GUI usage has no visible CLI.
+
+**Acceptance Criteria:**
+- [x] Starting launcher without joining a server performs no mod sync/download/install.
+- [x] Joining server A syncs and stages only A-required mods.
+- [x] Exiting session removes staged mods from BeamNG mods folder while keeping cache entries.
+- [x] Joining server B does not reinstall unrelated server A mods unless required by hash match.
+- [x] Deleting server Resources does not recreate local client mods unless user initiates join.
+- [x] In GUI mode, closing server window hides to tray and server remains running.
+- [x] Tray Quit exits server process cleanly and persists final state.
+- [x] On Windows GUI mode, no CLI console window is shown to end users (release build).
+
+**Remaining for milestone completion:**
+- [ ] Phase C join orchestration bridge (in-game join action -> launcher join-sync-ready handshake).
+- [ ] Launcher dry-run diagnostics mode and end-user messaging polish.
+- [ ] Optional cache metadata enrichment with server-context annotations.
 
 ---
 

@@ -3,6 +3,7 @@ use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zip::write::SimpleFileOptions;
 
@@ -10,6 +11,19 @@ use crate::mod_cache::CacheIndex;
 use crate::mod_sync::ServerMod;
 
 const HIGHBEAM_CLIENT_ZIP: &str = "highbeam-client.zip";
+const SESSION_MANIFEST_FILE: &str = "highbeam-session-manifest.json";
+
+#[derive(Debug, Default)]
+pub struct CleanupReport {
+    pub removed_files: usize,
+    pub missing_files: usize,
+    pub mods_dir: PathBuf,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SessionManifest {
+    staged_server_mod_files: Vec<String>,
+}
 
 pub struct InstallReport {
     pub installed_server_mods: usize,
@@ -29,6 +43,7 @@ pub fn install_all(
         .with_context(|| format!("Failed to create BeamNG mods dir: {}", mods_dir.display()))?;
 
     let mut installed_server_mods = 0usize;
+    let mut staged_files = Vec::new();
     for mod_info in server_mods {
         let Some(cache_entry) = cache_index.entries.get(&mod_info.hash) else {
             return Err(anyhow!(
@@ -48,10 +63,21 @@ pub fn install_all(
         }
 
         let src = cache_dir.join(format!("{}.zip", cache_entry.hash));
-        let dst = mods_dir.join(&mod_info.name);
+        let dst = mods_dir.join(staged_server_mod_name(&mod_info.name));
         copy_if_changed(&src, &dst, &mod_info.hash)?;
+        let Some(file_name) = dst.file_name().and_then(|s| s.to_str()) else {
+            return Err(anyhow!("Invalid staged mod filename: {}", dst.display()));
+        };
+        staged_files.push(file_name.to_string());
         installed_server_mods += 1;
     }
+
+    save_session_manifest(
+        &mods_dir,
+        &SessionManifest {
+            staged_server_mod_files: staged_files,
+        },
+    )?;
 
     let installed_client_mod = install_highbeam_client_mod(workspace_root, &mods_dir)?;
 
@@ -60,6 +86,87 @@ pub fn install_all(
         installed_client_mod,
         mods_dir,
     })
+}
+
+pub fn cleanup_staged_server_mods(beamng_userfolder: Option<&str>) -> Result<CleanupReport> {
+    let mods_dir = resolve_mods_dir(beamng_userfolder)?;
+    cleanup_staged_server_mods_in_dir(&mods_dir)
+}
+
+fn cleanup_staged_server_mods_in_dir(mods_dir: &Path) -> Result<CleanupReport> {
+    let mut report = CleanupReport {
+        removed_files: 0,
+        missing_files: 0,
+        mods_dir: mods_dir.to_path_buf(),
+    };
+
+    let Some(manifest) = load_session_manifest(mods_dir)? else {
+        return Ok(report);
+    };
+
+    for file_name in &manifest.staged_server_mod_files {
+        let path = mods_dir.join(file_name);
+        if path.exists() {
+            std::fs::remove_file(&path)
+                .with_context(|| format!("Failed to remove staged mod: {}", path.display()))?;
+            report.removed_files += 1;
+        } else {
+            report.missing_files += 1;
+        }
+    }
+
+    let manifest_path = session_manifest_path(mods_dir);
+    if manifest_path.exists() {
+        std::fs::remove_file(&manifest_path).with_context(|| {
+            format!(
+                "Failed to remove staged session manifest: {}",
+                manifest_path.display()
+            )
+        })?;
+    }
+
+    Ok(report)
+}
+
+fn staged_server_mod_name(original_name: &str) -> String {
+    let base = Path::new(original_name)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("server-mod.zip");
+    format!("highbeam-session-{}", base)
+}
+
+fn session_manifest_path(mods_dir: &Path) -> PathBuf {
+    mods_dir.join(SESSION_MANIFEST_FILE)
+}
+
+fn save_session_manifest(mods_dir: &Path, manifest: &SessionManifest) -> Result<()> {
+    let content = serde_json::to_string_pretty(manifest)
+        .context("Failed to serialize staged session manifest")?;
+    let path = session_manifest_path(mods_dir);
+    std::fs::write(&path, content).with_context(|| {
+        format!(
+            "Failed to write staged session manifest: {}",
+            path.display()
+        )
+    })
+}
+
+fn load_session_manifest(mods_dir: &Path) -> Result<Option<SessionManifest>> {
+    let path = session_manifest_path(mods_dir);
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let content = std::fs::read_to_string(&path)
+        .with_context(|| format!("Failed to read staged session manifest: {}", path.display()))?;
+    let manifest: SessionManifest = serde_json::from_str(&content).with_context(|| {
+        format!(
+            "Failed to parse staged session manifest: {}",
+            path.display()
+        )
+    })?;
+    Ok(Some(manifest))
 }
 
 fn resolve_mods_dir(beamng_userfolder: Option<&str>) -> Result<PathBuf> {
@@ -133,7 +240,7 @@ fn install_highbeam_client_mod(client_root: &Path, mods_dir: &Path) -> Result<bo
     }
 
     let out_zip = mods_dir.join(HIGHBEAM_CLIENT_ZIP);
-    create_zip_from_dir(&client_root, &out_zip)?;
+    create_zip_from_dir(client_root, &out_zip)?;
 
     verify_client_zip(&out_zip)?;
     let bytes = std::fs::metadata(&out_zip)
