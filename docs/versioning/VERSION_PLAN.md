@@ -36,6 +36,16 @@ The server and client negotiate protocol version during the handshake. Mismatche
 
 ---
 
+## Versioning Documentation Policy
+
+`VERSION_PLAN.md` is the single source of truth for version planning, release history, and milestone status.
+
+- Do not create or maintain separate versioning docs (for example, dedicated changelog or per-release notes files).
+- Record completed work by updating milestone checkboxes in this file.
+- Append release summaries under the "Recent Release Notes" section in this file.
+
+---
+
 ## Roadmap
 
 > **Implementation details for each phase are in [BUILD_GUIDE.md](../BUILD_GUIDE.md).**
@@ -437,12 +447,27 @@ Ideas for future development (not committed):
 
 ---
 
+## Recent Release Notes
+
+### v0.5.0 — 2026-03-30
+- Stability and deployment polish release completed.
+- Added graceful shutdown, runtime metrics, memory monitoring, log rotation, optional TLS, and deployment assets.
+- Server and launcher version bumped to `0.5.0`; protocol remains `v2`.
+
+### v0.4.3 — 2026-03-30
+- Consolidated auto-detection and auto-update release continuity.
+
+### v0.4.2 — 2026-03-30
+- Added auto-update for server/launcher and BeamNG auto-detection in launcher.
+
+---
+
 ## Release Process
 
 ### Pre-Release Checklist
 
 1. All tests pass
-2. CHANGELOG.md updated with all changes
+2. VERSION_PLAN.md updated with milestone checkbox status and a release summary in "Recent Release Notes"
 3. Version bumped in:
    - `server/Cargo.toml`
    - `launcher/Cargo.toml`

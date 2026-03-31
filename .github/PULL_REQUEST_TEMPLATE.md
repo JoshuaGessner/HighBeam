@@ -36,7 +36,7 @@
 - [ ] My code follows the project's coding standards (`.copilot-instructions.md`)
 - [ ] I've added tests for new functionality (server)
 - [ ] I've tested manually in BeamNG.drive (client)
-- [ ] I've updated `docs/versioning/CHANGELOG.md` under `[Unreleased]`
+- [ ] I've updated `docs/versioning/VERSION_PLAN.md` (milestone checkboxes and Recent Release Notes)
 - [ ] I've updated relevant docs if I changed APIs, protocols, or configs
 - [ ] `cargo fmt` and `cargo clippy` pass (server changes)
 
