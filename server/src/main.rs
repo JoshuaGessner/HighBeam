@@ -252,6 +252,7 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Start TCP listener (blocks until shutdown signal)
     // Start TCP listener (blocks forever, accepting connections)
     net::tcp::start_listener(config, sessions, world, plugins).await?;
 
