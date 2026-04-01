@@ -483,7 +483,7 @@ As of 2026-03-30, historical hardening notes were merged into this plan.
 
 ### v0.6.5 — Join-Scoped Launcher Flow & GUI Tray UX Hardening (Beta)
 
-**Status:** In Progress
+**Status:** Complete
 **Goal:** Correct launcher/session behavior so mods are only synced for the server being actively joined, and harden server GUI tray/close UX for production use.
 
 **Problem Statement:**

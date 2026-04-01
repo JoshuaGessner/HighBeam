@@ -7,6 +7,35 @@ local logTag = "HighBeam.Browser"
 local MAX_RECENTS   = 10
 local MAX_FAVORITES = 50
 
+-- ──────────────────────────────────────────────────────────────────────────────
+-- JSON helpers (Engine.JSONEncode/Decode -> require("json") fallback)
+-- Defined early because bridge functions below use them.
+-- ──────────────────────────────────────────────────────────────────────────────
+
+local function _jsonEncode(t)
+  if Engine and Engine.JSONEncode then
+    local ok, s = pcall(Engine.JSONEncode, t)
+    if ok then return s end
+  end
+  local ok, json = pcall(require, "json")
+  if ok and json then return json.encode(t) end
+  return "{}"
+end
+
+local function _jsonDecode(s)
+  if not s or s == "" then return nil end
+  if Engine and Engine.JSONDecode then
+    local ok, t = pcall(Engine.JSONDecode, s)
+    if ok then return t end
+  end
+  local ok, json = pcall(require, "json")
+  if ok and json then
+    local ok2, t = pcall(json.decode, s)
+    if ok2 then return t end
+  end
+  return nil
+end
+
 -- Visibility and state
 M._visible      = false
 M._connectError = ""
@@ -152,34 +181,6 @@ local _ffi = nil
 
 -- UI input buffers (allocated once, persist between renders)
 local _bufs = nil
-
--- ──────────────────────────────────────────────────────────────────────────────
--- JSON helpers (Engine.JSONEncode/Decode → require("json") fallback)
--- ──────────────────────────────────────────────────────────────────────────────
-
-local function _jsonEncode(t)
-  if Engine and Engine.JSONEncode then
-    local ok, s = pcall(Engine.JSONEncode, t)
-    if ok then return s end
-  end
-  local ok, json = pcall(require, "json")
-  if ok and json then return json.encode(t) end
-  return "{}"
-end
-
-local function _jsonDecode(s)
-  if not s or s == "" then return nil end
-  if Engine and Engine.JSONDecode then
-    local ok, t = pcall(Engine.JSONDecode, s)
-    if ok then return t end
-  end
-  local ok, json = pcall(require, "json")
-  if ok and json then
-    local ok2, t = pcall(json.decode, s)
-    if ok2 then return t end
-  end
-  return nil
-end
 
 -- ──────────────────────────────────────────────────────────────────────────────
 -- File I/O helpers (FS: API → io.open fallback)
