@@ -36,6 +36,26 @@ local function _jsonDecode(s)
   return nil
 end
 
+-- Strip % (ImGui format specifiers) and ASCII control chars from relay-provided strings.
+local function _sanitize(s)
+  return (tostring(s):gsub("[%%%c]", ""))
+end
+
+-- Returns true when a host string is a loopback or private-range address.
+-- Rejects relay-injected entries that would redirect connections to localhost or LAN.
+local function _isPrivateAddr(h)
+  h = tostring(h):lower()
+  if h == "localhost" then return true end
+  if h:match("^127%.") then return true end
+  if h:match("^0%.0%.0%.0") then return true end
+  if h == "::1" then return true end
+  if h:match("^10%.") then return true end
+  if h:match("^192%.168%.") then return true end
+  local b = tonumber(h:match("^172%.(%d+)%."))
+  if b and b >= 16 and b <= 31 then return true end
+  return false
+end
+
 -- Visibility and state
 M._visible      = false
 M._connectError = ""
@@ -48,6 +68,11 @@ M._relayServers = {}   -- [{host, port, name, map, players, maxPlayers, pingMs, 
 -- Relay fetch state: "", "fetching", "done", "error"
 M._fetchStatus  = ""
 M._fetchError   = ""
+
+-- Async HTTP fetch state machine (polled every frame by _relayPoll)
+M._relayFetch   = { state = "idle", sock = nil, buf = "", bytes = 0 }
+-- Async ping queue: list of {sock, sentAt, index} for in-flight UDP pings
+M._pingQueue    = {}
 
 -- Pending recent entry: set on connect(), cleared after onConnected()
 local _pendingRecent = nil
@@ -303,60 +328,68 @@ M.addRecent = function(host, port, serverName)
 end
 
 -- ──────────────────────────────────────────────────────────────────────────────
--- Network — relay HTTP fetch and UDP ping
+-- Network — relay HTTP fetch (async) and UDP ping (async)
 -- ──────────────────────────────────────────────────────────────────────────────
 
--- Plain HTTP GET over TCP (no TLS; relay is expected to serve plain HTTP)
-local function _httpGet(url, timeoutSec)
-  timeoutSec = timeoutSec or 5
-  local host, portStr, path = url:match("^https?://([^/:]+):?(%d*)(/?[^%s]*)$")
-  if not host then return nil, "invalid URL: " .. tostring(url) end
-  local port = tonumber(portStr) or 80
-  path = (path == "" and "/" or path)
-  local sok, sock = pcall(require, "socket")
-  if not sok then return nil, "LuaSocket not available" end
-  local tcp = sock.tcp()
-  tcp:settimeout(timeoutSec)
-  local ok, err = tcp:connect(host, port)
-  if not ok then tcp:close(); return nil, "TCP connect: " .. tostring(err) end
-  tcp:send("GET " .. path .. " HTTP/1.0\r\nHost: " .. host .. "\r\nConnection: close\r\n\r\n")
-  local parts = {}
-  while true do
-    local chunk, _err, partial = tcp:receive(4096)
-    if partial and partial ~= "" then table.insert(parts, partial) end
-    if not chunk then break end
-    table.insert(parts, chunk)
+local HTTP_BODY_LIMIT = 512 * 1024  -- bytes; relay lists beyond this are malformed/malicious
+
+-- Send UDP discovery pings to listed servers (non-blocking) and queue sockets for
+-- response collection by _pingPoll each frame.  Defined first; called by _parseRelayBody.
+local function _launchPings()
+  M._pingQueue = {}
+  local sok, socket = pcall(require, "socket")
+  if not sok then return end
+  local limit = math.min(#M._relayServers, 8)
+  for i = 1, limit do
+    local s = M._relayServers[i]
+    local udp = socket.udp()
+    if udp then
+      udp:settimeout(0)
+      local ok = pcall(function()
+        udp:setpeername(s.host, s.port)
+        udp:send(string.char(0x7A))  -- HighBeam discovery query byte
+      end)
+      if ok then
+        table.insert(M._pingQueue, { sock = udp, sentAt = os.clock(), index = i })
+      else
+        udp:close()
+      end
+    end
   end
-  tcp:close()
-  local resp   = table.concat(parts)
-  local status = resp:match("HTTP/%S+ (%d+)") or "?"
-  local body   = resp:match("\r\n\r\n(.*)$") or ""
-  if status ~= "200" then return nil, "HTTP " .. status end
-  return body
 end
 
-M.fetchRelayServers = function(relayUrl)
-  if M._fetchStatus == "fetching" then return end
-  if not relayUrl or relayUrl:match("^%s*$") then return end
-  M._fetchStatus  = "fetching"
-  M._relayServers = {}
-  M._fetchError   = ""
-
-  -- Normalise URL: append /servers when no explicit path is present
-  local url = relayUrl:gsub("/$", "")
-  if not url:match("^https?://[^/]+/") then
-    url = url .. "/servers"
+-- Collect any arrived ping responses without blocking; called every frame from renderUI.
+local function _pingPoll()
+  if #M._pingQueue == 0 then return end
+  local remaining = {}
+  for _, p in ipairs(M._pingQueue) do
+    local resp, _ = p.sock:receive()
+    if resp then
+      local ms = math.floor((os.clock() - p.sentAt) * 1000)
+      if M._relayServers[p.index] then
+        M._relayServers[p.index].pingMs = ms
+      end
+      p.sock:close()
+    elseif (os.clock() - p.sentAt) > 1.0 then
+      p.sock:close()  -- 1 s hard timeout; no response
+    else
+      table.insert(remaining, p)
+    end
   end
+  M._pingQueue = remaining
+end
 
-  log('I', logTag, 'Fetching relay: ' .. url)
-  local body, err = _httpGet(url, 5)
-  if not body then
+-- Parse a complete HTTP response buffer, validate + sanitize entries, and populate
+-- M._relayServers.  Supports both {host, port} and {addr = "host:port"} relay formats.
+local function _parseRelayBody(raw)
+  local status = raw:match("HTTP/%S+ (%d+)") or "?"
+  local body   = raw:match("\r\n\r\n(.*)$") or ""
+  if status ~= "200" then
     M._fetchStatus = "error"
-    M._fetchError  = tostring(err)
-    log('W', logTag, 'Relay fetch failed: ' .. M._fetchError)
+    M._fetchError  = "HTTP " .. status
+    log('W', logTag, 'Relay HTTP error: ' .. status)
     return
   end
-
   local data = _jsonDecode(body)
   local list = (type(data) == "table" and type(data.servers) == "table" and data.servers)
             or (type(data) == "table" and #data > 0 and data)
@@ -364,16 +397,24 @@ M.fetchRelayServers = function(relayUrl)
   local result = {}
   for _, s in ipairs(list) do
     if type(s) == "table" then
-      local h = tostring(s.host or s.address or "")
-      local p = tonumber(s.port) or 18860
-      if h ~= "" then
+      -- Support both {host, port} (common) and {addr = "host:port"} (Rust relay struct) formats
+      local h, p = s.host or s.address, tonumber(s.port)
+      if not h and type(s.addr) == "string" and s.addr ~= "" then
+        local ah, ap = s.addr:match("^(.+):(%d+)$")
+        h = ah; p = p or tonumber(ap)
+      end
+      h = h and tostring(h) or ""
+      p = p or 18860
+      -- Validate: reject empty, private/loopback, oversized, or invalid hostnames
+      if h ~= "" and not _isPrivateAddr(h) and #h <= 253
+         and h:match("^[%w%.%-]+$") then
         table.insert(result, {
           host       = h,
-          port       = p,
-          name       = tostring(s.name or (h .. ":" .. p)),
-          map        = tostring(s.map or "?"),
-          players    = tonumber(s.players)                          or 0,
-          maxPlayers = tonumber(s.max_players or s.maxPlayers)      or 0,
+          port       = math.max(1, math.min(65535, p)),
+          name       = _sanitize(s.name  or (h .. ":" .. p)):sub(1, 64),
+          map        = _sanitize(s.map   or "?"):sub(1, 64),
+          players    = tonumber(s.players)                       or 0,
+          maxPlayers = tonumber(s.max_players or s.maxPlayers)   or 0,
           pingMs     = nil,
           isFav      = M.isFavorite(h, p),
         })
@@ -383,17 +424,96 @@ M.fetchRelayServers = function(relayUrl)
   M._relayServers = result
   M._fetchStatus  = "done"
   log('I', logTag, 'Relay returned ' .. #result .. ' server(s)')
+  _launchPings()
+end
 
-  -- Ping up to 8 servers for latency (blocking 0.5s each; cap prevents excessive freeze)
-  local pingLimit = math.min(#M._relayServers, 8)
-  for i = 1, pingLimit do
-    local s = M._relayServers[i]
-    M.pingServer(s.host, s.port, function(ms)
-      if M._relayServers[i] then
-        M._relayServers[i].pingMs = ms
+-- Drive the async HTTP receive state machine; called every frame from renderUI.
+local function _relayPoll()
+  local f = M._relayFetch
+  if f.state ~= "receiving" then return end
+  while true do
+    local chunk, err, partial = f.sock:receive(4096)
+    local data = chunk or partial
+    if data and data ~= "" then
+      f.bytes = f.bytes + #data
+      if f.bytes > HTTP_BODY_LIMIT then
+        f.sock:close(); f.sock = nil; f.state = "error"
+        M._fetchStatus = "error"
+        M._fetchError  = "Relay response exceeds 512 KB limit"
+        log('W', logTag, M._fetchError)
+        return
       end
-    end)
+      f.buf = f.buf .. data
+    end
+    if err == "closed" then
+      f.sock:close(); f.sock = nil; f.state = "done"
+      _parseRelayBody(f.buf)
+      return
+    elseif err == "timeout" then
+      return  -- no data this frame; come back next frame
+    elseif err then
+      f.sock:close(); f.sock = nil; f.state = "error"
+      M._fetchStatus = "error"
+      M._fetchError  = tostring(err)
+      log('W', logTag, 'Relay receive error: ' .. M._fetchError)
+      return
+    end
+    if not chunk then break end
   end
+end
+
+M.fetchRelayServers = function(relayUrl)
+  if M._fetchStatus == "fetching" then return end
+  if not relayUrl or relayUrl:match("^%s*$") then return end
+
+  -- Reject https:// — LuaSocket cannot perform TLS; the scheme would be silently ignored,
+  -- leaving the user falsely believing the connection is encrypted.
+  if relayUrl:match("^https://") then
+    M._fetchStatus = "error"
+    M._fetchError  = "HTTPS relay URLs are not supported — use http://"
+    log('W', logTag, M._fetchError)
+    return
+  end
+
+  -- Parse URL
+  local host, portStr, path = relayUrl:match("^http://([^/:]+):?(%d*)(/?[^%s]*)$")
+  if not host then
+    M._fetchStatus = "error"
+    M._fetchError  = "Invalid relay URL: " .. tostring(relayUrl)
+    return
+  end
+  local port = tonumber(portStr) or 80
+  path = (path == "" and "/" or path)
+  -- Normalise path: append /servers when no explicit sub-path is present
+  local trimmed = relayUrl:gsub("/$", "")
+  if not trimmed:match("^http://[^/]+/") then
+    path = "/servers"
+  end
+
+  M._fetchStatus  = "fetching"
+  M._relayServers = {}
+  M._fetchError   = ""
+  M._relayFetch   = { state = "idle", sock = nil, buf = "", bytes = 0 }
+
+  log('I', logTag, 'Fetching relay: http://' .. host .. ':' .. port .. path)
+
+  local sok, socket = pcall(require, "socket")
+  if not sok then
+    M._fetchStatus = "error"; M._fetchError = "LuaSocket not available"; return
+  end
+  local tcp = socket.tcp()
+  tcp:settimeout(2)  -- 2 s blocking connect; relay is on public internet
+  local ok, err = tcp:connect(host, port)
+  if not ok then
+    tcp:close()
+    M._fetchStatus = "error"
+    M._fetchError  = "Connection failed: " .. tostring(err)
+    log('W', logTag, 'Relay connect failed: ' .. M._fetchError)
+    return
+  end
+  tcp:send("GET " .. path .. " HTTP/1.0\r\nHost: " .. host .. "\r\nConnection: close\r\n\r\n")
+  tcp:settimeout(0)  -- switch to non-blocking; receive is driven by _relayPoll each frame
+  M._relayFetch = { state = "receiving", sock = tcp, buf = "", bytes = 0 }
 end
 
 M.pingServer = function(host, port, callback)
@@ -732,6 +852,9 @@ end
 M.renderUI = function()
   -- Poll launcher bridge every frame (no-op when not syncing)
   _bridgePoll()
+  -- Poll async relay HTTP receive and ping collection every frame
+  _relayPoll()
+  _pingPoll()
 
   if not M._visible     then return end
   if not ui_imgui       then return end

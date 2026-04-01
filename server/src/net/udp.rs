@@ -42,6 +42,21 @@ pub async fn start_udp(
     let mut buf = vec![0u8; 65535];
     let relay_interval = Duration::from_secs_f64(1.0 / tick_rate.max(1) as f64);
     let mut last_relay_at = std::collections::HashMap::<u32, Instant>::new();
+
+    // Per-source-IP rate limiting for unauthenticated discovery queries.
+    // Prevents UDP amplification: a 1-byte query yields ~250 bytes in response.
+    let mut disc_rate: std::collections::HashMap<std::net::IpAddr, (u32, Instant)> =
+        std::collections::HashMap::new();
+    const DISC_RATE_MAX: u32 = 5;
+    let disc_rate_window = Duration::from_secs(60);
+    let disc_rate_prune_interval = Duration::from_secs(120);
+    let mut disc_rate_last_prune = Instant::now();
+
+    // Cached serialised discovery response; rebuilt at most once per 5 s.
+    // Avoids taking the ControlPlane snapshot lock on every inbound query.
+    let mut disc_cache: Option<(Vec<u8>, Instant)> = None;
+    let disc_cache_ttl = Duration::from_secs(5);
+
     loop {
         let (len, addr) = socket.recv_from(&mut buf).await?;
         if let Some(metrics) = metrics::global() {
@@ -50,17 +65,55 @@ pub async fn start_udp(
 
         // Unauthenticated server discovery query.
         if len >= 1 && buf[0] == DISCOVERY_QUERY_PACKET {
-            let snap = control.snapshot();
-            let payload = DiscoveryResponse {
-                name: snap.server_name,
-                map: snap.map,
-                players: snap.player_count,
-                max_players: snap.max_players,
-                port: snap.port,
-                protocol_version: PROTOCOL_VERSION,
+            let now = Instant::now();
+            let src_ip = addr.ip();
+
+            // Rate-limit: allow at most DISC_RATE_MAX queries per disc_rate_window per IP.
+            let allowed = {
+                let entry = disc_rate.entry(src_ip).or_insert((0, now));
+                if now.duration_since(entry.1) > disc_rate_window {
+                    *entry = (1, now);
+                    true
+                } else if entry.0 < DISC_RATE_MAX {
+                    entry.0 += 1;
+                    true
+                } else {
+                    false
+                }
+            };
+            if !allowed {
+                tracing::debug!(%addr, "Discovery rate limit exceeded; dropping query");
+                continue;
+            }
+
+            // Prune stale entries periodically to keep disc_rate memory bounded.
+            if now.duration_since(disc_rate_last_prune) >= disc_rate_prune_interval {
+                disc_rate.retain(|_, (_, ts)| now.duration_since(*ts) < disc_rate_window);
+                disc_rate_last_prune = now;
+            }
+
+            // Serve from cache; rebuild only when the cached snapshot is stale.
+            let data = match &disc_cache {
+                Some((cached, ts)) if now.duration_since(*ts) < disc_cache_ttl => {
+                    cached.clone()
+                }
+                _ => {
+                    let snap = control.snapshot();
+                    let payload = DiscoveryResponse {
+                        name: snap.server_name,
+                        map: snap.map,
+                        players: snap.player_count,
+                        max_players: snap.max_players,
+                        port: snap.port,
+                        protocol_version: PROTOCOL_VERSION,
+                    };
+                    let bytes = serde_json::to_vec(&payload).unwrap_or_default();
+                    disc_cache = Some((bytes.clone(), now));
+                    bytes
+                }
             };
 
-            if let Ok(data) = serde_json::to_vec(&payload) {
+            if !data.is_empty() {
                 let _ = socket.send_to(&data, addr).await;
             }
             continue;

@@ -45,7 +45,10 @@ pub fn spawn_registration_task(config: Arc<ServerConfig>, control: Arc<ControlPl
     let control_for_task = control.clone();
 
     tokio::spawn(async move {
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         let interval = std::time::Duration::from_secs(interval_secs);
 
         loop {

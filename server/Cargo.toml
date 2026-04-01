@@ -21,6 +21,7 @@ sha2 = "0.10"
 dashmap = "6"
 socket2 = "0.5"
 argon2 = "0.5"
+constant_time_eq = "0.3"
 mlua = { version = "0.10", features = ["lua54", "vendored", "send"] }
 reqwest = { version = "0.12", features = ["json"] }
 flate2 = "1"
