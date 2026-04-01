@@ -3,7 +3,7 @@ name = "highbeam-server"
 version = "0.6.4"
 edition = "2021"
 description = "HighBeam multiplayer server for BeamNG.drive"
-license = "MIT"
+license = "GPL-3.0-only"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }

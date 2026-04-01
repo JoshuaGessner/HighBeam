@@ -130,4 +130,4 @@ For Linux servers, a `highbeam-server.service` systemd unit and a `docker-compos
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+GNU GPLv3 — see [LICENSE](LICENSE).

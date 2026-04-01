@@ -3,7 +3,7 @@ name = "highbeam-launcher"
 version = "0.6.5"
 edition = "2021"
 description = "HighBeam launcher for mod sync and game startup"
-license = "MIT"
+license = "GPL-3.0-only"
 
 [dependencies]
 anyhow = "1"
