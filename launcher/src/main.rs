@@ -7,6 +7,7 @@ mod detect;
 mod discovery;
 mod game;
 mod installer;
+mod ipc;
 mod mod_cache;
 mod mod_sync;
 #[allow(dead_code)]
@@ -27,6 +28,7 @@ struct CliArgs {
     no_launch: bool,
     clear_cache: bool,
     no_update: bool,
+    dry_run: bool,
 }
 
 fn parse_args() -> CliArgs {
@@ -50,6 +52,7 @@ where
     let mut no_launch = false;
     let mut clear_cache = false;
     let mut no_update = false;
+    let mut dry_run = false;
 
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
@@ -91,6 +94,7 @@ where
             "--no-launch" => no_launch = true,
             "--clear-cache" => clear_cache = true,
             "--no-update" => no_update = true,
+            "--dry-run" => dry_run = true,
             _ => {}
         }
     }
@@ -109,6 +113,7 @@ where
         no_launch,
         clear_cache,
         no_update,
+        dry_run,
     }
 }
 
@@ -368,6 +373,34 @@ fn main() -> Result<()> {
         tracing::info!(cache_dir = %cache_dir.display(), "Cache cleared");
     }
 
+    // ── Dry-run: print resolved paths and planned actions, then exit ─────────
+    if args.dry_run {
+        println!("=== HighBeam Launcher — Dry Run ===");
+        println!("Config file : {}", args.config.display());
+        println!("Cache dir   : {}", cache_dir.display());
+        match detect::detect_beamng_exe() {
+            Some(p) => println!("BeamNG exe  : {}", p.display()),
+            None => println!("BeamNG exe  : NOT FOUND (set beamng_exe in LauncherConfig.toml)"),
+        }
+        match installer::resolve_mods_dir_pub(cfg.beamng_userfolder.as_deref()) {
+            Ok(p) => println!("Mods dir    : {}", p.display()),
+            Err(e) => println!("Mods dir    : UNRESOLVED ({})", e),
+        }
+        if let Some(server) = join_server.as_deref() {
+            println!("Join server : {server}");
+            match discovery::query_server(server, cfg.query_timeout_ms) {
+                Ok(info) => println!(
+                    "Server info : {} | map={} | players={}/{} | protocol=v{}",
+                    info.name, info.map, info.players, info.max_players, info.protocol_version
+                ),
+                Err(e) => println!("Server info : query failed ({e})"),
+            }
+        } else {
+            println!("Join server : none (pass --server <addr> to sync mods)");
+        }
+        return Ok(());
+    }
+
     // Recover from prior interrupted sessions by removing staged join mods.
     match installer::cleanup_staged_server_mods(cfg.beamng_userfolder.as_deref()) {
         Ok(report) => {
@@ -432,8 +465,61 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    game::launch_game(cfg.beamng_exe.as_deref())?;
-    tracing::info!("BeamNG launched successfully");
+    // ── Spawn the game (non-blocking) ────────────────────────────────────────
+    let mut game_child = game::spawn_game(cfg.beamng_exe.as_deref())?;
+    tracing::info!("BeamNG.drive launched");
+
+    // ── Start the IPC server so in-game joins can trigger mod sync ───────────
+    let ipc_state_path: Option<PathBuf> =
+        match installer::resolve_mods_dir_pub(cfg.beamng_userfolder.as_deref()) {
+            Ok(mods_dir) => Some(ipc::ipc_state_file_path(&mods_dir)),
+            Err(e) => {
+                tracing::warn!(error = %e, "Cannot determine mods dir; IPC state file disabled");
+                None
+            }
+        };
+
+    let ipc_listener = match std::net::TcpListener::bind("127.0.0.1:0") {
+        Ok(listener) => {
+            let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
+            if let Some(ref path) = ipc_state_path {
+                match ipc::write_state_file(path, port) {
+                    Ok(()) => tracing::info!(
+                        port,
+                        path = %path.display(),
+                        "IPC state file written; in-game mod sync enabled"
+                    ),
+                    Err(e) => tracing::warn!(
+                        error = %e,
+                        "Failed to write IPC state file; in-game mod sync disabled"
+                    ),
+                }
+            }
+            Some(listener)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to bind IPC listener; in-game mod sync disabled");
+            None
+        }
+    };
+
+    // Resolve client source root once; failures are non-fatal (IPC will skip client mod install).
+    let client_source_root = resolve_client_source_root()
+        .unwrap_or_else(|_| PathBuf::from("__client_source_not_found__"));
+
+    // ── Main loop: monitor game + serve IPC connections ──────────────────────
+    if let Some(ref listener) = ipc_listener {
+        ipc::run_ipc_loop(&mut game_child, listener, &cfg, &cache_dir, &client_source_root)?;
+    } else {
+        // No IPC; fall back to blocking wait.
+        let _ = game_child.wait();
+        tracing::info!("BeamNG.drive exited");
+    }
+
+    // ── Cleanup ───────────────────────────────────────────────────────────────
+    if let Some(ref path) = ipc_state_path {
+        ipc::cleanup_state_file(path);
+    }
 
     if joined_server {
         let cleanup_report =

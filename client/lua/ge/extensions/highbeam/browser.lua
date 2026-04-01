@@ -23,6 +23,125 @@ M._fetchError   = ""
 -- Pending recent entry: set on connect(), cleared after onConnected()
 local _pendingRecent = nil
 
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Launcher IPC bridge (Phase C) — triggers per-server mod sync before connect
+-- State machine: idle | syncing | unavailable | failed
+-- ──────────────────────────────────────────────────────────────────────────────
+
+local IPC_STATE_FILE = "userdata/highbeam-launcher.json"
+
+M._bridge = {
+  state   = "idle",   -- idle | syncing | unavailable | failed
+  port    = nil,      -- TCP port of the launcher IPC server
+  sock    = nil,      -- open socket while syncing
+  recvBuf = "",       -- receive buffer for newline-delimited messages
+  error   = nil,      -- error string when state == "failed"
+  pending = nil,      -- {host, port, username, password, name} waiting for sync
+}
+
+-- Proceed with a direct connection (no IPC required or IPC unavailable)
+local function _bridgeDirectConnect()
+  local p = M._bridge.pending
+  if not p then return end
+  M._bridge.pending = nil
+  M._visible = false
+  _connection.connect(p.host, p.port, p.username,
+    (p.password and p.password ~= "" and p.password or nil))
+end
+
+-- Open the IPC socket and send a join_request
+local function _bridgeConnect(targetHost, targetPort)
+  local sok, socket = pcall(require, "socket")
+  if not sok then
+    M._bridge.state = "unavailable"
+    _bridgeDirectConnect()
+    return
+  end
+  local tcp = socket.tcp()
+  tcp:settimeout(0.5)  -- short timeout; localhost connects near-instantly
+  local ok, err = tcp:connect("127.0.0.1", M._bridge.port)
+  if not ok then
+    tcp:close()
+    log('W', logTag, 'Launcher IPC connect failed: ' .. tostring(err))
+    M._bridge.state = "unavailable"
+    _bridgeDirectConnect()
+    return
+  end
+  local req = _jsonEncode({
+    type   = "join_request",
+    server = targetHost .. ":" .. tostring(targetPort),
+  })
+  local sent, sendErr = tcp:send(req .. "\n")
+  if not sent then
+    tcp:close()
+    M._bridge.state = "failed"
+    M._bridge.error = "IPC send failed: " .. tostring(sendErr)
+    return
+  end
+  tcp:settimeout(0)  -- switch to non-blocking for polling
+  M._bridge.sock    = tcp
+  M._bridge.state   = "syncing"
+  M._bridge.recvBuf = ""
+  log('I', logTag, 'Launcher IPC: join request sent for ' ..
+    targetHost .. ':' .. tostring(targetPort))
+end
+
+-- Read the launcher IPC state file and attempt to connect, or fall back to direct connect
+local function _bridgeInitiate(targetHost, targetPort)
+  local content = _readFile(IPC_STATE_FILE)
+  if content then
+    local state = _jsonDecode(content)
+    if state and tonumber(state.port) then
+      M._bridge.port = tonumber(state.port)
+      _bridgeConnect(targetHost, targetPort)
+      return
+    end
+  end
+  -- Launcher not detected; connect directly (mods already staged or server needs no mods)
+  M._bridge.state = "unavailable"
+  log('I', logTag, 'Launcher IPC not detected; connecting directly')
+  _bridgeDirectConnect()
+end
+
+-- Poll the IPC socket for a response (called every frame from renderUI)
+local function _bridgePoll()
+  if M._bridge.state ~= "syncing" or not M._bridge.sock then return end
+  local data, err, partial = M._bridge.sock:receive(512)
+  local chunk = data or partial
+  if chunk and chunk ~= "" then
+    M._bridge.recvBuf = M._bridge.recvBuf .. chunk
+    -- Consume one complete newline-delimited message
+    local line = M._bridge.recvBuf:match("^([^\n]+)\n")
+    if line then
+      M._bridge.recvBuf = M._bridge.recvBuf:sub(#line + 2)
+      local resp = _jsonDecode(line)
+      if resp then
+        local rtype = resp.type
+        if rtype == "sync_complete" then
+          log('I', logTag, 'Launcher IPC: mod sync complete')
+          M._bridge.sock:close()
+          M._bridge.sock  = nil
+          M._bridge.state = "idle"
+          _bridgeDirectConnect()
+        elseif rtype == "sync_failed" then
+          log('W', logTag, 'Launcher IPC: sync failed: ' .. tostring(resp.error))
+          M._bridge.sock:close()
+          M._bridge.sock  = nil
+          M._bridge.state = "failed"
+          M._bridge.error = resp.error or "Unknown sync error"
+        -- sync_started is purely informational; no action needed
+        end
+      end
+    end
+  end
+  if err == "closed" then
+    if M._bridge.sock then M._bridge.sock:close() end
+    M._bridge.sock  = nil
+    M._bridge.state = "failed"
+    M._bridge.error = "Launcher disconnected during mod sync"
+  end
+end
+
 -- Subsystem refs (injected by load())
 local _connection = nil
 local _config     = nil
@@ -326,8 +445,16 @@ M.connect = function(host, port, username, password, serverName)
 
   _pendingRecent  = { host = host, port = port, name = serverName }
   M._connectError = ""
-  M._visible      = false
-  _connection.connect(host, port, username, (password ~= "" and password or nil))
+
+  -- Store pending connect details for the bridge state machine
+  M._bridge.pending = {
+    host = host, port = port, username = username,
+    password = password, name = serverName,
+  }
+  M._bridge.error = nil
+
+  -- Ask the launcher to sync mods first; falls back to direct connect if unavailable
+  _bridgeInitiate(host, port)
   return true
 end
 
@@ -481,13 +608,32 @@ local function _tabDirectConnect()
     _im.Spacing()
   end
 
-  if _im.Button("Connect##hb_go", _im.ImVec2(120, 28)) then
-    local host     = _ffi.string(_bufs.host)
-    local portVal  = tonumber(_ffi.string(_bufs.port))
-    local username = _ffi.string(_bufs.username)
-    local password = _ffi.string(_bufs.password)
-    local ok, err  = M.connect(host, portVal, username, (password ~= "" and password or nil))
-    if not ok then M._connectError = err or "Connection failed" end
+  -- Launcher bridge status (Phase C)
+  local bridgeSyncing = M._bridge.state == "syncing"
+  if bridgeSyncing then
+    _im.TextColored(_im.ImVec4(0.3, 0.7, 1.0, 1.0), "Syncing mods with launcher…")
+    _im.TextDisabled("Please wait — downloading required server mods.")
+    _im.Spacing()
+  elseif M._bridge.state == "failed" then
+    _im.TextColored(_im.ImVec4(1.0, 0.45, 0.2, 1.0),
+      "Mod sync failed: " .. (M._bridge.error or "unknown error"))
+    _im.SameLine()
+    if _im.SmallButton("Connect anyway##hb_nomod") then
+      M._bridge.state = "idle"
+      _bridgeDirectConnect()
+    end
+    _im.Spacing()
+  end
+
+  if not bridgeSyncing then
+    if _im.Button("Connect##hb_go", _im.ImVec2(120, 28)) then
+      local host     = _ffi.string(_bufs.host)
+      local portVal  = tonumber(_ffi.string(_bufs.port))
+      local username = _ffi.string(_bufs.username)
+      local password = _ffi.string(_bufs.password)
+      local ok, err  = M.connect(host, portVal, username, (password ~= "" and password or nil))
+      if not ok then M._connectError = err or "Connection failed" end
+    end
   end
 end
 
@@ -569,7 +715,7 @@ local function _tabRecent()
       _im.TableSetColumnIndex(1)
       _im.TextDisabled(os.date("%Y-%m-%d %H:%M", s.connectedAt or 0))
       _im.TableSetColumnIndex(2)
-      local rid = "re_" .. tostring(i) .. "_" .. tostring(i) .. "_" .. s.host .. "_" .. tostring(s.port)
+      local rid = "re_" .. tostring(i) .. "_" .. s.host .. "_" .. tostring(s.port)
       _connectBtn(s.host, s.port, rid, s.name)
       _im.TableSetColumnIndex(3)
       _favBtn(s.host, s.port, rid, s.name)
@@ -583,6 +729,9 @@ end
 -- ──────────────────────────────────────────────────────────────────────────────
 
 M.renderUI = function()
+  -- Poll launcher bridge every frame (no-op when not syncing)
+  _bridgePoll()
+
   if not M._visible     then return end
   if not ui_imgui       then return end
   if not _im            then _im = ui_imgui; _ffi = require("ffi") end

@@ -106,6 +106,13 @@ pub fn sync_mods(
                 hash: expected.hash.clone(),
                 file_name: name,
                 size,
+                last_server: Some(server_addr.to_string()),
+                downloaded_at: Some(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs(),
+                ),
             },
         );
 

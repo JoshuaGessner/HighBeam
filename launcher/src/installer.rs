@@ -199,6 +199,11 @@ fn resolve_mods_dir(beamng_userfolder: Option<&str>) -> Result<PathBuf> {
     ))
 }
 
+/// Public wrapper around `resolve_mods_dir` for use by other modules.
+pub fn resolve_mods_dir_pub(beamng_userfolder: Option<&str>) -> Result<PathBuf> {
+    resolve_mods_dir(beamng_userfolder)
+}
+
 fn expand_tilde(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {
         if let Some(home) = std::env::var_os("HOME") {
