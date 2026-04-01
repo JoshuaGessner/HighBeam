@@ -3,7 +3,7 @@
 > **Last updated:** 2026-03-31
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
 > **Current version:** v0.6.5 (protocol v2)
-> **Status:** v0.6.5 In Progress — Join-scoped launcher sync & GUI tray UX hardening (Phases A/B/D/E complete; Phase C pending)
+> **Status:** v0.6.5 Complete — Join-scoped launcher sync, Phase C IPC bridge, GUI tray UX hardening
 
 ---
 
@@ -99,15 +99,14 @@ The server and client negotiate protocol version during the handshake. Mismatche
    - Config save/load: username, last host/port, and relay URL are remembered between sessions.
    - Browser auto-opens when HighBeam loads and user is not connected; closes on successful connect.
    - Reopenable from GE Lua console: `extensions.highbeam.openBrowser()`.
-- [ ] PR8: v0.6.5 launcher join-scoped sync + GUI tray UX hardening
-- [~] PR8: v0.6.5 launcher join-scoped sync + GUI tray UX hardening (Phases A/B/D/E complete; Phase C pending)
+- [x] PR8: v0.6.5 launcher join-scoped sync + GUI tray UX hardening (all phases complete)
    - [x] Remove launcher startup hardwire sync to configured server address.
    - [x] Trigger mod sync only when user joins a specific server (`--server` flag).
    - [x] Stage server mods per join-session (`highbeam-session-*` prefix + session manifest).
    - [x] Keep cache entries for reuse; clean staged BeamNG mods on session end and on stale-session recovery.
    - [x] Fix GUI close behavior to hide to tray reliably and keep Quit in tray as full exit path.
    - [x] Ensure Windows GUI mode does not show CLI console window (release build).
-   - [ ] Phase C: Wire in-game join action to launcher join-sync-ready handshake (IPC bridge).
+   - [x] Phase C: Wire in-game join action to launcher join-sync-ready handshake (IPC bridge).
 
 ### v0.1.0 — Foundation (Pre-Alpha) ✅
 
@@ -513,34 +512,33 @@ As of 2026-03-30, historical hardening notes were merged into this plan.
 - [x] Add stale-session recovery cleanup on next launcher startup.
 
 **Launcher — Cache Behavior Corrections:**
-- [ ] Track cache entries with server context metadata while preserving hash deduplication.
+   - [x] Track cache entries with server context metadata while preserving hash deduplication.
 - [x] Prevent cross-server install bleed-through unless hash/version requirements match.
 - [x] Ensure deleting server-side Resources does not trigger local cache reinstalls without explicit join.
 
 **Launcher — UX/Diagnostics:**
 - [x] Add clear lifecycle logs: join requested, sync started, sync complete, staged mod count, cleanup result.
-- [ ] Add dry-run diagnostics mode to validate resolved paths and planned actions without launching game.
-- [ ] Improve user-visible messaging so launcher close behavior is explicit and expected.
+- [x] Add dry-run diagnostics mode to validate resolved paths and planned actions without launching game.
+   - [x] Improve user-visible messaging so launcher close behavior is explicit and expected.
 
 **Client/Join Orchestration:**
-- [ ] Wire in-game join action to launcher join workflow (join request first, then connect when ready).
-- [ ] If launcher bridge is unavailable, show explicit join failure reason instead of silent fallback behavior.
-
+   - [x] Wire in-game join action to launcher join workflow (join request first, then connect when ready).
+   - [x] If launcher bridge is unavailable, show explicit join failure reason instead of silent fallback behavior.
 **Server GUI — Tray & Close Semantics:**
 - [x] Closing server GUI window in non-headless mode should hide to tray, not terminate server.
 - [x] Tray Show/Hide should restore/focus or hide window consistently (not taskbar-minimize ambiguity).
 - [x] Tray Quit should always perform full graceful server shutdown path.
-- [ ] Document expected close/quit behavior in Settings tab and operator docs.
+- [x] Document expected close/quit behavior in Settings tab and operator docs.
 
 **Server GUI — Windows No-CLI UX:**
 - [x] Ensure GUI mode on Windows runs without visible CLI console (release build).
-- [ ] Preserve headless/console operation for service/admin workflows.
-- [ ] Keep tray-based exit available when GUI window is hidden.
+- [x] Preserve headless/console operation for service/admin workflows.
+- [x] Keep tray-based exit available when GUI window is hidden.
 
 **Implementation Phases:**
 - [x] **Phase A (Behavior Stopgap):** Disable startup auto-sync; gate sync strictly behind explicit join action.
 - [x] **Phase B (Session Lifecycle):** Add staging manifest + cleanup-on-close + stale-session recovery.
-- [ ] **Phase C (Join Integration):** Connect in-game join UI to launcher join-sync-ready handshake.
+- [x] **Phase C (Join Integration):** Connect in-game join UI to launcher join-sync-ready handshake (IPC bridge on localhost TCP; state file at `{beamng_userfolder}/highbeam-launcher.json`).
 - [x] **Phase D (Server UX Hardening):** Close-to-tray semantics, tray Quit graceful shutdown, Windows GUI no-CLI path.
 - [x] **Phase E (Validation & Release):** Code-level validation complete (fmt, clippy, compile, launcher tests).
 
@@ -559,10 +557,7 @@ As of 2026-03-30, historical hardening notes were merged into this plan.
 - [x] Tray Quit exits server process cleanly and persists final state.
 - [x] On Windows GUI mode, no CLI console window is shown to end users (release build).
 
-**Remaining for milestone completion:**
-- [ ] Phase C join orchestration bridge (in-game join action -> launcher join-sync-ready handshake).
-- [ ] Launcher dry-run diagnostics mode and end-user messaging polish.
-- [ ] Optional cache metadata enrichment with server-context annotations.
+**Milestone complete.** All phases delivered.
 
 ---
 
@@ -652,17 +647,15 @@ Ideas for future development (not committed):
 
 ## Recent Release Notes
 
-### v0.6.1 — 2026-03-30
-### v0.6.5 — In Progress (2026-03-31)
-- **Join-scoped launcher sync:** mod sync/install now only runs when user explicitly joins a server via `--server`; startup no longer touches mods.
-- **Session staging:** server-required mods staged into BeamNG mods dir as `highbeam-session-*` files with a JSON session manifest; staged mods are removed after game exits.
-- **Stale session recovery:** orphaned session mods (e.g. from a launcher crash) are detected and cleaned up on next startup.
-- **Server GUI close-to-tray:** closing the server window now hides to system tray (`Visible(false)`) instead of terminating the server; tray Quit triggers graceful full shutdown.
-- **Windows no-CLI:** `windows_subsystem = "windows"` attribute applied for release builds — GUI mode no longer shows a CLI console window.
-- **More menu button:** registered `HighBeam Multiplayer` entry in BeamNG's More quick-access menu via `core_quickAccess` API (dual-signature fallback).
-- **Network endpoint hardening:** TCP accept errors non-fatal (continues listening), UDP NaN/inf float rejection, mod-transfer packet/request bounds, launcher control-packet size guard, discovery UDP buffer enlarged to 65535 bytes.
-- All 55 server + 13 launcher tests passing; zero clippy warnings at `-D warnings`.
-- Commits: `5f7527d` (v0.6.5 implementation), `29a6b7b` (endpoint hardening).
+### v0.6.5 — 2026-03-31
+- **Launcher IPC bridge (Phase C):** launcher now starts a local TCP server (`127.0.0.1:0`) while BeamNG is running; writes port to `{beamng_userfolder}/highbeam-launcher.json`. In-game browser reads this file and sends a `join_request` before connecting, triggering per-server mod sync from within the running session.
+- **In-game sync feedback:** browser shows "Syncing mods with launcher…" status while IPC sync is in progress; "mod sync failed" state offers an explicit "Connect anyway" button.
+- **`--dry-run` mode:** new launcher flag prints resolved exe path, mods dir, and pending sync actions without downloading or launching the game.
+- **Cache metadata enrichment:** `CacheEntry` now records `last_server` and `downloaded_at` (Unix timestamp) for diagnostics.
+- **Critical bug fix:** `connection.lua` and `vehicles.lua` were calling `require("highbeam/lib/json")` which does not exist in the BeamNG mod environment. Both now use `Engine.JSONEncode/JSONDecode` with a `require("json")` fallback — packet encoding and remote vehicle spawning now work correctly.
+- **Minor fix:** duplicate suffix in Recents tab IMGUI row ID removed.
+- Launcher version bumped to `0.6.5`; server remains `0.6.4`; protocol remains `v2`.
+- All 13 launcher tests + 55 server tests passing; zero clippy warnings at `-D warnings`.
 
 ### v0.6.1 — 2026-03-30
 - Added in-game server browser (IMGUI, 4 tabs: Direct Connect / Browse Servers / Favorites / Recent).

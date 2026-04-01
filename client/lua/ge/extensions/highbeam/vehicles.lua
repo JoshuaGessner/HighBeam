@@ -39,14 +39,19 @@ M.spawnRemote = function(playerId, vehicleId, configData)
   end
 
   local config = {}
-  local okDecode, decoded = pcall(function()
-    local okJson, jsonLib = pcall(require, "highbeam/lib/json")
-    if not okJson or not jsonLib then
-      return nil
+  local decoded
+  if Engine and Engine.JSONDecode then
+    local ok, t = pcall(Engine.JSONDecode, configData)
+    if ok then decoded = t end
+  end
+  if not decoded then
+    local ok, jsonLib = pcall(require, "json")
+    if ok and jsonLib then
+      local ok2, t = pcall(jsonLib.decode, configData)
+      if ok2 then decoded = t end
     end
-    return jsonLib.decode(configData)
-  end)
-  if okDecode and decoded then
+  end
+  if decoded then
     config = decoded
   end
 

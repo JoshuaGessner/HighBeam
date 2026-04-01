@@ -383,28 +383,33 @@ M._sendPacket = function(packetTable)
     M._reportError('W', 'send_packet', 'Attempted send while not authenticated/connected')
     return false
   end
-  local okLib, jsonLib = pcall(require, "highbeam/lib/json")
-  if not okLib or not jsonLib then
-    M._reportError('E', 'send_packet', 'JSON library unavailable: ' .. tostring(jsonLib))
+
+  -- Encode using Engine.JSONEncode (BeamNG native) with require("json") fallback
+  local jsonStr
+  if Engine and Engine.JSONEncode then
+    local ok, s = pcall(Engine.JSONEncode, packetTable)
+    if ok and s then jsonStr = s end
+  end
+  if not jsonStr then
+    local ok, jsonLib = pcall(require, "json")
+    if ok and jsonLib then
+      local ok2, s = pcall(jsonLib.encode, packetTable)
+      if ok2 and s then jsonStr = s end
+    end
+  end
+  if not jsonStr then
+    M._reportError('E', 'send_packet', 'JSON encode failed — no encoder available')
     return false
   end
 
-  local okEncode, json = pcall(function()
-    return jsonLib.encode(packetTable)
-  end)
-  if not okEncode or not json then
-    M._reportError('E', 'send_packet', 'JSON encode failed: ' .. tostring(json))
-    return false
-  end
-
-  local len = #json
+  local len = #jsonStr
   local header = string.char(
     len % 256,
     math.floor(len / 256) % 256,
     math.floor(len / 65536) % 256,
     math.floor(len / 16777216) % 256
   )
-  local sent, sendErr = tcp:send(header .. json)
+  local sent, sendErr = tcp:send(header .. jsonStr)
   if not sent then
     M._reportError('W', 'send_packet', 'TCP send failed: ' .. tostring(sendErr))
     return false
@@ -425,12 +430,22 @@ end
 
 M._handlePacket = function(jsonStr)
   M._lastServerPacketTime = os.clock()
-  local ok, packet = pcall(function()
-    return require("highbeam/lib/json").decode(jsonStr)
-  end)
-  if not ok or not packet then
+  -- Decode using Engine.JSONDecode (BeamNG native) with require("json") fallback
+  local packet
+  if Engine and Engine.JSONDecode then
+    local ok, t = pcall(Engine.JSONDecode, jsonStr)
+    if ok then packet = t end
+  end
+  if not packet then
+    local ok, jsonLib = pcall(require, "json")
+    if ok and jsonLib then
+      local ok2, t = pcall(jsonLib.decode, jsonStr)
+      if ok2 then packet = t end
+    end
+  end
+  if not packet then
     -- Log parse error with hex dump for debugging (Phase 2.3)
-    M._reportError('W', 'packet_decode', 'Failed to decode packet (Phase 2.3): ' .. tostring(packet))
+    M._reportError('W', 'packet_decode', 'Failed to decode packet: JSON decode returned nil')
     M._droppedMalformedPackets = M._droppedMalformedPackets + 1
     local hexDump = _hexDump(jsonStr)
     log('D', logTag, 'Hex dump of malformed packet: ' .. hexDump)

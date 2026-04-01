@@ -11,6 +11,12 @@ pub struct CacheEntry {
     pub hash: String,
     pub file_name: String,
     pub size: u64,
+    /// Address of the last server this mod was downloaded from (informational).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_server: Option<String>,
+    /// Unix timestamp (seconds since epoch) when this mod was cached.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub downloaded_at: Option<u64>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
