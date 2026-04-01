@@ -94,9 +94,7 @@ pub async fn start_udp(
 
             // Serve from cache; rebuild only when the cached snapshot is stale.
             let data = match &disc_cache {
-                Some((cached, ts)) if now.duration_since(*ts) < disc_cache_ttl => {
-                    cached.clone()
-                }
+                Some((cached, ts)) if now.duration_since(*ts) < disc_cache_ttl => cached.clone(),
                 _ => {
                     let snap = control.snapshot();
                     let payload = DiscoveryResponse {

@@ -249,7 +249,9 @@ where
             };
             let expected = config.auth.password.as_deref().unwrap_or("");
             match client_password.as_deref() {
-                Some(pw) if constant_time_eq(pw.as_bytes(), expected.as_bytes()) => { /* Password matches */ }
+                Some(pw) if constant_time_eq(pw.as_bytes(), expected.as_bytes()) => {
+                    /* Password matches */
+                }
                 _ => {
                     tracing::warn!(%addr, name = %username, "Password auth failed");
                     let response = TcpPacket::AuthResponse {
