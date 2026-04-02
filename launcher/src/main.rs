@@ -509,7 +509,13 @@ fn main() -> Result<()> {
 
     // ── Main loop: monitor game + serve IPC connections ──────────────────────
     if let Some(ref listener) = ipc_listener {
-        ipc::run_ipc_loop(&mut game_child, listener, &cfg, &cache_dir, &client_source_root)?;
+        ipc::run_ipc_loop(
+            &mut game_child,
+            listener,
+            &cfg,
+            &cache_dir,
+            &client_source_root,
+        )?;
     } else {
         // No IPC; fall back to blocking wait.
         let _ = game_child.wait();

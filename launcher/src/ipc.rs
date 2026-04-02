@@ -119,9 +119,7 @@ pub fn run_ipc_loop(
         match listener.accept() {
             Ok((stream, addr)) => {
                 tracing::info!(%addr, "Accepted launcher IPC connection");
-                if let Err(e) =
-                    handle_ipc_connection(stream, cfg, cache_dir, client_source_root)
-                {
+                if let Err(e) = handle_ipc_connection(stream, cfg, cache_dir, client_source_root) {
                     tracing::warn!(error = %e, "IPC connection error");
                 }
             }
@@ -167,7 +165,9 @@ fn handle_ipc_connection(
 
     let req_type = value["type"].as_str().unwrap_or("");
     match req_type {
-        "join_request" => handle_join_request(&mut stream, &value, cfg, cache_dir, client_source_root),
+        "join_request" => {
+            handle_join_request(&mut stream, &value, cfg, cache_dir, client_source_root)
+        }
         other => {
             tracing::warn!(req_type = %other, "Unknown IPC request type; ignoring");
             Ok(())

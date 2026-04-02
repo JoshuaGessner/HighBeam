@@ -304,24 +304,30 @@ where
     R: Read + Seek,
 {
     let mut archive = zip::ZipArchive::new(reader).context("Failed to open zip archive")?;
-    let mut has_mod_script = false;
+    let mut has_mod_script_root = false;
+    let mut has_mod_script_legacy = false;
     let mut has_extension = false;
 
     for i in 0..archive.len() {
         let entry = archive.by_index(i).context("Failed to read zip entry")?;
         let name = entry.name();
+        if name == "scripts/modScript.lua" {
+            has_mod_script_root = true;
+        }
         if name == "scripts/highbeam/modScript.lua" {
-            has_mod_script = true;
+            has_mod_script_legacy = true;
         }
         if name == "lua/ge/extensions/highbeam.lua" {
             has_extension = true;
         }
     }
 
+    let has_mod_script = has_mod_script_root || has_mod_script_legacy;
     if !has_mod_script || !has_extension {
         return Err(anyhow!(
-            "HighBeam client zip is missing required files (modScript={}, extension={})",
-            has_mod_script,
+            "HighBeam client zip is missing required files (modScript_root={}, modScript_legacy={}, extension={})",
+            has_mod_script_root,
+            has_mod_script_legacy,
             has_extension
         ));
     }
@@ -366,7 +372,7 @@ mod tests {
             let mut zip = zip::ZipWriter::new(&mut cursor);
             let options =
                 SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
-            zip.start_file("scripts/highbeam/modScript.lua", options)
+            zip.start_file("scripts/modScript.lua", options)
                 .expect("write modScript entry");
             zip.write_all(b"load('highbeam')")
                 .expect("write modScript contents");
@@ -388,7 +394,7 @@ mod tests {
             let mut zip = zip::ZipWriter::new(&mut cursor);
             let options =
                 SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
-            zip.start_file("scripts/highbeam/modScript.lua", options)
+            zip.start_file("scripts/modScript.lua", options)
                 .expect("write modScript entry");
             zip.write_all(b"load('highbeam')")
                 .expect("write modScript contents");
@@ -401,5 +407,27 @@ mod tests {
             err.to_string().contains("missing required files"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn verify_client_zip_reader_accepts_legacy_mod_script_path() {
+        let mut cursor = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut cursor);
+            let options =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("scripts/highbeam/modScript.lua", options)
+                .expect("write legacy modScript entry");
+            zip.write_all(b"load('highbeam')")
+                .expect("write legacy modScript contents");
+            zip.start_file("lua/ge/extensions/highbeam.lua", options)
+                .expect("write extension entry");
+            zip.write_all(b"return {}")
+                .expect("write extension contents");
+            zip.finish().expect("finish zip");
+        }
+
+        cursor.set_position(0);
+        verify_client_zip_reader(cursor).expect("zip with legacy modScript path should verify");
     }
 }
