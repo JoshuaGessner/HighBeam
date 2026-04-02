@@ -21,10 +21,13 @@ enum TrayCommand {
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 struct TrayBridge {
     rx: Receiver<TrayCommand>,
+    available: bool,
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-struct TrayBridge;
+struct TrayBridge {
+    available: bool,
+}
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 fn setup_system_tray_bridge() -> TrayBridge {
@@ -35,7 +38,10 @@ fn setup_system_tray_bridge() -> TrayBridge {
         Ok(item) => item,
         Err(e) => {
             tracing::warn!(error = %e, "System tray unavailable; running without tray integration");
-            return TrayBridge { rx };
+            return TrayBridge {
+                rx,
+                available: false,
+            };
         }
     };
 
@@ -55,12 +61,16 @@ fn setup_system_tray_bridge() -> TrayBridge {
 
     // Keep tray icon alive for the process lifetime.
     let _leaked: &'static mut TrayItem = Box::leak(Box::new(tray));
-    TrayBridge { rx }
+    tracing::info!("System tray integration enabled");
+    TrayBridge {
+        rx,
+        available: true,
+    }
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "linux")))]
 fn setup_system_tray_bridge() -> TrayBridge {
-    TrayBridge
+    TrayBridge { available: false }
 }
 
 /// Run the GUI event loop on the **calling thread**.
@@ -187,9 +197,26 @@ impl ServerGuiApp {
                 }
             }
         }
+
+        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+        {
+            let _ = _ctx;
+        }
     }
 
-    fn render_tab_selector(&mut self, ui: &mut egui::Ui) {
+    fn hide_to_tray(&mut self, ctx: &egui::Context) {
+        if self.tray_bridge.available {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            self.tray_hidden = true;
+        }
+    }
+
+    fn request_exit(&mut self, ctx: &egui::Context) {
+        self.allow_window_close = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
+    fn render_tab_selector(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.selected_tab, Tab::Dashboard, "Dashboard");
             ui.selectable_value(&mut self.selected_tab, Tab::Players, "Players");
@@ -198,6 +225,20 @@ impl ServerGuiApp {
             ui.selectable_value(&mut self.selected_tab, Tab::Plugins, "Plugins");
             ui.selectable_value(&mut self.selected_tab, Tab::Console, "Console");
             ui.selectable_value(&mut self.selected_tab, Tab::Settings, "Settings");
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Exit Server").clicked() {
+                    self.request_exit(ctx);
+                }
+
+                let hide_button = ui.add_enabled(
+                    self.tray_bridge.available,
+                    egui::Button::new("Hide to Tray"),
+                );
+                if hide_button.clicked() {
+                    self.hide_to_tray(ctx);
+                }
+            });
         });
     }
 
@@ -429,18 +470,20 @@ impl eframe::App for ServerGuiApp {
 
         #[cfg(any(target_os = "windows", target_os = "linux"))]
         {
-            if ctx.input(|i| i.viewport().close_requested()) && !self.allow_window_close {
+            if ctx.input(|i| i.viewport().close_requested())
+                && !self.allow_window_close
+                && self.tray_bridge.available
+            {
                 // Keep server running and hide the GUI to tray.
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-                self.tray_hidden = true;
+                self.hide_to_tray(ctx);
             }
         }
 
         self.refresh_snapshot_if_needed();
 
         egui::TopBottomPanel::top("tabs").show(ctx, |ui| {
-            self.render_tab_selector(ui);
+            self.render_tab_selector(ctx, ui);
         });
 
         egui::CentralPanel::default().show(ctx, |ui| match self.selected_tab {
