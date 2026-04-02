@@ -24,9 +24,16 @@ local CONFIG_FILE = CONFIG_DIR .. "/config.json"
 local function _ensureDir()
   if FS and FS.directoryCreate then
     pcall(function() FS:directoryCreate(CONFIG_DIR) end)
+    return
   end
-  -- io.open fallback: attempt to create the dir via os.execute on platforms where FS is unavailable
-  pcall(function() os.execute('mkdir -p "' .. CONFIG_DIR .. '" 2>/dev/null') end)
+  local ok, lfs = pcall(require, 'lfs')
+  if ok and lfs then pcall(lfs.mkdir, CONFIG_DIR); return end
+  local sep = package.config:sub(1, 1)
+  if sep == '\\' then
+    os.execute('mkdir "' .. CONFIG_DIR:gsub('/', '\\') .. '" 2>nul')
+  else
+    os.execute('mkdir -p "' .. CONFIG_DIR .. '" 2>/dev/null')
+  end
 end
 
 local function _readFile(path)

@@ -88,8 +88,17 @@ local REC_FILE = SAVE_DIR .. "/recents.json"
 local function _ensureDir()
   if FS and FS.directoryCreate then
     pcall(function() FS:directoryCreate(SAVE_DIR) end)
+    return
   end
-  pcall(function() os.execute('mkdir -p "' .. SAVE_DIR .. '" 2>/dev/null') end)
+  -- Cross-platform fallback: try lfs, then os-specific mkdir
+  local ok, lfs = pcall(require, 'lfs')
+  if ok and lfs then pcall(lfs.mkdir, SAVE_DIR); return end
+  local sep = package.config:sub(1, 1)
+  if sep == '\\' then
+    os.execute('mkdir "' .. SAVE_DIR:gsub('/', '\\') .. '" 2>nul')
+  else
+    os.execute('mkdir -p "' .. SAVE_DIR .. '" 2>/dev/null')
+  end
 end
 
 local function _readFile(path)
@@ -128,6 +137,17 @@ local function _writeFile(path, content)
   end
   return false
 end
+
+-- Subsystem refs (injected by load())
+local _connection = nil
+local _config     = nil
+
+-- ImGui / FFI handles (loaded lazily on first render)
+local _im  = nil
+local _ffi = nil
+
+-- UI input buffers (allocated once, persist between renders)
+local _bufs = nil
 
 -- ──────────────────────────────────────────────────────────────────────────────
 -- Launcher IPC bridge (Phase C) — triggers per-server mod sync before connect
@@ -247,17 +267,6 @@ local function _bridgePoll()
     M._bridge.error = "Launcher disconnected during mod sync"
   end
 end
-
--- Subsystem refs (injected by load())
-local _connection = nil
-local _config     = nil
-
--- ImGui / FFI handles (loaded lazily on first render)
-local _im  = nil
-local _ffi = nil
-
--- UI input buffers (allocated once, persist between renders)
-local _bufs = nil
 
 -- ──────────────────────────────────────────────────────────────────────────────
 -- Persistence — Favorites

@@ -2,8 +2,8 @@
 
 > **Last updated:** 2026-04-02
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.6.76 (protocol v2)
-> **Status:** v0.6.76 Complete — Next up: v0.8.0 Community Node Discovery Mesh
+> **Current version:** v0.6.77 (protocol v2)
+> **Status:** v0.6.77 Complete — Next up: v0.8.0 Community Node Discovery Mesh
 
 ---
 
@@ -875,6 +875,12 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.6.77 — 2026-04-02
+- **Critical bug fix:** `_connection` and `_config` local variables were declared after the bridge functions that reference them, causing `attempt to index global '_connection' (a nil value)` on Direct Connect. Moved all local variable declarations (`_connection`, `_config`, `_im`, `_ffi`, `_bufs`) above the bridge code block.
+- **Windows directory creation fix:** `_ensureDir()` in both `browser.lua` and `config.lua` now detects Windows via `package.config` path separator and uses `mkdir` (no `-p` flag) with backslash paths. Falls back through `FS:directoryCreate` → `lfs.mkdir` → OS-specific `mkdir`.
+- Rebuilt `launcher/payload/highbeam.zip` with all fixes.
+- Launcher version bumped to `0.6.77`; server remains `0.6.4`; protocol remains `v2`.
 
 ### v0.6.76 — 2026-04-02
 - **Payload zip rebuild:** Rebuilt `launcher/payload/highbeam.zip` with all v0.6.75 client fixes. Previous release edited source files but did not repackage the zip, so BeamNG was still running stale code.
