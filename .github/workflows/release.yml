@@ -89,6 +89,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Validate launcher Cargo version matches release tag
+        shell: pwsh
+        run: |
+          $tagVersion = "${{ github.ref_name }}".TrimStart('v')
+          $match = Select-String -Path "launcher/Cargo.toml" -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1
+          if (-not $match) {
+            throw "Could not read launcher version from launcher/Cargo.toml"
+          }
+          $cargoVersion = $match.Matches[0].Groups[1].Value
+          if ($tagVersion -ne $cargoVersion) {
+            throw "Release tag version ($tagVersion) does not match launcher Cargo version ($cargoVersion)."
+          }
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -108,6 +121,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path staging
           Copy-Item "launcher/target/x86_64-pc-windows-msvc/release/highbeam-launcher.exe" staging/
           Copy-Item "launcher/LauncherConfig.toml" staging/
+          Set-Content -Path "staging/VERSION" -Value "${{ github.ref_name }}" -NoNewline
           Compress-Archive -Path staging/* -DestinationPath highbeam-launcher-windows-x86_64.zip
 
       - name: Upload artifact

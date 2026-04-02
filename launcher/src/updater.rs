@@ -1,10 +1,12 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::fs;
+use std::io::Read;
 use std::path::Path;
 
 const GITHUB_API_URL: &str = "https://api.github.com/repos/JoshuaGessner/HighBeam/releases/latest";
 const LAUNCHER_ASSET_NAME: &str = "highbeam-launcher-windows-x86_64.zip";
+const VERSION_FILE_NAME: &str = "VERSION";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Deserialize)]
@@ -95,6 +97,8 @@ pub fn check_and_update() -> Result<bool> {
         .bytes()
         .context("Failed to read update bytes")?;
 
+    validate_update_package(&zip_bytes, remote_version)?;
+
     let current_exe = std::env::current_exe().context("Failed to determine current exe path")?;
     let parent = current_exe
         .parent()
@@ -107,6 +111,51 @@ pub fn check_and_update() -> Result<bool> {
         "Update applied successfully — please restart the launcher"
     );
     Ok(true)
+}
+
+fn validate_update_package(zip_bytes: &[u8], remote_version: &str) -> Result<()> {
+    let cursor = std::io::Cursor::new(zip_bytes);
+    let mut archive = zip::ZipArchive::new(cursor).context("Failed to inspect update zip")?;
+
+    let mut has_launcher_binary = false;
+    let mut package_version: Option<String> = None;
+
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i)?;
+        let name = entry.name().to_string();
+
+        if is_launcher_exe(&name) {
+            has_launcher_binary = true;
+        }
+
+        if name.eq_ignore_ascii_case(VERSION_FILE_NAME) {
+            let mut content = String::new();
+            entry
+                .read_to_string(&mut content)
+                .context("Failed to read VERSION file from launcher update zip")?;
+            package_version = Some(content.trim().trim_start_matches('v').to_string());
+        }
+    }
+
+    if !has_launcher_binary {
+        anyhow::bail!(
+            "Launcher update package is invalid: missing launcher executable ({})",
+            LAUNCHER_ASSET_NAME
+        );
+    }
+
+    let package_version = package_version
+        .context("Launcher update package is missing VERSION marker; refusing to apply update")?;
+
+    if package_version != remote_version {
+        anyhow::bail!(
+            "Launcher update package version mismatch: release tag is {}, package VERSION is {}",
+            remote_version,
+            package_version
+        );
+    }
+
+    Ok(())
 }
 
 /// Extract the zip and replace the running binary.
