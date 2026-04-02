@@ -18,31 +18,47 @@ pub fn detect_beamng_exe() -> Option<PathBuf> {
 
 /// Try to automatically locate the BeamNG.drive user data folder where mods
 /// are installed. Returns the **root** userfolder (caller appends `/mods`).
+///
+/// Modern BeamNG (0.27+) stores user data under:
+///   `%LOCALAPPDATA%\BeamNG\BeamNG.drive\`   (Windows)
+/// Legacy / BeamMP installs use:
+///   `%LOCALAPPDATA%\BeamNG.drive\`           (Windows)
 pub fn detect_beamng_userfolder() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
         if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-            let path = PathBuf::from(local).join("BeamNG.drive");
-            if path.is_dir() {
-                return Some(path);
+            let local = PathBuf::from(local);
+            // Modern BeamNG (0.27+): %LOCALAPPDATA%\BeamNG\BeamNG.drive
+            let modern = local.join("BeamNG").join("BeamNG.drive");
+            if modern.is_dir() {
+                return Some(modern);
+            }
+            // Legacy / BeamMP: %LOCALAPPDATA%\BeamNG.drive
+            let legacy = local.join("BeamNG.drive");
+            if legacy.is_dir() {
+                return Some(legacy);
             }
         }
     }
 
     if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
-        let path = PathBuf::from(home).join("BeamNG.drive");
+        let path = PathBuf::from(&home).join("BeamNG.drive");
         if path.is_dir() {
             return Some(path);
         }
         // Also check AppData\Local on Windows via USERPROFILE
         #[cfg(target_os = "windows")]
         {
-            let alt = PathBuf::from(std::env::var_os("USERPROFILE")?)
+            let local = PathBuf::from(home)
                 .join("AppData")
-                .join("Local")
-                .join("BeamNG.drive");
-            if alt.is_dir() {
-                return Some(alt);
+                .join("Local");
+            let modern = local.join("BeamNG").join("BeamNG.drive");
+            if modern.is_dir() {
+                return Some(modern);
+            }
+            let legacy = local.join("BeamNG.drive");
+            if legacy.is_dir() {
+                return Some(legacy);
             }
         }
     }

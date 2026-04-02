@@ -7,6 +7,8 @@ cache_dir = "~/.highbeam/cache"
 # Path to BeamNG.drive executable. Leave empty to auto-detect from Steam.
 beamng_exe = ""
 # Path to BeamNG.drive user data folder. Leave empty to auto-detect.
+# Modern BeamNG (0.27+) on Windows: C:\Users\<you>\AppData\Local\BeamNG\BeamNG.drive
+# Legacy / BeamMP on Windows:       C:\Users\<you>\AppData\Local\BeamNG.drive
 beamng_userfolder = ""
 # Optional community relay URLs used by --browse-relay when no URL is passed.
 discovery_relays = []

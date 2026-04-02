@@ -170,33 +170,86 @@ fn load_session_manifest(mods_dir: &Path) -> Result<Option<SessionManifest>> {
 }
 
 fn resolve_mods_dir(beamng_userfolder: Option<&str>) -> Result<PathBuf> {
-    if let Some(userfolder) = beamng_userfolder {
-        let root = expand_tilde(userfolder);
-        return Ok(root.join("mods"));
-    }
-
-    // Try auto-detection
-    if let Some(userfolder) = crate::detect::detect_beamng_userfolder() {
+    let root = if let Some(userfolder) = beamng_userfolder {
+        expand_tilde(userfolder)
+    } else if let Some(userfolder) = crate::detect::detect_beamng_userfolder() {
         tracing::info!(path = %userfolder.display(), "Auto-detected BeamNG.drive user folder");
-        return Ok(userfolder.join("mods"));
+        userfolder
+    } else {
+        // Hard last-resort fallback when detection fails entirely
+        #[cfg(target_os = "windows")]
+        {
+            if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+                return Ok(PathBuf::from(local_app_data)
+                    .join("BeamNG")
+                    .join("BeamNG.drive")
+                    .join("current")
+                    .join("mods"));
+            }
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            return Ok(PathBuf::from(home).join("BeamNG.drive").join("mods"));
+        }
+        return Err(anyhow!(
+            "Unable to resolve BeamNG userfolder; set beamng_userfolder in LauncherConfig.toml"
+        ));
+    };
+
+    Ok(resolve_mods_subdir(&root))
+}
+
+/// Given a BeamNG userfolder root, locate the correct `mods/` subdirectory.
+///
+/// Modern BeamNG (0.27+) organises user data as:
+///   `<root>/current/mods/`          – junction/symlink to the active version
+///   `<root>/<major.minor>/mods/`    – fallback: highest numeric version dir
+///
+/// Legacy installs use:
+///   `<root>/mods/`
+fn resolve_mods_subdir(root: &Path) -> PathBuf {
+    // 1. Modern path: current/ subdirectory (BeamNG 0.27+)
+    let current = root.join("current");
+    if current.is_dir() {
+        let mods = current.join("mods");
+        tracing::info!(path = %mods.display(), "Using modern BeamNG mods path (current/)");
+        return mods;
     }
 
-    #[cfg(target_os = "windows")]
-    {
-        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
-            return Ok(PathBuf::from(local_app_data)
-                .join("BeamNG.drive")
-                .join("mods"));
+    // 2. Versioned subdirectory: pick the highest semver-like numeric directory
+    if let Ok(entries) = std::fs::read_dir(root) {
+        let mut best: Option<(u64, u64, PathBuf)> = None;
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if !p.is_dir() {
+                continue;
+            }
+            if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                let mut parts = name.splitn(3, '.');
+                if let (Some(major), Some(minor)) = (
+                    parts.next().and_then(|s| s.parse::<u64>().ok()),
+                    parts.next().and_then(|s| s.parse::<u64>().ok()),
+                ) {
+                    if best.as_ref().map_or(true, |b| (b.0, b.1) < (major, minor)) {
+                        best = Some((major, minor, p));
+                    }
+                }
+            }
+        }
+        if let Some((maj, min, versioned)) = best {
+            let mods = versioned.join("mods");
+            tracing::info!(
+                version = %format!("{}.{}", maj, min),
+                path = %mods.display(),
+                "Using versioned BeamNG mods path"
+            );
+            return mods;
         }
     }
 
-    if let Some(home) = std::env::var_os("HOME") {
-        return Ok(PathBuf::from(home).join("BeamNG.drive").join("mods"));
-    }
-
-    Err(anyhow!(
-        "Unable to resolve BeamNG userfolder; set beamng_userfolder in LauncherConfig.toml"
-    ))
+    // 3. Legacy fallback: mods/ directly on root
+    let mods = root.join("mods");
+    tracing::info!(path = %mods.display(), "Using legacy BeamNG mods path");
+    mods
 }
 
 /// Public wrapper around `resolve_mods_dir` for use by other modules.
