@@ -451,6 +451,11 @@ fn main() -> Result<()> {
             server = %server_addr,
             installed_server_mods = install_report.installed_server_mods,
             installed_client_mod = install_report.installed_client_mod,
+            client_mod_zip = install_report
+                .client_mod_zip_path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "not-installed".to_string()),
             mods_dir = %install_report.mods_dir.display(),
             "Mod installation completed"
         );
