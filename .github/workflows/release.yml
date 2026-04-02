@@ -57,22 +57,6 @@ jobs:
         working-directory: server
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Sign Windows server binary (optional)
-        if: runner.os == 'Windows' && secrets.WINDOWS_SIGN_PFX_BASE64 != '' && secrets.WINDOWS_SIGN_PFX_PASSWORD != ''
-        shell: pwsh
-        run: |
-          $certPath = Join-Path $env:RUNNER_TEMP "highbeam-codesign.pfx"
-          [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String("${{ secrets.WINDOWS_SIGN_PFX_BASE64 }}"))
-          $binaryPath = "server/target/${{ matrix.target }}/release/${{ matrix.binary }}"
-          signtool sign /fd SHA256 /f $certPath /p "${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}" /tr "http://timestamp.digicert.com" /td SHA256 $binaryPath
-
-      - name: Verify Windows server signature (optional)
-        if: runner.os == 'Windows' && secrets.WINDOWS_SIGN_PFX_BASE64 != '' && secrets.WINDOWS_SIGN_PFX_PASSWORD != ''
-        shell: pwsh
-        run: |
-          $binaryPath = "server/target/${{ matrix.target }}/release/${{ matrix.binary }}"
-          signtool verify /pa /v $binaryPath
-
       - name: Run tests
         working-directory: server
         run: cargo test --release --target ${{ matrix.target }}
@@ -130,22 +114,6 @@ jobs:
       - name: Build release binary
         working-directory: launcher
         run: cargo build --release --target x86_64-pc-windows-msvc
-
-      - name: Sign Windows launcher binary (optional)
-        if: secrets.WINDOWS_SIGN_PFX_BASE64 != '' && secrets.WINDOWS_SIGN_PFX_PASSWORD != ''
-        shell: pwsh
-        run: |
-          $certPath = Join-Path $env:RUNNER_TEMP "highbeam-codesign.pfx"
-          [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String("${{ secrets.WINDOWS_SIGN_PFX_BASE64 }}"))
-          $binaryPath = "launcher/target/x86_64-pc-windows-msvc/release/highbeam-launcher.exe"
-          signtool sign /fd SHA256 /f $certPath /p "${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}" /tr "http://timestamp.digicert.com" /td SHA256 $binaryPath
-
-      - name: Verify Windows launcher signature (optional)
-        if: secrets.WINDOWS_SIGN_PFX_BASE64 != '' && secrets.WINDOWS_SIGN_PFX_PASSWORD != ''
-        shell: pwsh
-        run: |
-          $binaryPath = "launcher/target/x86_64-pc-windows-msvc/release/highbeam-launcher.exe"
-          signtool verify /pa /v $binaryPath
 
       - name: Run tests
         working-directory: launcher
