@@ -1,9 +1,9 @@
 # HighBeam Version Plan
 
-> **Last updated:** 2026-03-31
+> **Last updated:** 2026-04-02
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
 > **Current version:** v0.6.5 (protocol v2)
-> **Status:** v0.6.5 Complete — Join-scoped launcher sync, Phase C IPC bridge, GUI tray UX hardening
+> **Status:** v0.6.5 Complete — Next up: v0.8.0 Community Node Discovery Mesh
 
 ---
 
@@ -575,6 +575,235 @@ As of 2026-03-30, historical hardening notes were merged into this plan.
 - [ ] Binary protocol reduces per-packet overhead by >50% vs JSON
 - [ ] 50-player server uses < 5Mbps total bandwidth
 - [ ] Memory stable with 50+ players (< 1GB RSS)
+
+---
+
+### v0.8.0 — Community Node Discovery Mesh (Beta)
+
+**Status:** Not started
+**Goal:** Decentralized, P2P server discovery mesh built into every HighBeam server. Server operators opt in via the GUI to make their server discoverable. Players browse and connect to servers entirely in-game without knowing any IP addresses. No central relay infrastructure required.
+
+**Problem Statement:**
+- The Browse Servers tab is useless unless both server operator and player independently know the same relay URL.
+- No official relay exists, and standing one up creates a central point of failure and ongoing hosting cost.
+- IP addresses are currently exposed in the server browser, which is a privacy concern.
+- Enabling discovery requires editing `ServerConfig.toml` — not user-friendly.
+
+**Design Principles:**
+- **P2P gossip mesh:** Every server that opts in IS a relay node. Nodes exchange server lists with each other, so any single node knows about every server in the mesh. No central infrastructure.
+- **Bootstrap via seeds:** Operators enter 1+ seed node addresses (shared via Discord, website, etc.) to join the mesh. Once connected, they discover all other nodes organically through gossip. Seeds are only needed for initial entry.
+- **IP privacy:** Server browser shows server names, maps, player counts, mods, and latency — never IP addresses. IPs are resolved internally at connect time only. Same privacy model as Discord voice / Steam matchmaking.
+- **All setup in GUI:** No config file editing. Community Node is enabled, configured, and monitored entirely from the server GUI "Community" tab (or console commands for headless).
+- **No new crate dependencies:** Built on existing `tokio` (TCP listener), `serde_json`, `reqwest` (outbound gossip), `rand` (ID generation).
+
+**Architecture Overview:**
+
+Every community node:
+1. Registers itself in the mesh as a discoverable game server.
+2. Runs a lightweight HTTP listener (default: gameplay port + 2, i.e., `18862`) serving the aggregated server list to clients and exchanging data with peer nodes.
+3. Gossips with peers every 30 seconds, exchanging peer lists and server lists so full mesh state propagates organically.
+4. Prunes stale entries — servers not heartbeated in 90s, peers unresponsive for 5 minutes.
+5. Persists state to `community_node.json` (separate from `ServerConfig.toml`) for seamless restarts.
+
+**Server ID System:**
+- Each server gets a unique `server_id` (format: `hb-` + 6 random hex chars, e.g., `hb-7f3a9c`).
+- Generated once on first enable, persisted across restarts.
+- Used as the stable identifier for favorites/recents (survives IP changes).
+- Never displayed raw to users — used internally for resolve lookups.
+
+**Community Node HTTP API (server/src/community_node.rs):**
+
+| Method | Path | Response | Consumers |
+|--------|------|----------|-----------|
+| `GET /servers` | Server list with IDs + metadata, **no `addr` field** | Clients (browser) |
+| `GET /resolve/{id}` | `{"addr": "ip:port"}` for the game server | Clients at connect time |
+| `GET /peers` | Known peer list | Other nodes |
+| `POST /gossip` | Exchange full state (peers + servers with addrs) | Other nodes |
+| `GET /health` | `{"ok": true, "peers": N, "servers": N}` | Monitoring |
+
+**IP Privacy Split:**
+- `/servers` response: contains `id`, `name`, `description`, `map`, `players`, `max_players`, `region`, `tags`, `auth_mode`, `mods` — NO `addr` field.
+- `/gossip` request/response: contains full `addr` fields (node-to-node only, clients never call this).
+- `/resolve/{id}`: returns a single server's `addr` on demand, rate-limited (10/min per source IP).
+- Client uses resolved IP internally for `connection.connect()` — never displays it in UI.
+
+**Server List Entry (what `/servers` returns per server):**
+```json
+{
+  "id": "hb-7f3a9c",
+  "name": "Drift Paradise",
+  "description": "Open drift server",
+  "map": "/levels/west_coast_usa/info.json",
+  "players": 5,
+  "max_players": 20,
+  "region": "NA",
+  "tags": ["drift"],
+  "auth_mode": "open",
+  "mods": [{"name": "traffic_pack.zip", "size_bytes": 4200000}]
+}
+```
+
+**Gossip Protocol (node-to-node `POST /gossip`):**
+- Request and response share the same shape: `{from, peers[], servers[]}`.
+- Servers in gossip include `addr` and `node_addr` (game port and HTTP port respectively).
+- Merge logic: for duplicate `server_id`, keep the entry with newer `last_seen`. For duplicate peer `addr`, keep newer `last_seen`.
+- Caps: max 500 servers, max 200 peers. Excess evicted by oldest `last_seen`.
+
+**Gossip Loop Behavior:**
+- Every 30 seconds: update own entry, pick up to 3 random peers (always including ≥1 seed to resist eclipse attacks), POST `/gossip`, merge responses.
+- Exponential backoff on repeated failures to a peer (30s → 60s → 120s → 300s cap), reset on success.
+- Prune server entries older than 90s, peer entries older than 5 min.
+- If `known_peers` is empty, fall back to seed nodes as gossip targets.
+
+**Latency Measurement:**
+- Client times the `GET /servers` HTTP round-trip and displays it as approximate latency (`~Xms`).
+- Since each game server IS a node, HTTP latency to the node ≈ game latency to that server.
+- Avoids mass-resolving IPs for per-server UDP ping (which would defeat privacy goal).
+
+**Persistence (`community_node.json`):**
+```json
+{
+  "enabled": true,
+  "server_id": "hb-7f3a9c",
+  "listen_port": 18862,
+  "region": "NA",
+  "tags": ["drift", "racing"],
+  "seed_nodes": ["relay1.example.com:18862"],
+  "known_peers": ["203.0.113.10:18862", "198.51.100.5:18862"]
+}
+```
+- Written on clean shutdown and on Apply from GUI.
+- Loaded on startup — if enabled, node starts automatically.
+- `known_peers` persisted so mesh survives restarts without re-seeding.
+- NOT stored in `ServerConfig.toml` — fully managed by application.
+
+**Security Design:**
+
+| Threat | Mitigation |
+|--------|-----------|
+| IP exposure in browse list | `/servers` omits `addr`. Only `/resolve/{id}` returns it, one at a time. |
+| Mass IP harvesting via `/resolve` | Rate limit: 10 `/resolve` requests per minute per source IP. |
+| Gossip contains IPs | Gossip is node-to-node only. `/gossip` validates caller context. |
+| Password leak | Only `auth_mode` label sent. Password never leaves the server. |
+| Malicious gossip entries | All incoming entries validated: server_id format, string lengths, numeric bounds, tag format, address format. Invalid entries silently dropped. |
+| Eclipse attack | Seeds always included in gossip target selection. Seeds never evicted from peer list. |
+| Stale/ghost servers | 90-second TTL. Entries expire within ~2 gossip rounds after node dies. |
+| HTTP abuse | Rate limit: 30 req/min per IP across all endpoints. Max request body: 256 KB. Connection closed after response (no keep-alive). |
+| Server ID collision | 6 hex chars = 16.7M possibilities. On collision, newer `last_seen` wins. Displaced server reclaims on next heartbeat. |
+| Memory exhaustion | Fixed caps on all lists + request body size limits. |
+
+---
+
+**Server — Community Node Core (`community_node.rs`, new file):**
+- [ ] `CommunityNodeState` struct with `Arc<RwLock<...>>` for thread-safe access
+- [ ] Server ID generation (`hb-` + 6 random hex chars) on first enable
+- [ ] HTTP listener on configurable port (default: gameplay port + 2) using `tokio::net::TcpListener`
+- [ ] Minimal hand-built HTTP request parser (method + path routing, `Content-Length` body reads)
+- [ ] `GET /servers` handler — returns aggregated server list WITHOUT `addr` fields
+- [ ] `GET /resolve/{id}` handler — returns `{"addr": "ip:port"}` for a single server, rate-limited
+- [ ] `GET /peers` handler — returns known peer list
+- [ ] `POST /gossip` handler — receives peer+server lists, merges, returns own state
+- [ ] `GET /health` handler — returns peer/server counts
+- [ ] Gossip loop (tokio task): 30s interval, pick ≤3 peers, POST `/gossip`, merge responses
+- [ ] Self-registration: update own server entry each gossip round (player count, map, mod list from control plane)
+- [ ] Merge logic: newer `last_seen` wins for duplicate `server_id` or peer `addr`
+- [ ] Pruning: server entries >90s stale, peer entries >5min stale
+- [ ] Caps: max 500 servers, max 200 peers
+- [ ] Exponential backoff on peer failures (30s → 60s → 120s → 300s cap)
+- [ ] Seed node resilience: always include ≥1 seed in gossip target selection
+- [ ] Rate limiting: 30 req/min per IP (all endpoints), 10 `/resolve` per min per IP
+- [ ] Max request body: 256 KB
+- [ ] Persistence: load `community_node.json` on startup, save on shutdown and on Apply
+- [ ] `start()` function: loads state, spawns HTTP listener + gossip loop if enabled; no-op if disabled
+- [ ] Hot-start/stop: GUI can enable/disable without restarting game server
+
+**Server — Validation (`validation.rs`):**
+- [ ] `validate_community_node_settings()`: tags (max 5, 1-20 chars, `[a-z0-9-]`), region (empty or known code), seed addresses (valid `host:port`, not private/loopback), port (1024-65535), server ID format
+
+**Server — Startup Integration (`main.rs`):**
+- [ ] Add `mod community_node;` declaration
+- [ ] Call `community_node::start(config, control_plane, mod_manifest)` in `run_server()` after discovery relay
+- [ ] Pass returned `Arc<CommunityNodeState>` to GUI
+
+**Server — GUI Community Tab (`gui.rs`):**
+- [ ] Add `Tab::Community` variant to tab enum
+- [ ] Add "Community" tab to tab selector bar
+- [ ] Enable/disable checkbox with Apply button (writes `community_node.json`, hot-starts/stops node)
+- [ ] Display server ID (read-only)
+- [ ] Node port input field
+- [ ] Region dropdown (NA, EU, AP, SA, OC, AF, or empty)
+- [ ] Tags text input (comma-separated, validated on Apply)
+- [ ] Seed node management: list with Remove buttons, Add input with validation
+- [ ] Live status display: peer count, server count, last gossip time, health indicators
+
+**Server — Console Commands (`control.rs`):**
+- [ ] `community enable` — enable and start the node
+- [ ] `community disable` — stop the node
+- [ ] `community status` — show peer/server counts, listening port, server ID
+- [ ] `community port <port>` — set node HTTP port
+- [ ] `community region <code>` — set region
+- [ ] `community tags <a,b,c>` — set tags (comma-separated)
+- [ ] `community add-seed <addr>` — add a seed node address
+- [ ] `community remove-seed <addr>` — remove a seed node address
+
+**Server — Config Comment (`ServerConfig.default.toml`):**
+- [ ] Add comment block explaining Community Node is managed via GUI/console, not this file
+
+**Client — Browser Rewrite (`browser.lua`):**
+- [ ] Replace single `relayUrl` config key with `communityNodes` list (persisted to `userdata/highbeam/community_nodes.json`)
+- [ ] `fetchCommunityServers()`: try `GET /servers` against each known node until one succeeds; merge returned `nodes` into stored list for redundancy
+- [ ] Auto-fetch on Browse tab open if nodes are configured and servers not yet fetched this session
+- [ ] `resolveAndConnect(serverId)`: call `GET /resolve/{id}` on last successful node, then pass returned `addr` to `connection.connect()` — IP never displayed
+- [ ] Browse tab UI: Name, Map, Players, Mods, Ping (~Xms from HTTP round-trip), Actions (Connect button)
+- [ ] Mods column: show mod count, tooltip with full mod list on hover
+- [ ] Password servers: show lock icon, prompt for password on Connect
+- [ ] Favorites/Recents: store by `server_id` instead of `host:port`; resolve on connect
+- [ ] "Add node" input field with validation (replaces relay URL field)
+- [ ] Node management: show configured node count, allow add/remove
+- [ ] Keep Direct Connect tab unchanged (host:port manual entry still works)
+
+**Client — Config (`config.lua`):**
+- [ ] Replace `relayUrl = ""` default with `communityNodes = {}` in `M.defaults`
+
+**Existing Systems — No Changes:**
+- `discovery_relay.rs` — private relay infrastructure remains untouched (complementary system)
+- `config.rs` — no TOML config struct additions (community node uses its own JSON state file)
+- Connection protocol — `connection.connect(host, port, ...)` unchanged; resolve step just provides the address
+- Direct Connect tab — still available for players who know an IP:port
+
+---
+
+**Implementation Phases:**
+- [ ] **Phase A (Server Node Core):** `community_node.rs` — state structs, HTTP listener, gossip loop, merge logic, persistence, validation. All unit-testable without network.
+- [ ] **Phase B (Server GUI + Console):** Community tab in `gui.rs`, console commands in `control.rs`, hot-start/stop wiring.
+- [ ] **Phase C (Client Browser):** Rewrite `browser.lua` Browse tab to use community nodes, add resolve-on-connect, favorites/recents by server_id.
+- [ ] **Phase D (Integration & Testing):** Two-node gossip convergence test, client fetch→resolve→connect end-to-end, security validation (rate limits, input validation, no IP leaks in `/servers`).
+
+**Deliverable:**
+- Server operators enable Community Node from the GUI, enter a seed address, and their server becomes discoverable to all players in the mesh.
+- Players open the Browse Servers tab and see a populated server list with names, maps, player counts, mods, and latency — no IP addresses visible, no relay URL to configure.
+- Clicking Connect resolves the server address internally and connects directly.
+- The mesh is self-sustaining: seed a few initial nodes, community takes over as more servers join.
+
+**Acceptance Criteria:**
+- [ ] Enabling Community Node from GUI starts the HTTP listener and gossip loop without server restart
+- [ ] Disabling Community Node from GUI stops the node cleanly
+- [ ] Server ID is generated once and persists across restarts
+- [ ] Two nodes with each other as seeds discover each other and converge server lists within 60s
+- [ ] `GET /servers` response contains NO `addr` fields (verified by unit test)
+- [ ] `GET /resolve/{id}` returns correct game server address for known servers
+- [ ] `GET /resolve/{id}` returns 404 for unknown server IDs
+- [ ] `/resolve` endpoint is rate-limited (10/min per source IP)
+- [ ] Gossip merge keeps entry with newer `last_seen`; stale entries pruned within 90s
+- [ ] Client Browse tab auto-fetches server list from configured community nodes on open
+- [ ] Client can connect to a server by clicking Connect — no IP visible in UI at any point
+- [ ] Browser shows server name, map, player count, mod list, approximate latency, and auth mode
+- [ ] Favorites and recents work by server_id and survive server IP changes
+- [ ] Community node state persists to `community_node.json` and resumes on restart
+- [ ] Headless servers can manage community node via console commands
+- [ ] Max 500 servers, 200 peers enforced; request bodies capped at 256 KB
+- [ ] All validation passes: tags, region, seed addresses, server ID format
+- [ ] Existing discovery relay (`[Discovery]` config) continues to work independently
 
 ---
 
