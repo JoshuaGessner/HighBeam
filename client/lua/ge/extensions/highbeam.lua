@@ -42,6 +42,7 @@ local function _registerMenuEntry()
   end
 
   local entry = {
+    id = MENU_ENTRY_ID,
     title = "HighBeam Multiplayer",
     desc = "Open server browser",
     icon = "multiplayer_gamemode",
@@ -49,11 +50,13 @@ local function _registerMenuEntry()
   }
 
   -- BeamNG builds differ in addEntry/removeEntry signatures; try common variants.
+  -- Try single-arg (table with id field) first to avoid triggering warnings from
+  -- the two-arg form where the API misinterprets the ID string as the entry.
   local ok = false
   if qa.addEntry then
-    ok = pcall(qa.addEntry, MENU_ENTRY_ID, entry)
+    ok = pcall(qa.addEntry, entry)
     if not ok then
-      ok = pcall(qa.addEntry, entry)
+      ok = pcall(qa.addEntry, MENU_ENTRY_ID, entry)
     end
   end
 

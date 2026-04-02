@@ -2,8 +2,8 @@
 
 > **Last updated:** 2026-04-02
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.6.5 (protocol v2)
-> **Status:** v0.6.5 Complete — Next up: v0.8.0 Community Node Discovery Mesh
+> **Current version:** v0.6.75 (protocol v2)
+> **Status:** v0.6.75 Complete — Next up: v0.8.0 Community Node Discovery Mesh
 
 ---
 
@@ -875,6 +875,13 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.6.75 — 2026-04-02
+- **Critical bug fix:** `_readFile` was defined after its first call site in `browser.lua`, causing a nil-call crash on Direct Connect. Moved file I/O helpers (`_readFile`, `_writeFile`, `_ensureDir`) above the launcher IPC bridge code.
+- **Config save hardening:** `config.lua` and `browser.lua` file I/O now guards `FS` method access, adds BeamNG global `readFile`/`writeFile` fallbacks, and uses `mkdir -p` fallback for directory creation. Fixes "Failed to save config" warning.
+- **Extension loader fix:** `modScript.lua` (both copies) now uses `rawget(_G, 'setExtensionUnloadMode')` instead of a bare global access, preventing BeamNG from trying to auto-load a non-existent extension.
+- **Quick access menu fix:** `highbeam.lua` menu registration now tries the single-arg `addEntry(entry)` form first (with `id` in the table), avoiding the "Menu item needs at least a title and an onSelect" warning.
+- Launcher version bumped to `0.6.75`; server remains `0.6.4`; protocol remains `v2`.
 
 ### v0.6.5 — 2026-03-31
 - **Launcher IPC bridge (Phase C):** launcher now starts a local TCP server (`127.0.0.1:0`) while BeamNG is running; writes port to `{beamng_userfolder}/highbeam-launcher.json`. In-game browser reads this file and sends a `join_request` before connecting, triggering per-server mod sync from within the running session.

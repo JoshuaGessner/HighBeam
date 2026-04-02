@@ -22,12 +22,21 @@ local CONFIG_DIR  = "userdata/highbeam"
 local CONFIG_FILE = CONFIG_DIR .. "/config.json"
 
 local function _ensureDir()
-  pcall(function() FS:directoryCreate(CONFIG_DIR) end)
+  if FS and FS.directoryCreate then
+    pcall(function() FS:directoryCreate(CONFIG_DIR) end)
+  end
+  -- io.open fallback: attempt to create the dir via os.execute on platforms where FS is unavailable
+  pcall(function() os.execute('mkdir -p "' .. CONFIG_DIR .. '" 2>/dev/null') end)
 end
 
 local function _readFile(path)
-  if FS then
+  if FS and FS.readFileToString then
     local ok, c = pcall(function() return FS:readFileToString(path) end)
+    if ok and type(c) == "string" and c ~= "" then return c end
+  end
+  -- BeamNG global readFile fallback
+  if readFile then
+    local ok, c = pcall(readFile, path)
     if ok and type(c) == "string" and c ~= "" then return c end
   end
   local f = io.open(path, "r")
@@ -41,12 +50,22 @@ end
 
 local function _writeFile(path, content)
   _ensureDir()
-  if FS then
+  if FS and FS.writeFile then
     local ok = pcall(function() FS:writeFile(path, content) end)
-    if ok then return end
+    if ok then return true end
+  end
+  -- BeamNG global writeFile fallback
+  if writeFile then
+    local ok = pcall(writeFile, path, content)
+    if ok then return true end
   end
   local f = io.open(path, "w")
-  if f then f:write(content); f:close() end
+  if f then
+    f:write(content)
+    f:close()
+    return true
+  end
+  return false
 end
 
 local function _jsonEncode(t)

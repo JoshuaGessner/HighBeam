@@ -7,11 +7,14 @@ local function setManualUnloadMode()
 		if not ok_mode then
 			log('W', LOG_TAG, 'Failed to set unload mode via extensions.setExtensionUnloadMode: ' .. tostring(err_mode))
 		end
-	elseif setExtensionUnloadMode then
-		-- Older environments expose setExtensionUnloadMode globally.
-		local ok_mode, err_mode = pcall(setExtensionUnloadMode, EXT_NAME, 'manual')
-		if not ok_mode then
-			log('W', LOG_TAG, 'Failed to set unload mode via global setExtensionUnloadMode: ' .. tostring(err_mode))
+	else
+		-- Use rawget to avoid triggering BeamNG extension auto-loader
+		local globalFn = rawget(_G, 'setExtensionUnloadMode')
+		if globalFn then
+			local ok_mode, err_mode = pcall(globalFn, EXT_NAME, 'manual')
+			if not ok_mode then
+				log('W', LOG_TAG, 'Failed to set unload mode via global setExtensionUnloadMode: ' .. tostring(err_mode))
+			end
 		end
 	end
 end

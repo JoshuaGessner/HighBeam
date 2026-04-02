@@ -78,6 +78,58 @@ M._pingQueue    = {}
 local _pendingRecent = nil
 
 -- ──────────────────────────────────────────────────────────────────────────────
+-- File I/O helpers (FS: API → io.open fallback)
+-- ──────────────────────────────────────────────────────────────────────────────
+
+local SAVE_DIR = "userdata/highbeam"
+local FAV_FILE = SAVE_DIR .. "/favorites.json"
+local REC_FILE = SAVE_DIR .. "/recents.json"
+
+local function _ensureDir()
+  if FS and FS.directoryCreate then
+    pcall(function() FS:directoryCreate(SAVE_DIR) end)
+  end
+  pcall(function() os.execute('mkdir -p "' .. SAVE_DIR .. '" 2>/dev/null') end)
+end
+
+local function _readFile(path)
+  if FS and FS.readFileToString then
+    local ok, c = pcall(function() return FS:readFileToString(path) end)
+    if ok and type(c) == "string" and c ~= "" then return c end
+  end
+  if readFile then
+    local ok, c = pcall(readFile, path)
+    if ok and type(c) == "string" and c ~= "" then return c end
+  end
+  local f = io.open(path, "r")
+  if f then
+    local c = f:read("*all")
+    f:close()
+    return c
+  end
+  return nil
+end
+
+local function _writeFile(path, content)
+  _ensureDir()
+  if FS and FS.writeFile then
+    local ok = pcall(function() FS:writeFile(path, content) end)
+    if ok then return true end
+  end
+  if writeFile then
+    local ok = pcall(writeFile, path, content)
+    if ok then return true end
+  end
+  local f = io.open(path, "w")
+  if f then
+    f:write(content)
+    f:close()
+    return true
+  end
+  return false
+end
+
+-- ──────────────────────────────────────────────────────────────────────────────
 -- Launcher IPC bridge (Phase C) — triggers per-server mod sync before connect
 -- State machine: idle | syncing | unavailable | failed
 -- ──────────────────────────────────────────────────────────────────────────────
@@ -206,42 +258,6 @@ local _ffi = nil
 
 -- UI input buffers (allocated once, persist between renders)
 local _bufs = nil
-
--- ──────────────────────────────────────────────────────────────────────────────
--- File I/O helpers (FS: API → io.open fallback)
--- ──────────────────────────────────────────────────────────────────────────────
-
-local SAVE_DIR = "userdata/highbeam"
-local FAV_FILE = SAVE_DIR .. "/favorites.json"
-local REC_FILE = SAVE_DIR .. "/recents.json"
-
-local function _ensureDir()
-  pcall(function() FS:directoryCreate(SAVE_DIR) end)
-end
-
-local function _readFile(path)
-  if FS then
-    local ok, c = pcall(function() return FS:readFileToString(path) end)
-    if ok and type(c) == "string" and c ~= "" then return c end
-  end
-  local f = io.open(path, "r")
-  if f then
-    local c = f:read("*all")
-    f:close()
-    return c
-  end
-  return nil
-end
-
-local function _writeFile(path, content)
-  _ensureDir()
-  if FS then
-    local ok = pcall(function() FS:writeFile(path, content) end)
-    if ok then return end
-  end
-  local f = io.open(path, "w")
-  if f then f:write(content); f:close() end
-end
 
 -- ──────────────────────────────────────────────────────────────────────────────
 -- Persistence — Favorites
