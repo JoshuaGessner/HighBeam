@@ -86,7 +86,6 @@ pub fn run_ipc_loop(
     listener: &TcpListener,
     cfg: &LauncherConfig,
     cache_dir: &Path,
-    client_source_root: &Path,
 ) -> Result<()> {
     listener
         .set_nonblocking(true)
@@ -119,7 +118,7 @@ pub fn run_ipc_loop(
         match listener.accept() {
             Ok((stream, addr)) => {
                 tracing::info!(%addr, "Accepted launcher IPC connection");
-                if let Err(e) = handle_ipc_connection(stream, cfg, cache_dir, client_source_root) {
+                if let Err(e) = handle_ipc_connection(stream, cfg, cache_dir) {
                     tracing::warn!(error = %e, "IPC connection error");
                 }
             }
@@ -142,7 +141,6 @@ fn handle_ipc_connection(
     mut stream: std::net::TcpStream,
     cfg: &LauncherConfig,
     cache_dir: &Path,
-    client_source_root: &Path,
 ) -> Result<()> {
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
@@ -165,9 +163,7 @@ fn handle_ipc_connection(
 
     let req_type = value["type"].as_str().unwrap_or("");
     match req_type {
-        "join_request" => {
-            handle_join_request(&mut stream, &value, cfg, cache_dir, client_source_root)
-        }
+        "join_request" => handle_join_request(&mut stream, &value, cfg, cache_dir),
         other => {
             tracing::warn!(req_type = %other, "Unknown IPC request type; ignoring");
             Ok(())
@@ -180,7 +176,6 @@ fn handle_join_request(
     value: &serde_json::Value,
     cfg: &LauncherConfig,
     cache_dir: &Path,
-    client_source_root: &Path,
 ) -> Result<()> {
     let server = value["server"].as_str().unwrap_or("").to_string();
     if server.is_empty() {
@@ -258,7 +253,6 @@ fn handle_join_request(
         cache_dir,
         &cache_index,
         &report.server_mods,
-        client_source_root,
     ) {
         Ok(_) => {
             let _ = mod_cache::save_index(cache_dir, &cache_index);

@@ -156,25 +156,27 @@ fn expand_tilde(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
-fn resolve_client_source_root() -> Result<PathBuf> {
+fn resolve_client_payload_zip() -> Result<PathBuf> {
     let mut candidates = Vec::new();
 
-    // 1) Current working directory (developer workflow)
+    // 1) Current working directory (release/runtime workflow)
     if let Ok(cwd) = std::env::current_dir() {
-        candidates.push(cwd.join("client"));
+        candidates.push(cwd.join("highbeam.zip"));
+        candidates.push(cwd.join("launcher").join("payload").join("highbeam.zip"));
     }
 
     // 2) Next to launcher executable (release archive workflow)
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
-            candidates.push(exe_dir.join("client"));
-            candidates.push(exe_dir.join("..").join("client"));
+            candidates.push(exe_dir.join("highbeam.zip"));
+            candidates.push(exe_dir.join("payload").join("highbeam.zip"));
+            candidates.push(exe_dir.join("..").join("highbeam.zip"));
         }
     }
 
     for candidate in &candidates {
-        if candidate.exists() && candidate.is_dir() {
-            tracing::info!(path = %candidate.display(), "Resolved HighBeam client source directory");
+        if candidate.exists() && candidate.is_file() {
+            tracing::info!(path = %candidate.display(), "Resolved bundled HighBeam payload zip");
             return Ok(candidate.clone());
         }
     }
@@ -186,7 +188,7 @@ fn resolve_client_source_root() -> Result<PathBuf> {
         .join(", ");
 
     Err(anyhow::anyhow!(
-        "Could not locate HighBeam client directory. Searched: {}",
+        "Could not locate bundled HighBeam payload zip. Searched: {}",
         searched
     ))
 }
@@ -386,6 +388,10 @@ fn main() -> Result<()> {
             Ok(p) => println!("Mods dir    : {}", p.display()),
             Err(e) => println!("Mods dir    : UNRESOLVED ({})", e),
         }
+        match resolve_client_payload_zip() {
+            Ok(p) => println!("Payload zip : {}", p.display()),
+            Err(e) => println!("Payload zip : UNRESOLVED ({})", e),
+        }
         if let Some(server) = join_server.as_deref() {
             println!("Join server : {server}");
             match discovery::query_server(server, cfg.query_timeout_ms) {
@@ -400,6 +406,17 @@ fn main() -> Result<()> {
         }
         return Ok(());
     }
+
+    // Install (or refresh) the client mod payload on every startup so UI browser
+    // and GE extension loading do not depend on --server join flow.
+    let client_payload_zip = resolve_client_payload_zip()?;
+    let installed_client_zip =
+        installer::install_client_mod(cfg.beamng_userfolder.as_deref(), &client_payload_zip)?;
+    tracing::info!(
+        source_payload = %client_payload_zip.display(),
+        installed_zip = %installed_client_zip.display(),
+        "Client mod payload installed"
+    );
 
     // Recover from prior interrupted sessions by removing staged join mods.
     match installer::cleanup_staged_server_mods(cfg.beamng_userfolder.as_deref()) {
@@ -439,30 +456,22 @@ fn main() -> Result<()> {
             "Mod sync completed"
         );
 
-        let client_source_root = resolve_client_source_root()?;
         let install_report = installer::install_all(
             cfg.beamng_userfolder.as_deref(),
             &cache_dir,
             &cache_index,
             &report.server_mods,
-            &client_source_root,
         )?;
         tracing::info!(
             server = %server_addr,
             installed_server_mods = install_report.installed_server_mods,
-            installed_client_mod = install_report.installed_client_mod,
-            client_mod_zip = install_report
-                .client_mod_zip_path
-                .as_ref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "not-installed".to_string()),
             mods_dir = %install_report.mods_dir.display(),
-            "Mod installation completed"
+            "Server mod installation completed"
         );
 
         mod_cache::save_index(&cache_dir, &cache_index)?;
     } else {
-        tracing::info!("No explicit join requested; skipping mod sync/install startup path");
+        tracing::info!("No explicit join requested; skipping server mod sync startup path");
     }
 
     if args.no_launch {
@@ -508,19 +517,9 @@ fn main() -> Result<()> {
         }
     };
 
-    // Resolve client source root once; failures are non-fatal (IPC will skip client mod install).
-    let client_source_root = resolve_client_source_root()
-        .unwrap_or_else(|_| PathBuf::from("__client_source_not_found__"));
-
     // ── Main loop: monitor game + serve IPC connections ──────────────────────
     if let Some(ref listener) = ipc_listener {
-        ipc::run_ipc_loop(
-            &mut game_child,
-            listener,
-            &cfg,
-            &cache_dir,
-            &client_source_root,
-        )?;
+        ipc::run_ipc_loop(&mut game_child, listener, &cfg, &cache_dir)?;
     } else {
         // No IPC; fall back to blocking wait.
         let _ = game_child.wait();

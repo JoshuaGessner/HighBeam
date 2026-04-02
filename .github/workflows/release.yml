@@ -125,8 +125,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path staging
           Copy-Item "launcher/target/x86_64-pc-windows-msvc/release/highbeam-launcher.exe" staging/
           Copy-Item "launcher/LauncherConfig.toml" staging/
+          Copy-Item "launcher/payload/highbeam.zip" staging/
           Set-Content -Path "staging/VERSION" -Value "${{ github.ref_name }}" -NoNewline
-          Copy-Item -Recurse "client" staging/client
           Compress-Archive -Path staging/* -DestinationPath highbeam-launcher-windows-x86_64.zip
 
       - name: Upload artifact

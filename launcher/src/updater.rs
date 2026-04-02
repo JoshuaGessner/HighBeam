@@ -7,6 +7,7 @@ use std::path::Path;
 const GITHUB_API_URL: &str = "https://api.github.com/repos/JoshuaGessner/HighBeam/releases/latest";
 const LAUNCHER_ASSET_NAME: &str = "highbeam-launcher-windows-x86_64.zip";
 const VERSION_FILE_NAME: &str = "VERSION";
+const CLIENT_PAYLOAD_NAME: &str = "highbeam.zip";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Deserialize)]
@@ -118,6 +119,7 @@ fn validate_update_package(zip_bytes: &[u8], remote_version: &str) -> Result<()>
     let mut archive = zip::ZipArchive::new(cursor).context("Failed to inspect update zip")?;
 
     let mut has_launcher_binary = false;
+    let mut has_client_payload = false;
     let mut package_version: Option<String> = None;
 
     for i in 0..archive.len() {
@@ -126,6 +128,10 @@ fn validate_update_package(zip_bytes: &[u8], remote_version: &str) -> Result<()>
 
         if is_launcher_exe(&name) {
             has_launcher_binary = true;
+        }
+
+        if name.eq_ignore_ascii_case(CLIENT_PAYLOAD_NAME) {
+            has_client_payload = true;
         }
 
         if name.eq_ignore_ascii_case(VERSION_FILE_NAME) {
@@ -141,6 +147,13 @@ fn validate_update_package(zip_bytes: &[u8], remote_version: &str) -> Result<()>
         anyhow::bail!(
             "Launcher update package is invalid: missing launcher executable ({})",
             LAUNCHER_ASSET_NAME
+        );
+    }
+
+    if !has_client_payload {
+        anyhow::bail!(
+            "Launcher update package is invalid: missing bundled client payload ({})",
+            CLIENT_PAYLOAD_NAME
         );
     }
 
@@ -192,9 +205,10 @@ fn apply_update(zip_bytes: &[u8], current_exe: &Path, install_dir: &Path) -> Res
                 fs::File::create(current_exe).context("Failed to create new launcher exe")?;
             std::io::copy(&mut entry, &mut file)?;
         } else {
-            // Other files (e.g. LauncherConfig.toml) — only write if not already present
-            // so we don't overwrite user config
-            if !dest.exists() {
+            // Preserve user config, but refresh all other bundled payload files.
+            if is_user_preserved_file(&name) && dest.exists() {
+                tracing::debug!(path = %dest.display(), "Preserving existing user config file during update");
+            } else {
                 if let Some(p) = dest.parent() {
                     fs::create_dir_all(p)?;
                 }
@@ -210,6 +224,10 @@ fn apply_update(zip_bytes: &[u8], current_exe: &Path, install_dir: &Path) -> Res
 fn is_launcher_exe(name: &str) -> bool {
     let lower = name.to_lowercase();
     lower.ends_with("highbeam-launcher.exe") || lower.ends_with("highbeam-launcher")
+}
+
+fn is_user_preserved_file(name: &str) -> bool {
+    name.eq_ignore_ascii_case("LauncherConfig.toml")
 }
 
 fn cleanup_old_binary() {

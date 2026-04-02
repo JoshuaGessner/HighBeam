@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use zip::write::SimpleFileOptions;
 
 use crate::mod_cache::CacheIndex;
 use crate::mod_sync::ServerMod;
@@ -27,8 +26,6 @@ struct SessionManifest {
 
 pub struct InstallReport {
     pub installed_server_mods: usize,
-    pub installed_client_mod: bool,
-    pub client_mod_zip_path: Option<PathBuf>,
     pub mods_dir: PathBuf,
 }
 
@@ -37,7 +34,6 @@ pub fn install_all(
     cache_dir: &Path,
     cache_index: &CacheIndex,
     server_mods: &[ServerMod],
-    workspace_root: &Path,
 ) -> Result<InstallReport> {
     let mods_dir = resolve_mods_dir(beamng_userfolder)?;
     std::fs::create_dir_all(&mods_dir)
@@ -80,15 +76,17 @@ pub fn install_all(
         },
     )?;
 
-    let client_mod_zip_path = install_highbeam_client_mod(workspace_root, &mods_dir)?;
-    let installed_client_mod = client_mod_zip_path.is_some();
-
     Ok(InstallReport {
         installed_server_mods,
-        installed_client_mod,
-        client_mod_zip_path,
         mods_dir,
     })
+}
+
+pub fn install_client_mod(beamng_userfolder: Option<&str>, payload_zip: &Path) -> Result<PathBuf> {
+    let mods_dir = resolve_mods_dir(beamng_userfolder)?;
+    std::fs::create_dir_all(&mods_dir)
+        .with_context(|| format!("Failed to create BeamNG mods dir: {}", mods_dir.display()))?;
+    install_highbeam_client_mod(payload_zip, &mods_dir)
 }
 
 pub fn cleanup_staged_server_mods(beamng_userfolder: Option<&str>) -> Result<CleanupReport> {
@@ -291,23 +289,37 @@ fn copy_if_changed(src: &Path, dst: &Path, expected_hash: &str) -> Result<()> {
     Ok(())
 }
 
-fn install_highbeam_client_mod(client_root: &Path, mods_dir: &Path) -> Result<Option<PathBuf>> {
-    if !client_root.exists() {
-        tracing::warn!(
-            path = %client_root.display(),
-            "Client source directory not found; skipping HighBeam client mod install"
-        );
-        return Ok(None);
+fn install_highbeam_client_mod(payload_zip: &Path, mods_dir: &Path) -> Result<PathBuf> {
+    if !payload_zip.exists() {
+        return Err(anyhow!(
+            "Bundled HighBeam client payload not found: {}",
+            payload_zip.display()
+        ));
     }
 
-    // Build the game-native BeamNG mod package as a zip in mods/.
+    verify_client_zip(payload_zip)?;
+
     let final_zip = mods_dir.join("highbeam.zip");
     let temp_zip = mods_dir.join("highbeam.zip.tmp");
+
+    if final_zip.exists() {
+        let src_hash = sha256_file_hex(payload_zip)?;
+        let dst_hash = sha256_file_hex(&final_zip)?;
+        if src_hash.eq_ignore_ascii_case(&dst_hash) {
+            tracing::info!(
+                path = %final_zip.display(),
+                "HighBeam client mod zip already up to date"
+            );
+            cleanup_legacy_client_folder(mods_dir);
+            return Ok(final_zip);
+        }
+    }
+
     tracing::info!(
-        source = %client_root.display(),
+        source = %payload_zip.display(),
         temp = %temp_zip.display(),
         target = %final_zip.display(),
-        "Building HighBeam client zip"
+        "Installing bundled HighBeam client zip"
     );
 
     if temp_zip.exists() {
@@ -319,7 +331,13 @@ fn install_highbeam_client_mod(client_root: &Path, mods_dir: &Path) -> Result<Op
         })?;
     }
 
-    create_zip_from_dir(client_root, &temp_zip)?;
+    std::fs::copy(payload_zip, &temp_zip).with_context(|| {
+        format!(
+            "Failed to stage bundled HighBeam client zip: {} -> {}",
+            payload_zip.display(),
+            temp_zip.display()
+        )
+    })?;
     verify_client_zip(&temp_zip)?;
 
     if final_zip.exists() {
@@ -338,6 +356,17 @@ fn install_highbeam_client_mod(client_root: &Path, mods_dir: &Path) -> Result<Op
         )
     })?;
 
+    cleanup_legacy_client_folder(mods_dir);
+
+    tracing::info!(
+        path = %final_zip.display(),
+        "Installed HighBeam client mod zip to BeamNG mods directory"
+    );
+
+    Ok(final_zip)
+}
+
+fn cleanup_legacy_client_folder(mods_dir: &Path) {
     // Best-effort migration cleanup from the old extracted-folder install format.
     let legacy_folder = mods_dir.join("highbeam");
     if legacy_folder.is_dir() {
@@ -353,46 +382,6 @@ fn install_highbeam_client_mod(client_root: &Path, mods_dir: &Path) -> Result<Op
             ),
         }
     }
-
-    tracing::info!(
-        path = %final_zip.display(),
-        "Installed HighBeam client mod zip to BeamNG mods directory"
-    );
-
-    Ok(Some(final_zip))
-}
-
-fn create_zip_from_dir(src_root: &Path, out_zip: &Path) -> Result<()> {
-    let file = File::create(out_zip)
-        .with_context(|| format!("Failed to create client mod zip: {}", out_zip.display()))?;
-    let mut zip = zip::ZipWriter::new(file);
-    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-
-    let mut stack = vec![src_root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir)
-            .with_context(|| format!("Failed to read client dir: {}", dir.display()))?
-        {
-            let entry = entry?;
-            let path = entry.path();
-            let rel = path.strip_prefix(src_root).unwrap();
-
-            if path.is_dir() {
-                stack.push(path);
-                continue;
-            }
-
-            let rel_str = rel.to_string_lossy().replace('\\', "/");
-            zip.start_file(rel_str, options)?;
-
-            let mut src_file = File::open(&path)
-                .with_context(|| format!("Failed to open client file: {}", path.display()))?;
-            std::io::copy(&mut src_file, &mut zip)?;
-        }
-    }
-
-    zip.finish()?;
-    Ok(())
 }
 
 fn verify_client_zip(out_zip: &Path) -> Result<()> {
@@ -535,6 +524,24 @@ mod tests {
         verify_client_zip_reader(cursor).expect("zip with legacy modScript path should verify");
     }
 
+    fn write_test_client_zip(zip_path: &Path, payload: &[u8]) {
+        let mut cursor = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut cursor);
+            let options =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("scripts/modScript.lua", options)
+                .expect("write modScript entry");
+            zip.write_all(payload).expect("write modScript payload");
+            zip.start_file("lua/ge/extensions/highbeam.lua", options)
+                .expect("write extension entry");
+            zip.write_all(b"return {}")
+                .expect("write extension contents");
+            zip.finish().expect("finish zip");
+        }
+        fs::write(zip_path, cursor.into_inner()).expect("write payload zip");
+    }
+
     #[test]
     fn install_highbeam_client_mod_writes_highbeam_zip_and_removes_legacy_folder() {
         let nonce = SystemTime::now()
@@ -542,27 +549,19 @@ mod tests {
             .expect("clock should be after epoch")
             .as_nanos();
         let root = std::env::temp_dir().join(format!("highbeam-launcher-test-{}", nonce));
-        let client_root = root.join("client");
+        let payload_zip = root.join("payload/highbeam.zip");
         let mods_dir = root.join("mods");
 
-        fs::create_dir_all(client_root.join("scripts")).expect("create client scripts directory");
-        fs::create_dir_all(client_root.join("lua/ge/extensions"))
-            .expect("create client extension directory");
+        fs::create_dir_all(payload_zip.parent().expect("payload parent"))
+            .expect("create payload directory");
         fs::create_dir_all(mods_dir.join("highbeam/old")).expect("create legacy extracted dir");
-
-        fs::write(client_root.join("scripts/modScript.lua"), "return true")
-            .expect("write modScript.lua");
-        fs::write(
-            client_root.join("lua/ge/extensions/highbeam.lua"),
-            "return {}",
-        )
-        .expect("write highbeam extension");
+        write_test_client_zip(&payload_zip, b"return true");
         fs::write(mods_dir.join("highbeam/old/file.txt"), "legacy")
             .expect("write legacy file");
 
         let installed =
-            install_highbeam_client_mod(&client_root, &mods_dir).expect("install should succeed");
-        let installed_zip = installed.expect("zip path should be returned");
+            install_highbeam_client_mod(&payload_zip, &mods_dir).expect("install should succeed");
+        let installed_zip = installed;
 
         assert_eq!(installed_zip, mods_dir.join("highbeam.zip"));
         assert!(installed_zip.is_file(), "expected highbeam.zip to exist");
@@ -570,6 +569,38 @@ mod tests {
             !mods_dir.join("highbeam").exists(),
             "legacy extracted folder should be removed"
         );
+        assert!(
+            !mods_dir.join("highbeam.zip.tmp").exists(),
+            "temporary zip should not remain"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn install_highbeam_client_mod_skips_copy_when_zip_is_unchanged() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("highbeam-launcher-test-{}", nonce));
+        let payload_zip = root.join("payload/highbeam.zip");
+        let mods_dir = root.join("mods");
+        fs::create_dir_all(payload_zip.parent().expect("payload parent"))
+            .expect("create payload directory");
+        fs::create_dir_all(&mods_dir).expect("create mods dir");
+
+        write_test_client_zip(&payload_zip, b"return true");
+        let first =
+            install_highbeam_client_mod(&payload_zip, &mods_dir).expect("first install succeeds");
+        let first_meta = fs::metadata(&first).expect("first zip metadata");
+        let first_size = first_meta.len();
+
+        let second = install_highbeam_client_mod(&payload_zip, &mods_dir)
+            .expect("second install should also succeed");
+        let second_meta = fs::metadata(&second).expect("second zip metadata");
+
+        assert_eq!(first_size, second_meta.len(), "zip size should remain unchanged");
         assert!(
             !mods_dir.join("highbeam.zip.tmp").exists(),
             "temporary zip should not remain"
