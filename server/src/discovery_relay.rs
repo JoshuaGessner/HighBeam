@@ -56,7 +56,7 @@ pub fn spawn_registration_task(config: Arc<ServerConfig>, control: Arc<ControlPl
             let payload = RelayRegistrationPayload {
                 name: snapshot.server_name,
                 description: config_for_task.general.description.clone(),
-                map: snapshot.map,
+                map: snapshot.map_display_name,
                 players: snapshot.player_count,
                 max_players: snapshot.max_players,
                 port: snapshot.port,

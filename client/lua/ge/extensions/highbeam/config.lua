@@ -30,9 +30,13 @@ local function _ensureDir()
   if ok and lfs then pcall(lfs.mkdir, CONFIG_DIR); return end
   local sep = package.config:sub(1, 1)
   if sep == '\\' then
-    os.execute('mkdir "' .. CONFIG_DIR:gsub('/', '\\') .. '" 2>nul')
+    pcall(function()
+      os.execute('mkdir "' .. CONFIG_DIR:gsub('/', '\\') .. '" 2>nul')
+    end)
   else
-    os.execute('mkdir -p "' .. CONFIG_DIR .. '" 2>/dev/null')
+    pcall(function()
+      os.execute('mkdir -p "' .. CONFIG_DIR .. '" 2>/dev/null')
+    end)
   end
 end
 

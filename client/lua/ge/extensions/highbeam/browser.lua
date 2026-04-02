@@ -95,9 +95,13 @@ local function _ensureDir()
   if ok and lfs then pcall(lfs.mkdir, SAVE_DIR); return end
   local sep = package.config:sub(1, 1)
   if sep == '\\' then
-    os.execute('mkdir "' .. SAVE_DIR:gsub('/', '\\') .. '" 2>nul')
+    pcall(function()
+      os.execute('mkdir "' .. SAVE_DIR:gsub('/', '\\') .. '" 2>nul')
+    end)
   else
-    os.execute('mkdir -p "' .. SAVE_DIR .. '" 2>/dev/null')
+    pcall(function()
+      os.execute('mkdir -p "' .. SAVE_DIR .. '" 2>/dev/null')
+    end)
   end
 end
 
@@ -169,10 +173,20 @@ M._bridge = {
 local function _bridgeDirectConnect()
   local p = M._bridge.pending
   if not p then return end
+  if not _connection or type(_connection.connect) ~= "function" then
+    M._bridge.state = "failed"
+    M._bridge.error = "Connection subsystem unavailable"
+    M._connectError = M._bridge.error
+    return
+  end
   M._bridge.pending = nil
-  M._visible = false
-  _connection.connect(p.host, p.port, p.username,
+  local ok, err = pcall(_connection.connect, p.host, p.port, p.username,
     (p.password and p.password ~= "" and p.password or nil))
+  if not ok then
+    M._bridge.state = "failed"
+    M._bridge.error = "Connect failed: " .. tostring(err)
+    M._connectError = M._bridge.error
+  end
 end
 
 -- Open the IPC socket and send a join_request
@@ -606,11 +620,28 @@ end
 
 -- Called by the main extension when the connection transitions to CONNECTED
 M.onConnected = function()
+  -- Close the browser only after a confirmed connection.
+  M._visible = false
+  M._bridge.state = "idle"
+  M._bridge.error = nil
   if _pendingRecent then
     local label = _pendingRecent.name
               or (_pendingRecent.host .. ":" .. tostring(_pendingRecent.port))
     M.addRecent(_pendingRecent.host, _pendingRecent.port, label)
     _pendingRecent = nil
+  end
+end
+
+-- Called by the main extension on any connection status change.
+M.onConnectionStatus = function(status, detail)
+  if status == "disconnected" or status == "reconnect_failed" then
+    if M._bridge.state == "syncing" then
+      M._bridge.state = "failed"
+      M._bridge.error = detail or "Connection closed during sync"
+    end
+    M._connectError = detail or "Disconnected"
+  elseif status == "connecting" or status == "authenticating" then
+    M._connectError = ""
   end
 end
 

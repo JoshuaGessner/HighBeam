@@ -18,7 +18,7 @@ HighBeam lets you host and join real-time multiplayer sessions in BeamNG.drive �
 
 ---
 
-## Current Status — v0.6.77 (In Progress)
+## Current Status — v0.6.78 (In Progress)
 
 | Feature | Status |
 |---------|--------|
@@ -94,7 +94,7 @@ Port        = 18860
 MaxPlayers  = 16
 AuthMode    = "open"      # open | password | allowlist
 Password    = ""
-Map         = "levels/gridmap_v2/info.json"
+Map         = "/levels/gridmap_v2/info.json"
 ```
 
 For Linux servers, a `highbeam-server.service` systemd unit and a `docker-compose.yml` are included in the release archive.
@@ -122,7 +122,7 @@ For Linux servers, a `highbeam-server.service` systemd unit and a `docker-compos
 | v0.3.0 | Chat, mod distribution, launcher | ✅ Done |
 | v0.4.x | Server-side Lua plugins, auto-update, auto-detection | ✅ Done |
 | v0.5.0 | Stability & deployment polish | ✅ Done |
-| v0.6.x | Server GUI, discovery, in-game browser, join-scoped mod sync | 🔧 In Progress (v0.6.77) |
+| v0.6.x | Server GUI, discovery, in-game browser, join-scoped mod sync | 🔧 In Progress (v0.6.78) |
 | v0.7.0 | Binary protocol (bandwidth optimization) | 📋 Next |
 | v1.0.0 | Stable release | 🔭 Target |
 

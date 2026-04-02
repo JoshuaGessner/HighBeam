@@ -108,6 +108,9 @@ M.onExtensionLoaded = function()
 
   -- Notify browser when connection succeeds so it can record the recent entry
   connection.setStatusCallback(function(status, detail)
+    if browser and browser.onConnectionStatus then
+      browser.onConnectionStatus(status, detail)
+    end
     if status == "connected" and browser then
       browser.onConnected()
     end

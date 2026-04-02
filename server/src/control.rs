@@ -13,7 +13,8 @@ use crate::state::world::WorldState;
 #[derive(Debug, Clone)]
 pub struct ServerSnapshot {
     pub server_name: String,
-    pub map: String,
+    pub map_path: String,
+    pub map_display_name: String,
     pub port: u16,
     pub max_players: u32,
     pub player_count: usize,
@@ -49,6 +50,8 @@ pub struct ClientModEntry {
 #[derive(Debug, Clone)]
 pub struct MapEntry {
     pub map_path: String,
+    pub display_name: String,
+    pub source: String,
 }
 
 pub struct ControlPlane {
@@ -60,6 +63,174 @@ pub struct ControlPlane {
     started_at: Instant,
 }
 
+fn canonical_map_path(input: &str, fallback: &str) -> String {
+    let trimmed = input.trim().replace('\\', "/");
+    if trimmed.is_empty() {
+        return fallback.to_string();
+    }
+
+    let mut level = if let Some(rest) = trimmed.strip_prefix("/levels/") {
+        rest.strip_suffix("/info.json").unwrap_or(rest).to_string()
+    } else if let Some(rest) = trimmed.strip_prefix("levels/") {
+        rest.strip_suffix("/info.json").unwrap_or(rest).to_string()
+    } else {
+        trimmed
+    };
+
+    // Guard legacy aliases that show up in stale state/config and break map loading.
+    let level_lower = level.to_lowercase();
+    if level_lower == "gridmap" {
+        level = "gridmap_v2".to_string();
+    } else if level_lower == "orv" {
+        let fallback_level = fallback
+            .trim()
+            .replace('\\', "/")
+            .trim_start_matches("/levels/")
+            .trim_start_matches("levels/")
+            .trim_end_matches("/info.json")
+            .to_string();
+        level = if fallback_level.is_empty() {
+            "gridmap_v2".to_string()
+        } else {
+            fallback_level
+        };
+    }
+
+    if level.is_empty() {
+        return fallback.to_string();
+    }
+
+    format!("/levels/{level}/info.json")
+}
+
+fn map_display_name(map_path: &str) -> String {
+    let normalized = map_path
+        .trim()
+        .replace('\\', "/");
+    let level = normalized
+        .trim_start_matches("/levels/")
+        .trim_start_matches("levels/")
+        .trim_end_matches("/info.json")
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or(map_path);
+
+    level
+        .split('_')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            if part.len() <= 3 && part.chars().all(|ch| ch.is_ascii_alphanumeric()) {
+                part.to_ascii_uppercase()
+            } else {
+                let mut chars = part.chars();
+                match chars.next() {
+                    Some(first) => {
+                        let mut out = first.to_uppercase().to_string();
+                        out.push_str(&chars.as_str().to_ascii_lowercase());
+                        out
+                    }
+                    None => String::new(),
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn make_map_entry(map_path: String, source: &str) -> MapEntry {
+    MapEntry {
+        display_name: map_display_name(&map_path),
+        map_path,
+        source: source.to_string(),
+    }
+}
+
+fn default_beamng_levels_roots() -> Vec<std::path::PathBuf> {
+    let mut roots = Vec::new();
+
+    #[cfg(target_os = "windows")]
+    {
+        roots.push(std::path::PathBuf::from(
+            r"C:\Program Files (x86)\Steam\steamapps\common\BeamNG.drive\content\levels",
+        ));
+        roots.push(std::path::PathBuf::from(
+            r"C:\Program Files\Steam\steamapps\common\BeamNG.drive\content\levels",
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(home) = std::env::var_os("HOME") {
+            roots.push(
+                std::path::PathBuf::from(home)
+                    .join("Library/Application Support/Steam/steamapps/common/BeamNG.drive/content/levels"),
+            );
+        }
+    }
+
+    roots
+}
+
+fn insert_map_entry(
+    map_entries: &mut std::collections::BTreeMap<String, MapEntry>,
+    raw_map: &str,
+    fallback: &str,
+    source: &str,
+) {
+    let canonical = canonical_map_path(raw_map, fallback);
+    map_entries
+        .entry(canonical.clone())
+        .or_insert_with(|| make_map_entry(canonical, source));
+}
+
+fn discover_default_game_maps() -> Vec<MapEntry> {
+    let mut map_entries = std::collections::BTreeMap::new();
+
+    for root in default_beamng_levels_roots() {
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            continue;
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+
+            if path.is_dir() {
+                if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+                    if path.join("info.json").is_file() {
+                        insert_map_entry(
+                            &mut map_entries,
+                            &format!("/levels/{name}/info.json"),
+                            "/levels/gridmap_v2/info.json",
+                            "Default",
+                        );
+                    }
+                }
+                continue;
+            }
+
+            let is_zip = path
+                .extension()
+                .and_then(|s| s.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"));
+            if !is_zip {
+                continue;
+            }
+
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                insert_map_entry(
+                    &mut map_entries,
+                    &format!("/levels/{stem}/info.json"),
+                    "/levels/gridmap_v2/info.json",
+                    "Default",
+                );
+            }
+        }
+    }
+
+    map_entries.into_values().collect()
+}
+
 impl ControlPlane {
     pub fn new(
         config: Arc<ServerConfig>,
@@ -67,7 +238,7 @@ impl ControlPlane {
         world: Arc<WorldState>,
         plugins: Option<Arc<PluginRuntime>>,
     ) -> Self {
-        let initial_map = config.general.map.clone();
+        let initial_map = canonical_map_path(&config.general.map, "/levels/gridmap_v2/info.json");
         Self {
             config,
             sessions,
@@ -79,14 +250,15 @@ impl ControlPlane {
     }
 
     pub fn snapshot(&self) -> ServerSnapshot {
-        let map = self
+        let map_path = self
             .current_map
             .read()
             .map(|m| m.clone())
             .unwrap_or_else(|_| self.config.general.map.clone());
         ServerSnapshot {
             server_name: self.config.general.name.clone(),
-            map,
+            map_path: map_path.clone(),
+            map_display_name: map_display_name(&map_path),
             port: self.config.general.port,
             max_players: self.config.general.max_players,
             player_count: self.sessions.player_count(),
@@ -138,15 +310,15 @@ impl ControlPlane {
     }
 
     pub fn set_active_map(&self, map: String) -> Result<()> {
-        let trimmed = map.trim();
-        if trimmed.is_empty() {
+        if map.trim().is_empty() {
             bail!("Map path cannot be empty")
         }
+        let normalized = canonical_map_path(&map, &self.config.general.map);
         let mut guard = self
             .current_map
             .write()
             .map_err(|_| anyhow::anyhow!("Map state lock poisoned"))?;
-        *guard = trimmed.to_string();
+        *guard = normalized;
         Ok(())
     }
 
@@ -191,15 +363,18 @@ impl ControlPlane {
     }
 
     pub fn list_available_maps(&self) -> Result<Vec<MapEntry>> {
-        let mut map_set = std::collections::BTreeSet::new();
-        map_set.insert(self.get_active_map());
+        let fallback = self.config.general.map.clone();
+        let mut map_entries = std::collections::BTreeMap::new();
+
+        insert_map_entry(&mut map_entries, &self.get_active_map(), &fallback, "Active");
+
+        for entry in discover_default_game_maps() {
+            map_entries.entry(entry.map_path.clone()).or_insert(entry);
+        }
 
         let maps_dir = std::path::Path::new(&self.config.general.resource_folder).join("Maps");
         if !maps_dir.exists() {
-            return Ok(map_set
-                .into_iter()
-                .map(|map_path| MapEntry { map_path })
-                .collect());
+            return Ok(map_entries.into_values().collect());
         }
 
         for info_path in discover_map_info_files(&maps_dir)? {
@@ -215,13 +390,15 @@ impl ControlPlane {
                 continue;
             }
 
-            map_set.insert(format!("/levels/{level}/info.json"));
+            insert_map_entry(
+                &mut map_entries,
+                &format!("/levels/{level}/info.json"),
+                &fallback,
+                "Mod",
+            );
         }
 
-        Ok(map_set
-            .into_iter()
-            .map(|map_path| MapEntry { map_path })
-            .collect())
+        Ok(map_entries.into_values().collect())
     }
 
     pub fn add_client_mod_from_path(&self, source_path: &str) -> Result<String> {
@@ -294,7 +471,7 @@ impl ControlPlane {
                 snap.vehicle_count,
                 snap.plugin_count,
                 snap.uptime_secs,
-                snap.map
+                snap.map_display_name
             ));
         }
 
@@ -423,6 +600,8 @@ mod tests {
         assert_eq!(snapshot.vehicle_count, 0);
         assert_eq!(snapshot.plugin_count, 0);
         assert!(snapshot.max_players > 0);
+        assert_eq!(snapshot.map_path, "/levels/gridmap_v2/info.json");
+        assert_eq!(snapshot.map_display_name, "Gridmap V2");
     }
 
     #[test]
@@ -436,6 +615,40 @@ mod tests {
             .execute_console_line("unknown_cmd")
             .expect("should return help");
         assert!(output.contains("Commands:"));
+    }
+
+    #[test]
+    fn test_set_active_map_normalizes_legacy_aliases() {
+        let config = Arc::new(ServerConfig::default());
+        let sessions = Arc::new(SessionManager::new());
+        let world = Arc::new(WorldState::new());
+        let control = ControlPlane::new(config, sessions, world, None);
+
+        control
+            .set_active_map("/levels/GridMap/info.json".to_string())
+            .expect("set map should succeed");
+        assert_eq!(control.get_active_map(), "/levels/gridmap_v2/info.json");
+
+        control
+            .set_active_map("ORV".to_string())
+            .expect("set map should succeed");
+        assert_eq!(control.get_active_map(), "/levels/gridmap_v2/info.json");
+    }
+
+    #[test]
+    fn test_set_active_map_normalizes_bare_level_name() {
+        let config = Arc::new(ServerConfig::default());
+        let sessions = Arc::new(SessionManager::new());
+        let world = Arc::new(WorldState::new());
+        let control = ControlPlane::new(config, sessions, world, None);
+
+        control
+            .set_active_map("west_coast_usa".to_string())
+            .expect("set map should succeed");
+        assert_eq!(
+            control.get_active_map(),
+            "/levels/west_coast_usa/info.json"
+        );
     }
 
     #[test]
@@ -473,5 +686,31 @@ mod tests {
         assert!(map_paths.contains(&"/levels/gridmap_v2/info.json".to_string()));
         assert!(map_paths.contains(&"/levels/west_coast_usa/info.json".to_string()));
         assert!(map_paths.contains(&"/levels/italy/info.json".to_string()));
+    }
+
+    #[test]
+    fn test_discover_default_game_maps_from_zip_names() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let levels_dir = temp.path().join("levels");
+        std::fs::create_dir_all(&levels_dir).expect("levels dir should be created");
+        std::fs::write(levels_dir.join("gridmap_v2.zip"), b"zip").expect("write zip placeholder");
+        std::fs::write(levels_dir.join("west_coast_usa.zip"), b"zip").expect("write zip placeholder");
+
+        let mut map_entries = std::collections::BTreeMap::new();
+        for entry in std::fs::read_dir(&levels_dir).expect("read_dir should succeed").flatten() {
+            let path = entry.path();
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                insert_map_entry(
+                    &mut map_entries,
+                    &format!("/levels/{stem}/info.json"),
+                    "/levels/gridmap_v2/info.json",
+                    "Default",
+                );
+            }
+        }
+
+        let maps: Vec<MapEntry> = map_entries.into_values().collect();
+        assert!(maps.iter().any(|m| m.map_path == "/levels/gridmap_v2/info.json"));
+        assert!(maps.iter().any(|m| m.map_path == "/levels/west_coast_usa/info.json"));
     }
 }

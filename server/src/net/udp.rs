@@ -99,7 +99,7 @@ pub async fn start_udp(
                     let snap = control.snapshot();
                     let payload = DiscoveryResponse {
                         name: snap.server_name,
-                        map: snap.map,
+                        map: snap.map_display_name,
                         players: snap.player_count,
                         max_players: snap.max_players,
                         port: snap.port,

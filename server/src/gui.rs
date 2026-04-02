@@ -114,8 +114,6 @@ struct ServerGuiApp {
     console_output: Vec<String>,
     kick_reason: String,
     selected_map_path: String,
-    map_input: String,
-    mod_source_path: String,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq)]
@@ -148,8 +146,6 @@ impl ServerGuiApp {
             console_output: Vec::new(),
             kick_reason: "Kicked by admin".to_string(),
             selected_map_path: String::new(),
-            map_input: String::new(),
-            mod_source_path: String::new(),
         }
     }
 
@@ -163,11 +159,22 @@ impl ServerGuiApp {
             if self.selected_map_path.is_empty() {
                 self.selected_map_path = self.control.get_active_map();
             }
-            if self.map_input.is_empty() {
-                self.map_input = self.control.get_active_map();
-            }
             self.last_refresh_at = Instant::now();
         }
+    }
+
+    fn map_display_name(&self, map_path: &str) -> String {
+        self.maps
+            .iter()
+            .find(|entry| entry.map_path == map_path)
+            .map(|entry| entry.display_name.clone())
+            .unwrap_or_else(|| map_path.to_string())
+    }
+
+    fn selected_map_entry(&self) -> Option<&MapEntry> {
+        self.maps
+            .iter()
+            .find(|entry| entry.map_path == self.selected_map_path)
     }
 
     fn handle_tray_commands(&mut self, _ctx: &egui::Context) {
@@ -247,7 +254,7 @@ impl ServerGuiApp {
         ui.separator();
 
         ui.label(format!("Server: {}", self.snapshot.server_name));
-        ui.label(format!("Map: {}", self.snapshot.map));
+        ui.label(format!("Map: {}", self.snapshot.map_display_name));
         ui.label(format!("Port: {}", self.snapshot.port));
         ui.label(format!(
             "Players: {}/{}",
@@ -304,20 +311,10 @@ impl ServerGuiApp {
         ui.heading("Client Mods");
         ui.separator();
 
-        ui.horizontal(|ui| {
-            ui.label("Source file path:");
-            ui.text_edit_singleline(&mut self.mod_source_path);
-            if ui.button("Add Mod").clicked() {
-                match self.control.add_client_mod_from_path(&self.mod_source_path) {
-                    Ok(name) => {
-                        self.push_console_line(format!("Added mod: {}", name));
-                        self.mods = self.control.list_client_mods().unwrap_or_default();
-                        self.mod_source_path.clear();
-                    }
-                    Err(e) => self.push_console_line(format!("Add mod failed: {}", e)),
-                }
-            }
-        });
+        ui.label("Client mods are discovered automatically from Resources/Client.");
+        if ui.button("Refresh mods").clicked() {
+            self.mods = self.control.list_client_mods().unwrap_or_default();
+        }
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             for item in self.mods.clone() {
@@ -344,10 +341,7 @@ impl ServerGuiApp {
         ui.heading("Map Management");
         ui.separator();
 
-        ui.label(format!(
-            "Current active map: {}",
-            self.control.get_active_map()
-        ));
+        ui.label(format!("Current active map: {}", self.snapshot.map_display_name));
         if ui.button("Refresh available maps").clicked() {
             self.maps = self.control.list_available_maps().unwrap_or_default();
         }
@@ -357,19 +351,23 @@ impl ServerGuiApp {
             .show(ui, |ui| {
                 for map in &self.maps {
                     let selected = self.selected_map_path == map.map_path;
-                    if ui.selectable_label(selected, &map.map_path).clicked() {
+                    let label = format!("{} [{}]", map.display_name, map.source);
+                    if ui.selectable_label(selected, label).clicked() {
                         self.selected_map_path = map.map_path.clone();
                     }
                 }
 
                 if self.maps.is_empty() {
-                    ui.label("No maps discovered in Resources/Maps.");
+                    ui.label("No maps discovered from BeamNG content or Resources/Maps.");
                 }
             });
 
         ui.horizontal(|ui| {
-            ui.label("Selected map:");
-            ui.text_edit_singleline(&mut self.selected_map_path);
+            let selected_label = self
+                .selected_map_entry()
+                .map(|entry| format!("{} [{}]", entry.display_name, entry.source))
+                .unwrap_or_else(|| self.map_display_name(&self.selected_map_path));
+            ui.label(format!("Selected map: {}", selected_label));
             if ui.button("Set Active Map").clicked() {
                 match self
                     .control
@@ -377,7 +375,7 @@ impl ServerGuiApp {
                 {
                     Ok(msg) => {
                         self.push_console_line(msg);
-                        self.map_input = self.control.get_active_map();
+                        self.selected_map_path = self.control.get_active_map();
                     }
                     Err(e) => self.push_console_line(format!("Map update failed: {}", e)),
                 }
@@ -446,21 +444,8 @@ impl ServerGuiApp {
         ui.heading("Settings");
         ui.separator();
 
-        ui.horizontal(|ui| {
-            ui.label("Active map:");
-            ui.text_edit_singleline(&mut self.map_input);
-            if ui.button("Apply").clicked() {
-                match self
-                    .control
-                    .execute_console_line(&format!("map {}", self.map_input))
-                {
-                    Ok(msg) => self.push_console_line(msg),
-                    Err(e) => self.push_console_line(format!("Map update failed: {}", e)),
-                }
-            }
-        });
-
-        ui.label("Map changes apply to new connection handshakes immediately.");
+        ui.label("Map selection now lives in the Maps tab.");
+        ui.label("Settings in this tab are reserved for non-map server controls.");
     }
 }
 

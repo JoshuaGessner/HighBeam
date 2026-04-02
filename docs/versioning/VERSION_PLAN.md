@@ -2,8 +2,8 @@
 
 > **Last updated:** 2026-04-02
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.6.77 (protocol v2)
-> **Status:** v0.6.77 Complete — Next up: v0.8.0 Community Node Discovery Mesh
+> **Current version:** v0.6.78 (protocol v2)
+> **Status:** v0.6.78 Complete — Next up: v0.8.0 Community Node Discovery Mesh
 
 ---
 
@@ -875,6 +875,16 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.6.78 — 2026-04-02
+- **Direct connect hardening:** browser now stays visible until a confirmed connection succeeds; bridge/direct-connect path guards missing connection subsystem access and surfaces connection/auth failure details back into the UI.
+- **Config I/O hardening:** client config/browser directory creation fallbacks are now guarded so restricted BeamNG environments do not throw during save attempts.
+- **Server map catalog refresh:** server now discovers both BeamNG default maps and mod maps on startup, keeps a unified canonical map catalog, and normalizes legacy aliases like `GridMap` and `ORV`.
+- **GUI map UX:** server dashboard and other GUI map surfaces now show display names instead of raw `/levels/.../info.json` paths by default.
+- **Maps/Mods tab cleanup:** Maps tab keeps the scrollable selection list but removes free-text map entry; Mods tab now reflects auto-discovered client mods without a source-path text field; redundant map control removed from Settings.
+- **Discovery/relay polish:** discovery-facing map labels now use display names while preserving canonical internal map paths for protocol/state.
+- Rebuilt `launcher/payload/highbeam.zip` with the latest client fixes.
+- Server and launcher versions bumped to `0.6.78`; protocol remains `v2`.
 
 ### v0.6.77 — 2026-04-02
 - **Critical bug fix:** `_connection` and `_config` local variables were declared after the bridge functions that reference them, causing `attempt to index global '_connection' (a nil value)` on Direct Connect. Moved all local variable declarations (`_connection`, `_config`, `_im`, `_ffi`, `_bufs`) above the bridge code block.
