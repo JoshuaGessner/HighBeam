@@ -40,7 +40,11 @@ M.spawnRemote = function(playerId, vehicleId, configData)
 
   local config = {}
   local decoded
-  if Engine and Engine.JSONDecode then
+  if jsonDecode then
+    local ok, t = pcall(jsonDecode, configData)
+    if ok then decoded = t end
+  end
+  if not decoded and Engine and Engine.JSONDecode then
     local ok, t = pcall(Engine.JSONDecode, configData)
     if ok then decoded = t end
   end

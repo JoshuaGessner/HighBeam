@@ -384,9 +384,13 @@ M._sendPacket = function(packetTable)
     return false
   end
 
-  -- Encode using Engine.JSONEncode (BeamNG native) with require("json") fallback
+  -- Encode: try BeamNG global jsonEncode first, then Engine.JSONEncode, then require("json")
   local jsonStr
-  if Engine and Engine.JSONEncode then
+  if jsonEncode then
+    local ok, s = pcall(jsonEncode, packetTable)
+    if ok and s then jsonStr = s end
+  end
+  if not jsonStr and Engine and Engine.JSONEncode then
     local ok, s = pcall(Engine.JSONEncode, packetTable)
     if ok and s then jsonStr = s end
   end
@@ -430,9 +434,13 @@ end
 
 M._handlePacket = function(jsonStr)
   M._lastServerPacketTime = os.clock()
-  -- Decode using Engine.JSONDecode (BeamNG native) with require("json") fallback
+  -- Decode: try BeamNG global jsonDecode first, then Engine.JSONDecode, then require("json")
   local packet
-  if Engine and Engine.JSONDecode then
+  if jsonDecode then
+    local ok, t = pcall(jsonDecode, jsonStr)
+    if ok then packet = t end
+  end
+  if not packet and Engine and Engine.JSONDecode then
     local ok, t = pcall(Engine.JSONDecode, jsonStr)
     if ok then packet = t end
   end
