@@ -144,7 +144,12 @@ impl ServerGuiApp {
                 .get_community_node()
                 .map(|cn| {
                     let s = cn.status();
-                    (s.enabled, s.listen_port.to_string(), s.region, s.tags.join(", "))
+                    (
+                        s.enabled,
+                        s.listen_port.to_string(),
+                        s.region,
+                        s.tags.join(", "),
+                    )
                 })
                 .unwrap_or_else(|| (false, "18862".to_string(), String::new(), String::new()))
         };
@@ -498,8 +503,8 @@ impl ServerGuiApp {
                 status.server_count,
             ));
             if status.last_gossip_at > 0 {
-                let ago = crate::community_node::now_secs_pub()
-                    .saturating_sub(status.last_gossip_at);
+                let ago =
+                    crate::community_node::now_secs_pub().saturating_sub(status.last_gossip_at);
                 ui.label(format!("| last gossip {}s ago", ago));
             }
         });
@@ -523,13 +528,11 @@ impl ServerGuiApp {
 
                 ui.label("Region");
                 egui::ComboBox::from_id_salt("cn_region")
-                    .selected_text(
-                        if self.community_region_buf.is_empty() {
-                            "(any)"
-                        } else {
-                            &self.community_region_buf
-                        },
-                    )
+                    .selected_text(if self.community_region_buf.is_empty() {
+                        "(any)"
+                    } else {
+                        &self.community_region_buf
+                    })
                     .show_ui(ui, |ui| {
                         for code in &["", "NA", "EU", "AP", "SA", "OC", "AF"] {
                             ui.selectable_value(
@@ -542,8 +545,10 @@ impl ServerGuiApp {
                 ui.end_row();
 
                 ui.label("Tags");
-                ui.add(egui::TextEdit::singleline(&mut self.community_tags_buf)
-                    .hint_text("drift, racing  (comma-separated, max 5)"));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.community_tags_buf)
+                        .hint_text("drift, racing  (comma-separated, max 5)"),
+                );
                 ui.end_row();
             });
 
@@ -552,11 +557,7 @@ impl ServerGuiApp {
             ui.colored_label(egui::Color32::RED, &self.community_apply_error);
         }
         if ui.button("Apply").clicked() {
-            let port: u16 = self
-                .community_port_buf
-                .trim()
-                .parse()
-                .unwrap_or(18862);
+            let port: u16 = self.community_port_buf.trim().parse().unwrap_or(18862);
             let tags: Vec<String> = self
                 .community_tags_buf
                 .split(',')
@@ -616,7 +617,7 @@ impl ServerGuiApp {
                 match crate::validation::validate_community_node_settings(
                     &dummy,
                     "",
-                    &[addr.clone()],
+                    std::slice::from_ref(&addr),
                     18862,
                 ) {
                     Ok(()) => {

@@ -247,9 +247,9 @@ pub fn validate_community_node_settings(
         if host.is_empty() || port_str.is_empty() {
             anyhow::bail!("Seed node '{}' must be in host:port format", seed);
         }
-        let _: u16 = port_str.parse().map_err(|_| {
-            anyhow::anyhow!("Seed node '{}' has an invalid port number", seed)
-        })?;
+        let _: u16 = port_str
+            .parse()
+            .map_err(|_| anyhow::anyhow!("Seed node '{}' has an invalid port number", seed))?;
         if community_node_is_private_host(host) {
             anyhow::bail!(
                 "Seed node '{}' resolves to a private or loopback address",
@@ -320,24 +320,17 @@ mod community_node_validation_tests {
 
     #[test]
     fn test_tag_invalid_chars() {
-        assert!(validate_community_node_settings(
-            &["UPPERCASE".to_string()],
-            "",
-            &[],
-            18862
-        )
-        .is_err());
+        assert!(
+            validate_community_node_settings(&["UPPERCASE".to_string()], "", &[], 18862).is_err()
+        );
     }
 
     #[test]
     fn test_private_seed_rejected() {
-        assert!(validate_community_node_settings(
-            &[],
-            "",
-            &["127.0.0.1:18862".to_string()],
-            18862
-        )
-        .is_err());
+        assert!(
+            validate_community_node_settings(&[], "", &["127.0.0.1:18862".to_string()], 18862)
+                .is_err()
+        );
     }
 
     #[test]

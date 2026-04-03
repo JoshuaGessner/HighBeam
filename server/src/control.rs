@@ -647,7 +647,12 @@ impl ControlPlane {
             }
             other if other.starts_with("add-seed ") => {
                 let addr = other.trim_start_matches("add-seed ").trim().to_string();
-                crate::validation::validate_community_node_settings(&[], "", &[addr.clone()], 18862)?;
+                crate::validation::validate_community_node_settings(
+                    &[],
+                    "",
+                    std::slice::from_ref(&addr),
+                    18862,
+                )?;
                 state.add_seed_node(addr.clone());
                 Ok(format!("Added seed node: {}", addr))
             }

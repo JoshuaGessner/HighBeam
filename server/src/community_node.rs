@@ -297,9 +297,10 @@ fn is_private_host(host: &str) -> bool {
     if lower.starts_with("10.") || lower.starts_with("192.168.") {
         return true;
     }
-    if let Some(b) = lower.strip_prefix("172.").and_then(|rest| {
-        rest.split('.').next().and_then(|n| n.parse::<u8>().ok())
-    }) {
+    if let Some(b) = lower
+        .strip_prefix("172.")
+        .and_then(|rest| rest.split('.').next().and_then(|n| n.parse::<u8>().ok()))
+    {
         if (16..=31).contains(&b) {
             return true;
         }
@@ -319,7 +320,10 @@ fn validate_gossip_server(s: &ServerEntry) -> bool {
     if s.id.len() != 9 || !s.id.starts_with("hb-") {
         return false;
     }
-    if !s.id[3..].chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')) {
+    if !s.id[3..]
+        .chars()
+        .all(|c| matches!(c, '0'..='9' | 'a'..='f'))
+    {
         return false;
     }
     if s.addr.is_empty() || s.node_addr.is_empty() {
@@ -369,8 +373,7 @@ fn extract_content_length(header_str: &str) -> usize {
 async fn read_request(stream: &mut tokio::net::TcpStream, peer_ip: String) -> Option<HttpRequest> {
     use tokio::io::AsyncReadExt;
 
-    let deadline =
-        tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
     let mut buf: Vec<u8> = Vec::with_capacity(2048);
     let mut tmp = [0u8; 4096];
 
@@ -378,12 +381,10 @@ async fn read_request(stream: &mut tokio::net::TcpStream, peer_ip: String) -> Op
         if tokio::time::Instant::now() > deadline {
             return None;
         }
-        let n = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            stream.read(&mut tmp),
-        )
-        .await
-        .ok()?.ok()?;
+        let n = tokio::time::timeout(std::time::Duration::from_secs(5), stream.read(&mut tmp))
+            .await
+            .ok()?
+            .ok()?;
         if n == 0 {
             return None;
         }
@@ -414,12 +415,11 @@ async fn read_request(stream: &mut tokio::net::TcpStream, peer_ip: String) -> Op
                 if tokio::time::Instant::now() > deadline {
                     return None;
                 }
-                let n = tokio::time::timeout(
-                    std::time::Duration::from_secs(3),
-                    stream.read(&mut tmp),
-                )
-                .await
-                .ok()?.ok()?;
+                let n =
+                    tokio::time::timeout(std::time::Duration::from_secs(3), stream.read(&mut tmp))
+                        .await
+                        .ok()?
+                        .ok()?;
                 if n == 0 {
                     break;
                 }
@@ -734,8 +734,7 @@ async fn gossip_task(
         .build()
         .unwrap_or_else(|_| reqwest::Client::new());
 
-    let mut interval =
-        tokio::time::interval(std::time::Duration::from_secs(GOSSIP_INTERVAL_SECS));
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(GOSSIP_INTERVAL_SECS));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
@@ -909,13 +908,13 @@ fn prune_stale(shared: &Arc<RwLock<InnerState>>) {
         return;
     };
     let own_id = inner.server_id.clone();
-    inner.servers.retain(|s| {
-        s.id == own_id || now.saturating_sub(s.last_seen) <= SERVER_TTL_SECS
-    });
+    inner
+        .servers
+        .retain(|s| s.id == own_id || now.saturating_sub(s.last_seen) <= SERVER_TTL_SECS);
     let seeds = inner.seed_nodes.clone();
-    inner.peers.retain(|p| {
-        seeds.contains(&p.addr) || now.saturating_sub(p.last_seen) <= PEER_TTL_SECS
-    });
+    inner
+        .peers
+        .retain(|p| seeds.contains(&p.addr) || now.saturating_sub(p.last_seen) <= PEER_TTL_SECS);
 }
 
 async fn update_self_entry(state: &Arc<CommunityNodeState>, control: &Arc<ControlPlane>) {
