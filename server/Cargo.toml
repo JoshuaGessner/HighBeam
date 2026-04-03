@@ -37,6 +37,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 tray-item = "0.10"
+windows-sys = { version = "0.52", features = ["Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader"] }
 
 # On Linux tray-item 0.10 requires an explicit backend feature — ksni uses D-Bus
 [target.'cfg(target_os = "linux")'.dependencies]

@@ -34,14 +34,16 @@ fn setup_system_tray_bridge() -> TrayBridge {
     let (tx, rx) = mpsc::channel::<TrayCommand>();
 
     // Decode the embedded PNG into raw pixel data for the tray icon.
-    // Both Linux (ksni) and Windows (winit) accept IconSource::Data.
+    // On Linux (ksni), IconSource::Data accepts ARGB pixels directly.
+    // On Windows, IconSource::Data does not exist; load the icon resource
+    // that was embedded by build.rs/winresource.
+    #[cfg(target_os = "linux")]
     let icon = {
         let bytes = include_bytes!("../assets/icon.png");
         let img = image::load_from_memory(bytes)
             .expect("embedded tray icon is valid PNG")
             .to_rgba8();
         let (w, h) = img.dimensions();
-        // tray-item expects ARGB pixel data
         let argb: Vec<u8> = img
             .pixels()
             .flat_map(|p| [p[3], p[0], p[1], p[2]])
@@ -50,6 +52,29 @@ fn setup_system_tray_bridge() -> TrayBridge {
             width: w as i32,
             height: h as i32,
             data: argb,
+        }
+    };
+    #[cfg(target_os = "windows")]
+    let icon = {
+        // Load the icon embedded by winresource (resource ID 1 = MAINICON).
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            LoadImageW, IMAGE_ICON, LR_DEFAULTSIZE, LR_SHARED,
+        };
+        let hicon = unsafe {
+            LoadImageW(
+                windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(std::ptr::null()),
+                1 as *const u16, // resource ID 1
+                IMAGE_ICON,
+                0,
+                0,
+                LR_DEFAULTSIZE | LR_SHARED,
+            )
+        };
+        if hicon != 0 {
+            IconSource::RawIcon(hicon as _)
+        } else {
+            tracing::warn!("Failed to load embedded icon resource; using fallback");
+            IconSource::Resource("application-default-icon")
         }
     };
 
