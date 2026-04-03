@@ -127,6 +127,9 @@ fn main() -> Result<()> {
         config.general.port,
         config.network.tick_rate,
     )?;
+    if let Some(public_addr) = config.general.public_addr.as_deref() {
+        validation::validate_public_address(public_addr)?;
+    }
 
     tracing::info!(
         name = %config.general.name,
@@ -216,7 +219,35 @@ async fn run_server(
 
     // Community Node Discovery Mesh: starts supervisor task; no-op when disabled.
     let community_node = community_node::start(config.clone(), control_plane.clone());
+    let community_status = community_node.status();
     control_plane.set_community_node(community_node);
+
+    let network_profile = match (config.network.enable_mod_sync, community_status.enabled) {
+        (false, false) => "minimal",
+        (true, false) => "mod-sync",
+        (false, true) => "mesh-node",
+        (true, true) => "mesh-node + mod-sync",
+    };
+    let mut exposed_ports = vec![format!("{} TCP+UDP gameplay", config.general.port)];
+    if let Some(mod_sync_port) = config.network.active_mod_sync_port(config.general.port) {
+        exposed_ports.push(format!("{} TCP launcher mod sync", mod_sync_port));
+    }
+    if community_status.enabled {
+        exposed_ports.push(format!(
+            "{} TCP community node discovery",
+            community_status.listen_port
+        ));
+    }
+    tracing::info!(
+        profile = network_profile,
+        ports = %exposed_ports.join(", "),
+        "Network exposure plan"
+    );
+    if community_status.enabled && config.general.public_addr.is_none() {
+        tracing::warn!(
+            "Community node is enabled but PublicAddr is not configured; this server will not advertise itself in the discovery mesh"
+        );
+    }
 
     metrics::spawn_metrics_logger(
         config.logging.metrics_interval_sec,
@@ -337,21 +368,26 @@ async fn run_server(
         let _ = shutdown_tx_clone.send(());
     });
 
-    // Start launcher mod transfer endpoint (separate TCP listener).
-    let mod_sync_port = config.network.resolved_mod_sync_port(config.general.port);
-    let mod_resource_folder = Arc::new(config.general.resource_folder.clone());
-    let mod_manifest_for_task = mod_manifest.clone();
-    tokio::spawn(async move {
-        if let Err(e) = net::mod_transfer::start_listener(
-            mod_sync_port,
-            mod_resource_folder,
-            mod_manifest_for_task,
-        )
-        .await
-        {
-            tracing::error!(error = %e, port = mod_sync_port, "Mod transfer listener error");
-        }
-    });
+    // Start launcher mod transfer endpoint only when explicitly enabled.
+    if let Some(mod_sync_port) = config.network.active_mod_sync_port(config.general.port) {
+        let mod_resource_folder = Arc::new(config.general.resource_folder.clone());
+        let mod_manifest_for_task = mod_manifest.clone();
+        tokio::spawn(async move {
+            if let Err(e) = net::mod_transfer::start_listener(
+                mod_sync_port,
+                mod_resource_folder,
+                mod_manifest_for_task,
+            )
+            .await
+            {
+                tracing::error!(error = %e, port = mod_sync_port, "Mod transfer listener error");
+            }
+        });
+    } else {
+        tracing::info!(
+            "Launcher mod sync listener disabled; only the gameplay port is exposed for gameplay traffic"
+        );
+    }
 
     // Start UDP receiver in background
     let udp_sessions = sessions.clone();

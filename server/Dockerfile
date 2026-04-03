@@ -22,6 +22,9 @@ COPY --from=builder /app/Resources ./Resources
 
 EXPOSE 18860/tcp
 EXPOSE 18860/udp
-EXPOSE 18861/tcp
+
+# Optional ports are not exposed by default:
+# - 18861/tcp for launcher mod sync
+# - 18862/tcp for community browser discovery
 
 CMD ["./highbeam-server", "--headless"]

@@ -667,16 +667,28 @@ impl ControlPlane {
                 Ok(format!("Removed seed node: {}", addr))
             }
             "peers" => {
-                let status = state.status();
-                if status.peer_count == 0 {
+                let peers = state.peer_statuses();
+                if peers.is_empty() {
                     return Ok("No known peers yet.".to_string());
                 }
                 let now = crate::community_node::now_secs_pub();
                 let mut lines = vec!["Known peers:".to_string()];
-                // Note: We don't have direct access to the peer list here, so we can only report count
-                // In a more complete implementation, we'd expose peer details via the status or a separate getter
-                lines.push(format!("  {} peer(s) known", status.peer_count));
-                lines.push("  (Use the Community tab GUI for detailed peer information)".to_string());
+                for peer in peers {
+                    let last_seen = if peer.last_seen == 0 {
+                        "never".to_string()
+                    } else {
+                        format!("{}s ago", now.saturating_sub(peer.last_seen))
+                    };
+                    let retry = if peer.next_retry <= now {
+                        "ready now".to_string()
+                    } else {
+                        format!("retry in {}s", peer.next_retry.saturating_sub(now))
+                    };
+                    lines.push(format!(
+                        "  {} | last_seen={} | failures={} | {}",
+                        peer.addr, last_seen, peer.failures, retry
+                    ));
+                }
                 Ok(lines.join("\n"))
             }
             _ => Ok(

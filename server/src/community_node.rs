@@ -100,6 +100,14 @@ pub struct CommunityNodeStatus {
     pub running: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct CommunityPeerStatus {
+    pub addr: String,
+    pub last_seen: u64,
+    pub failures: u32,
+    pub next_retry: u64,
+}
+
 // ── Internal types ─────────────────────────────────────────────────────────────
 
 /// Public-facing server record for /servers — addr and node_addr deliberately absent.
@@ -275,6 +283,32 @@ fn now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+fn format_host_port(host: &str, port: u16) -> String {
+    let trimmed = host.trim();
+    if trimmed.starts_with('[') && trimmed.ends_with(']') {
+        format!("{}:{}", trimmed, port)
+    } else if trimmed.contains(':') {
+        format!("[{}]:{}", trimmed, port)
+    } else {
+        format!("{}:{}", trimmed, port)
+    }
+}
+
+fn advertised_node_source(config: &ServerConfig, listen_port: u16) -> String {
+    config
+        .general
+        .public_addr
+        .as_deref()
+        .filter(|addr| crate::validation::validate_public_address(addr).is_ok())
+        .map(|addr| format_host_port(addr, listen_port))
+        .unwrap_or_else(|| format!("0.0.0.0:{}", listen_port))
+}
+
+fn remove_self_entry(inner: &mut InnerState) {
+    let own_id = inner.server_id.clone();
+    inner.servers.retain(|entry| entry.id != own_id);
 }
 
 fn generate_server_id() -> String {
@@ -597,7 +631,7 @@ fn handle_post_gossip(state: &CommunityNodeState, ip: &str, body_bytes: &[u8]) -
 
     // Reply with our current state
     let reply = GossipMessage {
-        from: format!("0.0.0.0:{}", inner.listen_port),
+        from: advertised_node_source(&state.config, inner.listen_port),
         peers: inner
             .peers
             .iter()
@@ -758,7 +792,7 @@ async fn run_gossip_round(
     let (targets, payload) = {
         let inner = state.inner.read().unwrap();
         let targets = pick_gossip_targets(&inner);
-        let payload = build_gossip_payload(&inner);
+        let payload = build_gossip_payload(&inner, &state.config);
         (targets, payload)
     };
 
@@ -851,9 +885,9 @@ fn pick_gossip_targets(inner: &InnerState) -> Vec<String> {
     targets
 }
 
-fn build_gossip_payload(inner: &InnerState) -> GossipMessage {
+fn build_gossip_payload(inner: &InnerState, config: &ServerConfig) -> GossipMessage {
     GossipMessage {
-        from: format!("0.0.0.0:{}", inner.listen_port),
+        from: advertised_node_source(config, inner.listen_port),
         peers: inner
             .peers
             .iter()
@@ -933,6 +967,7 @@ async fn update_self_entry(state: &Arc<CommunityNodeState>, control: &Arc<Contro
     let public_addr = match &state.config.general.public_addr {
         Some(addr) => {
             if let Err(e) = crate::validation::validate_public_address(addr) {
+                remove_self_entry(&mut inner);
                 tracing::warn!(
                     error = %e,
                     "PublicAddr is invalid; self-entry will not be advertised in mesh"
@@ -943,6 +978,7 @@ async fn update_self_entry(state: &Arc<CommunityNodeState>, control: &Arc<Contro
         }
         None => {
             // Only log if node is currently enabled; if it just got disabled, this is expected
+            remove_self_entry(&mut inner);
             if inner.enabled {
                 tracing::debug!(
                     "PublicAddr not configured; community node enabled but self not advertised"
@@ -961,8 +997,8 @@ async fn update_self_entry(state: &Arc<CommunityNodeState>, control: &Arc<Contro
         .collect();
 
     let game_port = state.config.general.port;
-    let game_addr = format!("{}:{}", public_addr, game_port);
-    let node_addr = format!("{}:{}", public_addr, inner.listen_port);
+    let game_addr = format_host_port(&public_addr, game_port);
+    let node_addr = format_host_port(&public_addr, inner.listen_port);
     let auth_mode = state.config.auth.mode.clone();
     let now = now_secs();
 
@@ -1101,6 +1137,22 @@ impl CommunityNodeState {
             last_gossip_at: inner.last_gossip_at,
             running: inner.running,
         }
+    }
+
+    pub fn peer_statuses(&self) -> Vec<CommunityPeerStatus> {
+        let inner = self.inner.read().unwrap();
+        let mut peers: Vec<CommunityPeerStatus> = inner
+            .peers
+            .iter()
+            .map(|peer| CommunityPeerStatus {
+                addr: peer.addr.clone(),
+                last_seen: peer.last_seen,
+                failures: peer.failures,
+                next_retry: peer.next_retry,
+            })
+            .collect();
+        peers.sort_by(|a, b| a.addr.cmp(&b.addr));
+        peers
     }
 
     /// Apply new settings from the GUI or console.  Persists immediately; the
