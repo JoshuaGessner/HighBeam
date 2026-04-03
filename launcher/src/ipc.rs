@@ -216,62 +216,95 @@ fn handle_join_request(
         }
     };
 
-    // ----- Mod sync -----
-    let sync_result = mod_sync::sync_mods(
-        &server,
-        cfg.mod_sync_addr.as_deref(),
-        cfg.connect_timeout_sec,
-        cache_dir,
-        &mut cache_index,
-    );
-
-    let report = match sync_result {
-        Ok(r) => r,
+    // ----- Query server for mod sync capability -----
+    let should_sync = match crate::discovery::query_server(&server, cfg.query_timeout_ms) {
+        Ok(server_info) => {
+            if let Some(mod_sync_port) = server_info.mod_sync_port {
+                let (host, _) = server
+                    .rsplit_once(':')
+                    .unwrap_or((&server, "18860"));
+                Some(format!("{host}:{mod_sync_port}"))
+            } else {
+                tracing::info!(server = %server, "Server has mod sync disabled; skipping mod download");
+                if let Err(e) = installer::cleanup_staged_server_mods(cfg.beamng_userfolder.as_deref()) {
+                    tracing::warn!(error = %e, "Failed to clean up staged mods");
+                }
+                None
+            }
+        }
         Err(e) => {
-            tracing::warn!(error = %e, server = %server, "IPC-triggered mod sync failed");
-            return send_response(
-                stream,
-                serde_json::json!({
-                    "type":   "sync_failed",
-                    "server": &server,
-                    "error":  e.to_string(),
-                }),
-            );
+            tracing::warn!(error = %e, server = %server, "Server discovery failed; falling back to default mod sync port");
+            let (host, _) = server
+                .rsplit_once(':')
+                .unwrap_or((&server, "18860"));
+            Some(format!("{host}:18861"))
         }
     };
 
-    tracing::info!(
-        server            = %server,
-        downloaded        = report.downloaded_mods,
-        total_server_mods = report.total_server_mods,
-        "IPC mod sync completed"
-    );
+    if let Some(mod_sync_endpoint) = should_sync {
+        // ----- Mod sync -----
+        let sync_result = mod_sync::sync_mods(
+            &mod_sync_endpoint,
+            cfg.connect_timeout_sec,
+            cache_dir,
+            &mut cache_index,
+        );
 
-    // ----- Stage mods into BeamNG mods dir -----
-    match installer::install_all(
-        cfg.beamng_userfolder.as_deref(),
-        cache_dir,
-        &cache_index,
-        &report.server_mods,
-    ) {
-        Ok(_) => {
-            let _ = mod_cache::save_index(cache_dir, &cache_index);
-            send_response(
-                stream,
-                serde_json::json!({ "type": "sync_complete", "server": &server }),
-            )
+        let report = match sync_result {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(error = %e, server = %server, "IPC-triggered mod sync failed");
+                return send_response(
+                    stream,
+                    serde_json::json!({
+                        "type":   "sync_failed",
+                        "server": &server,
+                        "error":  e.to_string(),
+                    }),
+                );
+            }
+        };
+
+        tracing::info!(
+            server            = %server,
+            downloaded        = report.downloaded_mods,
+            total_server_mods = report.total_server_mods,
+            "IPC mod sync completed"
+        );
+
+        // ----- Stage mods into BeamNG mods dir -----
+        match installer::install_all(
+            cfg.beamng_userfolder.as_deref(),
+            cache_dir,
+            &cache_index,
+            &report.server_mods,
+        ) {
+            Ok(_) => {
+                let _ = mod_cache::save_index(cache_dir, &cache_index);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "IPC mod install failed");
+                return send_response(
+                    stream,
+                    serde_json::json!({
+                        "type":   "sync_failed",
+                        "server": &server,
+                        "error":  format!("Install failed: {e}"),
+                    }),
+                );
+            }
         }
-        Err(e) => {
-            tracing::warn!(error = %e, "IPC mod install failed");
-            send_response(
-                stream,
-                serde_json::json!({
-                    "type":   "sync_failed",
-                    "server": &server,
-                    "error":  format!("Install failed: {e}"),
-                }),
-            )
-        }
+
+        send_response(
+            stream,
+            serde_json::json!({ "type": "sync_complete", "server": &server }),
+        )
+    } else {
+        // Mod sync was skipped (server has it disabled); still report success to client
+        send_response(
+            stream,
+            serde_json::json!({ "type": "sync_complete", "server": &server }),
+        )
     }
 }
 

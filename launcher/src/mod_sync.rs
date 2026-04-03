@@ -45,18 +45,13 @@ enum ModPacket {
 }
 
 pub fn sync_mods(
-    server_addr: &str,
-    mod_sync_addr: Option<&str>,
+    mod_sync_addr: &str,
     connect_timeout_sec: u64,
     cache_dir: &Path,
     index: &mut CacheIndex,
 ) -> Result<SyncReport> {
-    let endpoint = mod_sync_addr
-        .map(ToString::to_string)
-        .unwrap_or_else(|| resolve_mod_sync_endpoint(server_addr));
-
-    let mut stream = TcpStream::connect(&endpoint)
-        .with_context(|| format!("Failed to connect to mod sync endpoint: {endpoint}"))?;
+    let mut stream = TcpStream::connect(mod_sync_addr)
+        .with_context(|| format!("Failed to connect to mod sync endpoint: {mod_sync_addr}"))?;
     stream.set_read_timeout(Some(Duration::from_secs(connect_timeout_sec)))?;
     stream.set_write_timeout(Some(Duration::from_secs(connect_timeout_sec)))?;
 
@@ -106,7 +101,7 @@ pub fn sync_mods(
                 hash: expected.hash.clone(),
                 file_name: name,
                 size,
-                last_server: Some(server_addr.to_string()),
+                last_server: Some(mod_sync_addr.to_string()),
                 downloaded_at: Some(
                     std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -135,15 +130,6 @@ pub fn sync_mods(
         downloaded_mods: downloaded,
         server_mods: synced_mods,
     })
-}
-
-fn resolve_mod_sync_endpoint(server_addr: &str) -> String {
-    if let Some((host, port_str)) = server_addr.rsplit_once(':') {
-        if let Ok(port) = port_str.parse::<u16>() {
-            return format!("{host}:{}", port.saturating_add(1));
-        }
-    }
-    server_addr.to_string()
 }
 
 fn read_packet(stream: &mut TcpStream) -> Result<ModPacket> {

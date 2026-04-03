@@ -62,6 +62,7 @@ pub struct ControlPlane {
     current_map: RwLock<String>,
     started_at: Instant,
     community_node: RwLock<Option<Arc<crate::community_node::CommunityNodeState>>>,
+    mod_sync_state: RwLock<Option<Arc<crate::mod_sync_state::ModSyncState>>>,
 }
 
 fn canonical_map_path(input: &str, fallback: &str) -> String {
@@ -246,6 +247,7 @@ impl ControlPlane {
             current_map: RwLock::new(initial_map),
             started_at: Instant::now(),
             community_node: RwLock::new(None),
+            mod_sync_state: RwLock::new(None),
         }
     }
 
@@ -262,6 +264,27 @@ impl ControlPlane {
             .read()
             .ok()
             .and_then(|g| g.as_ref().map(Arc::clone))
+    }
+
+    /// Wire in the mod sync state after it has been created.
+    pub fn set_mod_sync_state(&self, state: Arc<crate::mod_sync_state::ModSyncState>) {
+        if let Ok(mut guard) = self.mod_sync_state.write() {
+            *guard = Some(state);
+        }
+    }
+
+    /// Borrow the mod sync state, if available.
+    pub fn get_mod_sync_state(&self) -> Option<Arc<crate::mod_sync_state::ModSyncState>> {
+        self.mod_sync_state
+            .read()
+            .ok()
+            .and_then(|g| g.as_ref().map(Arc::clone))
+    }
+
+    /// Get the active mod sync port if enabled and mods exist, or None otherwise.
+    pub fn active_mod_sync_port(&self) -> Option<u16> {
+        self.get_mod_sync_state()
+            .and_then(|state| state.active_port_if_ready())
     }
 
     /// Borrow the server configuration.

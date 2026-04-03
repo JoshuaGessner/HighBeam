@@ -14,6 +14,8 @@ pub struct ServerQueryResponse {
     pub max_players: u32,
     pub port: u16,
     pub protocol_version: u32,
+    #[serde(default)]
+    pub mod_sync_port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

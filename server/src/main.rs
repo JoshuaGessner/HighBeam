@@ -20,6 +20,7 @@ mod gui;
 mod log_rotation;
 mod metrics;
 mod mods;
+mod mod_sync_state;
 mod net;
 mod persistence;
 mod plugin;
@@ -222,14 +223,14 @@ async fn run_server(
     let community_status = community_node.status();
     control_plane.set_community_node(community_node);
 
-    let network_profile = match (config.network.enable_mod_sync, community_status.enabled) {
+    let network_profile = match (config.network.enable_mod_sync && control_plane.active_mod_sync_port().is_some(), community_status.enabled) {
         (false, false) => "minimal",
         (true, false) => "mod-sync",
         (false, true) => "mesh-node",
         (true, true) => "mesh-node + mod-sync",
     };
     let mut exposed_ports = vec![format!("{} TCP+UDP gameplay", config.general.port)];
-    if let Some(mod_sync_port) = config.network.active_mod_sync_port(config.general.port) {
+    if let Some(mod_sync_port) = control_plane.active_mod_sync_port() {
         exposed_ports.push(format!("{} TCP launcher mod sync", mod_sync_port));
     }
     if community_status.enabled {
@@ -302,12 +303,22 @@ async fn run_server(
     }
 
     // Build mod manifest once at startup (Phase 3 groundwork for launcher sync).
-    let mod_manifest = Arc::new(mods::build_manifest(&config.general.resource_folder)?);
+    let mod_manifest = mods::build_manifest(&config.general.resource_folder)?;
+    let manifest_count = mod_manifest.len();
     tracing::info!(
-        mod_count = mod_manifest.len(),
+        mod_count = manifest_count,
         resource_folder = %config.general.resource_folder,
         "Mod manifest loaded"
     );
+
+    // Create ModSyncState for live toggle and manifest refresh without server restart.
+    let mod_sync_port = config.network.mod_sync_port.unwrap_or(config.general.port + 1);
+    let mod_sync_state = Arc::new(mod_sync_state::ModSyncState::new(
+        mod_sync_port,
+        mod_manifest,
+        config.network.enable_mod_sync,
+    ));
+    control_plane.set_mod_sync_state(mod_sync_state.clone());
 
     // Periodic autosave for persistent server state.
     let autosave_control = control_plane.clone();
@@ -368,15 +379,15 @@ async fn run_server(
         let _ = shutdown_tx_clone.send(());
     });
 
-    // Start launcher mod transfer endpoint only when explicitly enabled.
-    if let Some(mod_sync_port) = config.network.active_mod_sync_port(config.general.port) {
+    // Start launcher mod transfer endpoint (always, but it serves empty manifest when disabled).
+    if config.network.enable_mod_sync {
         let mod_resource_folder = Arc::new(config.general.resource_folder.clone());
-        let mod_manifest_for_task = mod_manifest.clone();
+        let mod_sync_state_for_task = mod_sync_state.clone();
         tokio::spawn(async move {
             if let Err(e) = net::mod_transfer::start_listener(
                 mod_sync_port,
                 mod_resource_folder,
-                mod_manifest_for_task,
+                mod_sync_state_for_task,
             )
             .await
             {
@@ -385,7 +396,7 @@ async fn run_server(
         });
     } else {
         tracing::info!(
-            "Launcher mod sync listener disabled; only the gameplay port is exposed for gameplay traffic"
+            "Launcher mod sync listener disabled in config"
         );
     }
 

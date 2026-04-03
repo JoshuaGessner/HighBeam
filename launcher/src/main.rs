@@ -438,38 +438,69 @@ fn main() -> Result<()> {
     let mut joined_server = false;
     if let Some(server_addr) = join_server.as_deref() {
         joined_server = true;
-        tracing::info!(server = %server_addr, "Join requested; starting server-scoped mod sync");
+        tracing::info!(server = %server_addr, "Join requested; querying server for mod sync capability");
 
         let mut cache_index = mod_cache::load_index(&cache_dir)?;
-        let report = mod_sync::sync_mods(
-            server_addr,
-            cfg.mod_sync_addr.as_deref(),
-            cfg.connect_timeout_sec,
-            &cache_dir,
-            &mut cache_index,
-        )?;
-        tracing::info!(
-            server = %server_addr,
-            total_server_mods = report.total_server_mods,
-            missing_mods = report.missing_mods,
-            downloaded_mods = report.downloaded_mods,
-            "Mod sync completed"
-        );
 
-        let install_report = installer::install_all(
-            cfg.beamng_userfolder.as_deref(),
-            &cache_dir,
-            &cache_index,
-            &report.server_mods,
-        )?;
-        tracing::info!(
-            server = %server_addr,
-            installed_server_mods = install_report.installed_server_mods,
-            mods_dir = %install_report.mods_dir.display(),
-            "Server mod installation completed"
-        );
+        // Query server to get mod_sync_port capability
+        let should_sync = match discovery::query_server(server_addr, cfg.query_timeout_ms) {
+            Ok(server_info) => {
+                if let Some(mod_sync_port) = server_info.mod_sync_port {
+                    // Server has mod sync enabled; construct the endpoint
+                    let (host, _) = server_addr
+                        .rsplit_once(':')
+                        .unwrap_or((server_addr, "18860"));
+                    Some(format!("{host}:{mod_sync_port}"))
+                } else {
+                    // Server has mod sync disabled; skip sync
+                    tracing::info!(server = %server_addr, "Server has mod sync disabled; skipping mod download");
+                    // Clean up any previously staged mods
+                    if let Err(e) = installer::cleanup_staged_server_mods(cfg.beamng_userfolder.as_deref()) {
+                        tracing::warn!(error = %e, "Failed to clean up staged mods");
+                    }
+                    None
+                }
+            }
+            Err(e) => {
+                // Discovery failed; fall back to default port+1 (backward compat with old servers)
+                tracing::warn!(error = %e, server = %server_addr, "Server discovery failed; falling back to default mod sync port");
+                let (host, _) = server_addr
+                    .rsplit_once(':')
+                    .unwrap_or((server_addr, "18860"));
+                Some(format!("{host}:18861"))
+            }
+        };
 
-        mod_cache::save_index(&cache_dir, &cache_index)?;
+        if let Some(mod_sync_endpoint) = should_sync {
+            let report = mod_sync::sync_mods(
+                &mod_sync_endpoint,
+                cfg.connect_timeout_sec,
+                &cache_dir,
+                &mut cache_index,
+            )?;
+            tracing::info!(
+                server = %server_addr,
+                total_server_mods = report.total_server_mods,
+                missing_mods = report.missing_mods,
+                downloaded_mods = report.downloaded_mods,
+                "Mod sync completed"
+            );
+
+            let install_report = installer::install_all(
+                cfg.beamng_userfolder.as_deref(),
+                &cache_dir,
+                &cache_index,
+                &report.server_mods,
+            )?;
+            tracing::info!(
+                server = %server_addr,
+                installed_server_mods = install_report.installed_server_mods,
+                mods_dir = %install_report.mods_dir.display(),
+                "Server mod installation completed"
+            );
+
+            mod_cache::save_index(&cache_dir, &cache_index)?;
+        }
     } else {
         tracing::info!("No explicit join requested; skipping server mod sync startup path");
     }

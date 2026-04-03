@@ -7,14 +7,15 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::metrics;
-use crate::net::packet::{self, ModDescriptor, TcpPacket, MAX_PACKET_SIZE};
+use crate::mod_sync_state::ModSyncState;
+use crate::net::packet::{self, TcpPacket, MAX_PACKET_SIZE};
 
 const MAX_MOD_REQUEST_NAMES: usize = 256;
 
 pub async fn start_listener(
     port: u16,
     resource_folder: Arc<String>,
-    manifest: Arc<Vec<ModDescriptor>>,
+    mod_sync_state: Arc<ModSyncState>,
 ) -> Result<()> {
     let addr = format!("0.0.0.0:{port}");
     let listener = TcpListener::bind(&addr)
@@ -26,9 +27,9 @@ pub async fn start_listener(
     loop {
         let (stream, addr) = listener.accept().await?;
         let resource_folder = resource_folder.clone();
-        let manifest = manifest.clone();
+        let mod_sync_state = mod_sync_state.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, resource_folder, manifest).await {
+            if let Err(e) = handle_connection(stream, resource_folder, mod_sync_state).await {
                 tracing::warn!(%addr, error = %e, "Mod transfer connection error");
             }
         });
@@ -38,10 +39,13 @@ pub async fn start_listener(
 async fn handle_connection(
     mut stream: TcpStream,
     resource_folder: Arc<String>,
-    manifest: Arc<Vec<ModDescriptor>>,
+    mod_sync_state: Arc<ModSyncState>,
 ) -> Result<()> {
+    // Get manifest if mod sync is enabled; otherwise send empty list
+    let mods = mod_sync_state.manifest_if_enabled().unwrap_or_default();
+    
     let mod_list = TcpPacket::ModList {
-        mods: manifest.as_ref().clone(),
+        mods: mods.clone(),
     };
     write_packet(&mut stream, &mod_list).await?;
 
@@ -70,7 +74,7 @@ async fn handle_connection(
             continue;
         }
 
-        let Some(mod_info) = manifest.iter().find(|m| m.name == name) else {
+        let Some(mod_info) = mods.iter().find(|m| m.name == name) else {
             tracing::warn!(%name, "Requested mod not found in manifest");
             continue;
         };
