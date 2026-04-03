@@ -85,18 +85,28 @@ extensions.highbeam.openBrowser()
 3. Run `highbeam-server` (or `highbeam-server.exe` on Windows).
    - Add `--headless` for Docker/systemd deployments.
 
-The server opens a GUI window by default. **Closing the window hides it to the system tray** — the server keeps running. Right-click the tray icon and choose **Quit** to stop the server fully. On Windows, the release build suppresses the CLI console window entirely. Port **18860** (TCP + UDP) must be open in your firewall.
+The server opens a GUI window by default. **Closing the window hides it to the system tray** — the server keeps running. Right-click the tray icon and choose **Quit** to stop the server fully. On Windows, the release build suppresses the CLI console window entirely.
+
+**Firewall ports:**
+- **Required:** Port **18860** (TCP + UDP) for gameplay
+- **Optional:** Port **18861** (TCP) if using remote launcher mod sync
+- **Optional:** Port **18862** (TCP) if joining the community mesh discovery network
 
 #### Key config options
 
 ```toml
-[Server]
+[General]
 Name        = "My HighBeam Server"
 Port        = 18860
+# PublicAddr = "your.ip.or.domain"  # Set only if joining community mesh
 MaxPlayers  = 16
-AuthMode    = "open"      # open | password | allowlist
+
+[Auth]
+Mode        = "open"      # open | password | allowlist
 Password    = ""
-Map         = "/levels/gridmap_v2/info.json"
+
+[Network]
+# ModSyncPort = 18861   # Optional; defaults to Port+1 if not set
 ```
 
 For Linux servers, a `highbeam-server.service` systemd unit and a `docker-compose.yml` are included in the release archive.

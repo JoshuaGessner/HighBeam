@@ -264,6 +264,11 @@ impl ControlPlane {
             .and_then(|g| g.as_ref().map(Arc::clone))
     }
 
+    /// Borrow the server configuration.
+    pub fn get_server_config(&self) -> Arc<ServerConfig> {
+        self.config.clone()
+    }
+
     pub fn snapshot(&self) -> ServerSnapshot {
         let map_path = self
             .current_map
@@ -661,8 +666,21 @@ impl ControlPlane {
                 state.remove_seed_node(addr);
                 Ok(format!("Removed seed node: {}", addr))
             }
+            "peers" => {
+                let status = state.status();
+                if status.peer_count == 0 {
+                    return Ok("No known peers yet.".to_string());
+                }
+                let now = crate::community_node::now_secs_pub();
+                let mut lines = vec!["Known peers:".to_string()];
+                // Note: We don't have direct access to the peer list here, so we can only report count
+                // In a more complete implementation, we'd expose peer details via the status or a separate getter
+                lines.push(format!("  {} peer(s) known", status.peer_count));
+                lines.push("  (Use the Community tab GUI for detailed peer information)".to_string());
+                Ok(lines.join("\n"))
+            }
             _ => Ok(
-                "community subcommands: enable | disable | status | port <n> | region <code> | tags <a,b> | add-seed <addr> | remove-seed <addr>"
+                "community subcommands: enable | disable | status | port <n> | region <code> | tags <a,b> | add-seed <addr> | remove-seed <addr> | peers"
                     .to_string(),
             ),
         }

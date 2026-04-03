@@ -875,17 +875,28 @@ local _pwPopup = { open = false, serverId = nil, nodeAddr = nil, name = nil }
 local function _tabBrowse()
   _im.Spacing()
 
+  -- Introduction
+  _im.TextDisabled("Community Nodes — add HighBeam server addresses to bootstrap discovery")
+  _im.Spacing()
+  
   -- Node management bar
   _im.Text("Community Nodes (" .. tostring(#M._communityNodes) .. " configured)")
   _im.Spacing()
   _im.SetNextItemWidth(300)
   _im.InputText("##hb_node", _bufs.nodeInput, 256)
   _im.SameLine()
+  _im.TextDisabled("(e.g. community.example.com:18862)")
+  _im.SameLine()
   if _im.Button("Add Node##hb_addnode") then
     local addr = _ffi.string(_bufs.nodeInput):match("^%s*(.-)%s*$")
+    local wasEmpty = #M._communityNodes == 0
     local ok, err = M.addCommunityNode(addr)
     if ok then
       _bufs.nodeInput = _im.ArrayChar(256, "")
+      -- Auto-fetch if this was the first node
+      if wasEmpty then
+        M.fetchCommunityServers()
+      end
     else
       M._fetchError  = err or "Invalid address"
       M._fetchStatus = "error"
@@ -1015,7 +1026,7 @@ local function _tabFavorites()
       _im.TableSetColumnIndex(0)
       _im.Text(f.name or (f.serverId or ((f.host or "?") .. ":" .. tostring(f.port or "?"))))
       _im.TableSetColumnIndex(1)
-      if f.serverId then _im.TextDisabled("mesh") else _im.TextDisabled("direct") end
+      if f.serverId then _im.TextDisabled("network") else _im.TextDisabled("direct") end
       _im.TableSetColumnIndex(2)
       local rid = "fav_" .. tostring(i)
       if _im.SmallButton("Connect##fc" .. rid) then
@@ -1062,7 +1073,7 @@ local function _tabRecent()
       _im.TableSetColumnIndex(0)
       _im.Text(r.name or (r.serverId or ((r.host or "?") .. ":" .. tostring(r.port or "?"))))
       _im.TableSetColumnIndex(1)
-      if r.serverId then _im.TextDisabled("mesh") else _im.TextDisabled("direct") end
+      if r.serverId then _im.TextDisabled("network") else _im.TextDisabled("direct") end
       _im.TableSetColumnIndex(2)
       _im.TextDisabled(os.date("%Y-%m-%d %H:%M", r.connectedAt or 0))
       _im.TableSetColumnIndex(3)
@@ -1132,7 +1143,7 @@ M.renderUI = function()
       _im.EndTabBar()
     end
     _im.Separator(); _im.Spacing()
-    _im.TextDisabled("HighBeam Multiplayer Mod  |  close: extensions.highbeam.closeBrowser()")
+    _im.TextDisabled("HighBeam Multiplayer Mod")
     _im.SameLine()
     if _im.SmallButton("Close##hb_close") then M._visible = false end
   end

@@ -287,6 +287,48 @@ fn community_node_is_private_host(host: &str) -> bool {
     false
 }
 
+/// Validate a public address for use in community node mesh advertisement.
+/// 
+/// The address must:
+/// - Not be empty
+/// - Not be 0.0.0.0, 127.x.x.x, 192.168.x.x, 10.x.x.x, or 172.16–31.x.x (private/loopback)
+/// - Be at most 253 characters (DNS limit)
+/// 
+/// Can be an IPv4, IPv6, or hostname.
+pub fn validate_public_address(addr: &str) -> anyhow::Result<()> {
+    let trimmed = addr.trim();
+    
+    if trimmed.is_empty() {
+        return Err(anyhow!("Public address cannot be empty"));
+    }
+    
+    if trimmed.len() > 253 {
+        return Err(anyhow!("Public address is too long (max 253 characters)"));
+    }
+    
+    // Extract hostname part (strip :port if present)
+    let host = if let Some(idx) = trimmed.rfind(':') {
+        let potential_port = &trimmed[idx + 1..];
+        // If the part after : is numeric, treat it as port; otherwise it might be IPv6
+        if potential_port.parse::<u16>().is_ok() {
+            &trimmed[..idx]
+        } else {
+            trimmed
+        }
+    } else {
+        trimmed
+    };
+    
+    if community_node_is_private_host(host) {
+        return Err(anyhow!(
+            "Public address '{}' resolves to a private or loopback address. Use your actual public IP or domain.",
+            host
+        ));
+    }
+    
+    Ok(())
+}
+
 #[cfg(test)]
 mod community_node_validation_tests {
     use super::*;

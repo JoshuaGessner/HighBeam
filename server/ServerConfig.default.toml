@@ -1,6 +1,7 @@
 [General]
 Name = "My HighBeam Server"
 Port = 18860
+# PublicAddr = "your.public.ip.or.domain"  # Required only for community mesh participation; leave commented to disable public advertisement
 MaxPlayers = 20
 MaxCarsPerPlayer = 3
 Map = "/levels/gridmap_v2/info.json"

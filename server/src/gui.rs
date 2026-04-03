@@ -492,6 +492,10 @@ impl ServerGuiApp {
 
         let status = cn.status();
 
+        // ── Introduction ─────────────────────────────────────────────────────
+        ui.label("Community Node Discovery allows your server to be found by players without them knowing your IP. Enable to join the mesh, then add at least one seed node (another community server). Your server will gossip with peers every 30 seconds to keep discovery up-to-date.");
+        ui.separator();
+
         // ── Status row ──────────────────────────────────────────────────────
         ui.horizontal(|ui| {
             let dot = if status.running { "🟢" } else { "⚫" };
@@ -510,7 +514,21 @@ impl ServerGuiApp {
         });
         if !status.server_id.is_empty() {
             ui.label(format!("Server ID: {}", status.server_id));
+        } else if self.community_enabled {
+            ui.colored_label(egui::Color32::YELLOW, "⚠ Server ID not yet generated — enable and apply to generate");
         }
+        
+        // ── PublicAddr warning ───────────────────────────────────────────────
+        if self.community_enabled {
+            let cfg = self.control.get_server_config();
+            if cfg.general.public_addr.is_none() {
+                ui.colored_label(
+                    egui::Color32::YELLOW,
+                    "⚠ PublicAddr not configured — server will not be listed in the mesh. Set your public IP or domain in ServerConfig.toml and restart."
+                );
+            }
+        }
+        
         ui.separator();
 
         // ── Settings form ────────────────────────────────────────────────────
@@ -542,6 +560,7 @@ impl ServerGuiApp {
                             );
                         }
                     });
+                ui.label("").on_hover_text("Filter visibility to a specific region. Empty = visible to all players worldwide.");
                 ui.end_row();
 
                 ui.label("Tags");
@@ -553,6 +572,11 @@ impl ServerGuiApp {
             });
 
         ui.add_space(4.0);
+        
+        // Port forwarding note
+        ui.colored_label(egui::Color32::GRAY, "Note: This HTTP port requires a separate port-forward on your router. Keep it different from your gameplay port (18860).");
+        ui.add_space(8.0);
+        
         if !self.community_apply_error.is_empty() {
             ui.colored_label(egui::Color32::RED, &self.community_apply_error);
         }
@@ -591,6 +615,10 @@ impl ServerGuiApp {
         // ── Seed node management ─────────────────────────────────────────────
         ui.separator();
         ui.label("Seed Nodes");
+        ui.colored_label(
+            egui::Color32::LIGHT_GRAY,
+            "Seed nodes are other HighBeam server operators who run Community Node. Contact the HighBeam Discord or GitHub for a list of public seed nodes to bootstrap your mesh connection."
+        );
         egui::ScrollArea::vertical()
             .max_height(120.0)
             .id_salt("cn_seeds_scroll")

@@ -929,6 +929,29 @@ async fn update_self_entry(state: &Arc<CommunityNodeState>, control: &Arc<Contro
         return; // Not yet initialised; supervisor generates the ID before starting tasks
     }
 
+    // If PublicAddr is not set, do not advertise self into the mesh
+    let public_addr = match &state.config.general.public_addr {
+        Some(addr) => {
+            if let Err(e) = crate::validation::validate_public_address(addr) {
+                tracing::warn!(
+                    error = %e,
+                    "PublicAddr is invalid; self-entry will not be advertised in mesh"
+                );
+                return;
+            }
+            addr.clone()
+        }
+        None => {
+            // Only log if node is currently enabled; if it just got disabled, this is expected
+            if inner.enabled {
+                tracing::debug!(
+                    "PublicAddr not configured; community node enabled but self not advertised"
+                );
+            }
+            return;
+        }
+    };
+
     let node_mods: Vec<NodeModInfo> = mods
         .iter()
         .map(|m| NodeModInfo {
@@ -938,8 +961,8 @@ async fn update_self_entry(state: &Arc<CommunityNodeState>, control: &Arc<Contro
         .collect();
 
     let game_port = state.config.general.port;
-    let game_addr = format!("0.0.0.0:{}", game_port);
-    let node_addr = format!("0.0.0.0:{}", inner.listen_port);
+    let game_addr = format!("{}:{}", public_addr, game_port);
+    let node_addr = format!("{}:{}", public_addr, inner.listen_port);
     let auth_mode = state.config.auth.mode.clone();
     let now = now_secs();
 

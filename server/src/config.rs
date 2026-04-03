@@ -26,6 +26,8 @@ pub struct GeneralConfig {
     pub name: String,
     #[serde(rename = "Port", default = "default_port")]
     pub port: u16,
+    #[serde(rename = "PublicAddr", default)]
+    pub public_addr: Option<String>,
     #[serde(rename = "MaxPlayers", default = "default_max_players")]
     pub max_players: u32,
     #[serde(rename = "MaxCarsPerPlayer", default = "default_max_cars")]
@@ -237,6 +239,7 @@ impl Default for ServerConfig {
             general: GeneralConfig {
                 name: "HighBeam Server".into(),
                 port: 18860,
+                public_addr: None,
                 max_players: 20,
                 max_cars_per_player: 3,
                 map: "/levels/gridmap_v2/info.json".into(),
