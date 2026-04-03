@@ -1,7 +1,7 @@
 # HighBeam Server Architecture
 
-> **Last updated:** 2026-03-31
-> **Applies to:** v0.6.5 (beta)
+> **Last updated:** 2026-04-03
+> **Applies to:** v0.8.0-dev.4
 > **Parent doc:** [OVERVIEW.md](OVERVIEW.md)
 
 ---
@@ -33,6 +33,7 @@ server/
 ├── src/
 │   ├── main.rs                 # Entry point, config loading, runtime/GUI orchestration
 │   ├── cli.rs                  # CLI argument parsing (--headless, --config, --protocol-benchmark)
+│   ├── community_node.rs       # Community node discovery mesh (P2P gossip, HTTP API)
 │   ├── config.rs               # TOML config parsing and runtime-editable settings
 │   ├── control.rs              # ControlPlane: admin command API and runtime snapshot
 │   ├── discovery_relay.rs      # Optional community relay registration heartbeat (see RELAY.md)

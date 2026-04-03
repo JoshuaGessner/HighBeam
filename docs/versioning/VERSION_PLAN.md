@@ -2,8 +2,8 @@
 
 > **Last updated:** 2026-04-03
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.0-dev.3 (protocol v2)
-> **Status:** v0.8.0-dev.3 — Community Node Discovery Mesh
+> **Current version:** v0.8.0-dev.4 (protocol v2)
+> **Status:** v0.8.0-dev.4 — Community Node Discovery Mesh + Connection Flow Cleanup
 
 ---
 
@@ -595,7 +595,7 @@ As of 2026-03-30, historical hardening notes were merged into this plan.
 
 ### v0.8.0 — Community Node Discovery Mesh (Beta)
 
-**Status:** In progress (v0.8.0-dev.3)
+**Status:** In progress (v0.8.0-dev.4)
 **Goal:** Decentralized, P2P server discovery mesh built into every HighBeam server. Server operators opt in via the GUI to make their server discoverable. Players browse and connect to servers entirely in-game without knowing any IP addresses. No central relay infrastructure required.
 
 **Problem Statement:**
@@ -890,6 +890,11 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.0-dev.4 — 2026-04-03 (draft)
+- **Connection flow cleanup:** Fixed client map loading, player tracking, and disconnect cleanup.
+- Rebuilt client payload zip with latest fixes.
+- Version bumped to `0.8.0-dev.4`.
 
 ### v0.8.0-dev.3 — 2026-04-03 (draft)
 - **Dev iteration:** incremented release iteration from `v0.8.0-dev.2` to `v0.8.0-dev.3`.

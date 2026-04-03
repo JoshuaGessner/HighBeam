@@ -1,7 +1,7 @@
 # HighBeam Client Architecture
 
-> **Last updated:** 2026-03-31
-> **Applies to:** v0.6.5 (beta)
+> **Last updated:** 2026-04-03
+> **Applies to:** v0.8.0-dev.4
 > **Parent doc:** [OVERVIEW.md](OVERVIEW.md)
 
 ---
@@ -37,6 +37,7 @@ client/
 │               ├── config.lua          # Client configuration
 │               └── math.lua            # Interpolation helpers (lerp, slerp)
 ├── scripts/
+│   ├── modScript.lua               # Root-level BeamNG mod bootstrap script
 │   └── highbeam/
 │       └── modScript.lua               # BeamNG mod loader script
 └── ui/

@@ -1,7 +1,7 @@
 # HighBeam Launcher Architecture
 
-> **Last updated:** 2026-03-31
-> **Applies to:** v0.6.5
+> **Last updated:** 2026-04-03
+> **Applies to:** v0.8.0-dev.4
 > **Parent doc:** [OVERVIEW.md](OVERVIEW.md)
 
 ---
@@ -64,6 +64,7 @@ launcher/
 │   ├── config.rs           # Launcher configuration (server address, BeamNG path)
 │   ├── detect.rs           # BeamNG.drive auto-detection (Steam libraries, userfolder)
 │   ├── installer.rs        # Mod installation, session staging manifest, cleanup
+│   ├── ipc.rs              # In-game IPC bridge (localhost TCP for join-sync handshake)
 │   ├── mod_sync.rs         # Mod download: mod_list handshake + raw binary TCP download
 │   ├── mod_cache.rs        # Local cache management (SHA-256 hashes, file tracking)
 │   ├── discovery.rs        # Server query (UDP 0x7A) and relay HTTP browsing

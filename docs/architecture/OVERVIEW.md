@@ -1,7 +1,7 @@
 # HighBeam Architecture Overview
 
-> **Last updated:** 2026-03-31
-> **Applies to:** v0.6.5 (beta)
+> **Last updated:** 2026-04-03
+> **Applies to:** v0.8.0-dev.4
 
 ---
 

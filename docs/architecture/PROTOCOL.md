@@ -1,8 +1,8 @@
 # HighBeam Network Protocol Specification
 
-> **Last updated:** 2026-03-31
+> **Last updated:** 2026-04-03
 > **Protocol version:** 2
-> **Applies to:** v0.6.5 (beta)
+> **Applies to:** v0.8.0-dev.4
 > **Parent doc:** [OVERVIEW.md](OVERVIEW.md)
 
 ---
@@ -282,8 +282,7 @@ At 20 Hz position updates:
 
 ## Future Considerations
 
-- **v0.5.0**: Optional TLS for TCP channel
-- **v0.5.0**: Binary TCP packet format (MessagePack) for vehicle spawn/edit/delete and other frequent packets
-- **v0.5.0**: Delta compression for vehicle config updates
-- **v0.5.0+**: Advanced UDP optimizations (priority accumulator, at-rest flags, jitter buffer, visual smoothing)
-- **v0.6.0+**: Voice chat channel (UDP, Opus codec)
+- **v0.7.0**: Binary TCP packet format (MessagePack) for vehicle spawn/edit/delete and other frequent packets
+- **v0.7.0**: Delta compression for vehicle config updates
+- **v0.7.0+**: Advanced UDP optimizations (priority accumulator, at-rest flags, jitter buffer, visual smoothing)
+- **v1.0.0+**: Voice chat channel (UDP, Opus codec)

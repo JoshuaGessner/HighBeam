@@ -18,7 +18,7 @@ HighBeam lets you host and join real-time multiplayer sessions in BeamNG.drive �
 
 ---
 
-## Current Status — v0.8.0-dev.3 (In Progress)
+## Current Status — v0.8.0-dev.4 (In Progress)
 
 | Feature | Status |
 |---------|--------|
@@ -35,6 +35,8 @@ HighBeam lets you host and join real-time multiplayer sessions in BeamNG.drive �
 | Docker & systemd deployment | ✅ Done |
 | In-game server browser (Direct Connect, Browse, Favorites, Recent) | ✅ Done |
 | Community relay server listing | ✅ Done |
+| Community node discovery mesh (P2P) | ✅ Done |
+| Connection flow cleanup (map load, disconnect) | ✅ Done |
 | More menu button (in-game quick access) | ✅ Done |
 | Join-scoped mod sync (session staging & cleanup) | ✅ Done |
 | Server GUI close-to-tray & graceful quit | ✅ Done |
