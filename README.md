@@ -18,7 +18,7 @@ HighBeam lets you host and join real-time multiplayer sessions in BeamNG.drive �
 
 ---
 
-## Current Status — v0.8.0-dev.1 (In Progress)
+## Current Status — v0.8.0-dev.2 (In Progress)
 
 | Feature | Status |
 |---------|--------|
@@ -123,7 +123,7 @@ For Linux servers, a `highbeam-server.service` systemd unit and a `docker-compos
 | v0.4.x | Server-side Lua plugins, auto-update, auto-detection | ✅ Done |
 | v0.5.0 | Stability & deployment polish | ✅ Done |
 | v0.6.x | Server GUI, discovery, in-game browser, join-scoped mod sync | ✅ Done |
-| v0.8.0 | Community Node Discovery Mesh | 🔧 In Progress (v0.8.0-dev.1) |
+| v0.8.0 | Community Node Discovery Mesh | 🔧 In Progress (v0.8.0-dev.2) |
 | v0.7.0 | Binary protocol (bandwidth optimization) | 📋 Next |
 | v1.0.0 | Stable release | 🔭 Target |
 
