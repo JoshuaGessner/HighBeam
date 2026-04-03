@@ -2,8 +2,8 @@
 
 > **Last updated:** 2026-04-02
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.6.79 (protocol v2)
-> **Status:** v0.6.79 Complete — Next up: v0.8.0 Community Node Discovery Mesh
+> **Current version:** v0.6.80-dev.1 (protocol v2)
+> **Status:** v0.6.80-dev.1 — testing cycle for v0.6.80
 
 ---
 
@@ -22,6 +22,21 @@ HighBeam follows **Semantic Versioning 2.0.0**: `MAJOR.MINOR.PATCH`
 During initial development (before 1.0.0), the rules are relaxed:
 - `0.x.y` — The API is unstable; minor versions may include breaking changes
 - Pre-release tags: `-alpha.1`, `-beta.1`, `-rc.1`
+
+### Dev Release Workflow
+
+Dev releases are used for internal testing iterations before a public-facing release.
+They use SemVer pre-release suffixes and are published as **GitHub draft releases**
+(invisible to the public — only visible to repo collaborators).
+
+- **Dev iteration:** `0.6.80-dev.1`, `0.6.80-dev.2`, … → GitHub **draft** release
+- **Public release:** `0.6.80` → GitHub **full** release (marked Latest)
+
+SemVer ordering guarantees `0.6.80-dev.N < 0.6.80`, so the public release
+always sorts higher than any dev iteration.
+
+To promote a dev build to public: drop the `-dev.N` suffix, update all version
+references, tag, and create a full (non-draft) GitHub release.
 
 ### Protocol Versioning
 
@@ -875,6 +890,11 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.6.80-dev.1 — 2026-04-03 (draft)
+- **JSON fallback fix (critical):** client Lua now checks BeamNG global `jsonEncode`/`jsonDecode` as the primary JSON encoder/decoder, fixing "JSON encode failed — no encoder available" that prevented all connections.
+- **Bootstrap cleanup:** `scripts/modScript.lua` uses `rawget` to avoid false "extension unavailable" log errors; duplicate `scripts/highbeam/modScript.lua` replaced with no-op guard.
+- Adopted dev-release workflow: internal test builds use `-dev.N` suffix and GitHub draft releases.
 
 ### v0.6.79 — 2026-04-03
 - **Cargo fmt / clippy fixes:** resolved all formatting and lint warnings introduced in v0.6.78.
