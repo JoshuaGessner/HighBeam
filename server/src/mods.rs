@@ -67,10 +67,7 @@ pub fn build_manifest(resource_folder: &str) -> Result<Vec<ModDescriptor>> {
             "No client mods found in Resources/Client/ (directory exists but contains no .zip files)"
         );
     } else {
-        tracing::info!(
-            count = mods.len(),
-            "Mod manifest built"
-        );
+        tracing::info!(count = mods.len(), "Mod manifest built");
         for m in &mods {
             tracing::info!(
                 name = %m.name,

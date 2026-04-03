@@ -65,10 +65,7 @@ pub fn sync_mods(
     let packet = read_packet(&mut stream)?;
     let server_mods = match packet {
         ModPacket::ModList { mods } => {
-            tracing::info!(
-                count = mods.len(),
-                "Received mod list from server"
-            );
+            tracing::info!(count = mods.len(), "Received mod list from server");
             for m in &mods {
                 tracing::debug!(
                     name = %m.name,
