@@ -518,10 +518,28 @@ fn main() -> Result<()> {
 
     // ── Start the IPC server so in-game joins can trigger mod sync ───────────
     let ipc_state_path: Option<PathBuf> =
-        match installer::resolve_mods_dir_pub(cfg.beamng_userfolder.as_deref()) {
-            Ok(mods_dir) => Some(ipc::ipc_state_file_path(&mods_dir)),
+        match installer::resolve_userfolder(cfg.beamng_userfolder.as_deref()) {
+            Ok(userfolder) => {
+                let path = ipc::ipc_state_file_path_from_userfolder(&userfolder);
+                // Ensure the userdata/ directory exists so the state file can be written.
+                if let Some(parent) = path.parent() {
+                    if let Err(e) = std::fs::create_dir_all(parent) {
+                        tracing::warn!(
+                            error = %e,
+                            path = %parent.display(),
+                            "Failed to create userdata directory for IPC state file"
+                        );
+                    }
+                }
+                tracing::info!(
+                    userfolder = %userfolder.display(),
+                    ipc_state_path = %path.display(),
+                    "Resolved IPC state file path"
+                );
+                Some(path)
+            }
             Err(e) => {
-                tracing::warn!(error = %e, "Cannot determine mods dir; IPC state file disabled");
+                tracing::warn!(error = %e, "Cannot determine userfolder; IPC state file disabled");
                 None
             }
         };

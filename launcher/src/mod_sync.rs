@@ -50,14 +50,32 @@ pub fn sync_mods(
     cache_dir: &Path,
     index: &mut CacheIndex,
 ) -> Result<SyncReport> {
+    tracing::info!(
+        endpoint = %mod_sync_addr,
+        timeout_sec = connect_timeout_sec,
+        cache_dir = %cache_dir.display(),
+        "Connecting to mod sync endpoint"
+    );
     let mut stream = TcpStream::connect(mod_sync_addr)
         .with_context(|| format!("Failed to connect to mod sync endpoint: {mod_sync_addr}"))?;
+    tracing::debug!(endpoint = %mod_sync_addr, "Connected to mod sync endpoint");
     stream.set_read_timeout(Some(Duration::from_secs(connect_timeout_sec)))?;
     stream.set_write_timeout(Some(Duration::from_secs(connect_timeout_sec)))?;
 
     let packet = read_packet(&mut stream)?;
     let server_mods = match packet {
-        ModPacket::ModList { mods } => mods,
+        ModPacket::ModList { mods } => {
+            tracing::info!(count = mods.len(), "Received mod list from server");
+            for m in &mods {
+                tracing::debug!(
+                    name = %m.name,
+                    size = m.size,
+                    hash = %m.hash,
+                    "Server mod"
+                );
+            }
+            mods
+        }
         _ => return Err(anyhow!("Expected mod_list packet from server")),
     };
 
@@ -73,6 +91,13 @@ pub fn sync_mods(
             }
         })
         .collect();
+
+    tracing::info!(
+        total = server_mods.len(),
+        cached = server_mods.len() - missing.len(),
+        missing = missing.len(),
+        "Mod cache status"
+    );
 
     write_packet(
         &mut stream,
