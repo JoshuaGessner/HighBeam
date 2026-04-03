@@ -35,6 +35,11 @@ pub fn install_all(
     server_mods: &[ServerMod],
 ) -> Result<InstallReport> {
     let mods_dir = resolve_mods_dir(beamng_userfolder)?;
+    tracing::info!(
+        mods_dir = %mods_dir.display(),
+        server_mod_count = server_mods.len(),
+        "Installing server mods into BeamNG mods directory"
+    );
     std::fs::create_dir_all(&mods_dir)
         .with_context(|| format!("Failed to create BeamNG mods dir: {}", mods_dir.display()))?;
 
@@ -60,6 +65,13 @@ pub fn install_all(
 
         let src = cache_dir.join(format!("{}.zip", cache_entry.hash));
         let dst = mods_dir.join(staged_server_mod_name(&mod_info.name));
+        tracing::debug!(
+            mod_name = %mod_info.name,
+            src = %src.display(),
+            dst = %dst.display(),
+            hash = %mod_info.hash,
+            "Staging server mod"
+        );
         copy_if_changed(&src, &dst, &mod_info.hash)?;
         let Some(file_name) = dst.file_name().and_then(|s| s.to_str()) else {
             return Err(anyhow!("Invalid staged mod filename: {}", dst.display()));
@@ -83,6 +95,11 @@ pub fn install_all(
 
 pub fn install_client_mod(beamng_userfolder: Option<&str>, payload_zip: &Path) -> Result<PathBuf> {
     let mods_dir = resolve_mods_dir(beamng_userfolder)?;
+    tracing::info!(
+        mods_dir = %mods_dir.display(),
+        payload_zip = %payload_zip.display(),
+        "Installing HighBeam client mod"
+    );
     std::fs::create_dir_all(&mods_dir)
         .with_context(|| format!("Failed to create BeamNG mods dir: {}", mods_dir.display()))?;
     install_highbeam_client_mod(payload_zip, &mods_dir)
@@ -257,6 +274,35 @@ pub fn resolve_mods_dir_pub(beamng_userfolder: Option<&str>) -> Result<PathBuf> 
     resolve_mods_dir(beamng_userfolder)
 }
 
+/// Resolve the BeamNG userfolder root (the parent of the `mods/` directory).
+/// Returns the root path before `resolve_mods_subdir` is applied.
+pub fn resolve_userfolder(beamng_userfolder: Option<&str>) -> Result<PathBuf> {
+    if let Some(userfolder) = beamng_userfolder {
+        return Ok(expand_tilde(userfolder));
+    }
+    if let Some(userfolder) = crate::detect::detect_beamng_userfolder() {
+        return Ok(userfolder);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+            let modern = PathBuf::from(&local_app_data)
+                .join("BeamNG")
+                .join("BeamNG.drive");
+            if modern.is_dir() {
+                return Ok(modern);
+            }
+            return Ok(PathBuf::from(local_app_data).join("BeamNG.drive"));
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        return Ok(PathBuf::from(home).join("BeamNG.drive"));
+    }
+    Err(anyhow!(
+        "Unable to resolve BeamNG userfolder; set beamng_userfolder in LauncherConfig.toml"
+    ))
+}
+
 fn expand_tilde(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {
         if let Some(home) = std::env::var_os("HOME") {
@@ -274,10 +320,19 @@ fn copy_if_changed(src: &Path, dst: &Path, expected_hash: &str) -> Result<()> {
     if dst.exists() {
         let current_hash = sha256_file_hex(dst)?;
         if current_hash.eq_ignore_ascii_case(expected_hash) {
+            tracing::debug!(
+                dst = %dst.display(),
+                "Mod already up to date; skipping copy"
+            );
             return Ok(());
         }
     }
 
+    tracing::info!(
+        src = %src.display(),
+        dst = %dst.display(),
+        "Copying mod file"
+    );
     std::fs::copy(src, dst).with_context(|| {
         format!(
             "Failed to copy mod into BeamNG mods directory: {} -> {}",

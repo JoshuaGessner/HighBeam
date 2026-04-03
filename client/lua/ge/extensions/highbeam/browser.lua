@@ -263,18 +263,26 @@ end
 
 -- Read the launcher IPC state file and attempt to connect, or fall back to direct connect
 local function _bridgeInitiate(targetHost, targetPort)
+  log('I', logTag, 'Bridge: looking for IPC state file at: ' .. tostring(IPC_STATE_FILE))
   local content = _readFile(IPC_STATE_FILE)
   if content then
+    log('I', logTag, 'Bridge: IPC state file found, content length=' .. tostring(#content))
     local state = _jsonDecode(content)
     if state and tonumber(state.port) then
       M._bridge.port = tonumber(state.port)
+      log('I', logTag, 'Bridge: launcher IPC port=' .. tostring(M._bridge.port)
+        .. ' pid=' .. tostring(state.pid) .. ' version=' .. tostring(state.version))
       _bridgeConnect(targetHost, targetPort)
       return
+    else
+      log('W', logTag, 'Bridge: IPC state file found but could not parse port from it')
     end
+  else
+    log('W', logTag, 'Bridge: IPC state file NOT found at: ' .. tostring(IPC_STATE_FILE))
   end
   -- Launcher not detected; connect directly (mods already staged or server needs no mods)
   M._bridge.state = "unavailable"
-  log('I', logTag, 'Launcher IPC not detected; connecting directly')
+  log('I', logTag, 'Launcher IPC not detected; connecting directly (no mod sync)')
   _bridgeDirectConnect()
 end
 

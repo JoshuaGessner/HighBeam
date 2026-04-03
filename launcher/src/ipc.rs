@@ -41,8 +41,17 @@ struct IpcStateFile {
     version: &'static str,
 }
 
-/// Returns the path of the IPC state file: `{mods_dir}/../highbeam-launcher.json`
-/// (i.e., directly inside the BeamNG user-data folder).
+/// Returns the path of the IPC state file inside the BeamNG user-data
+/// `userdata/` subdirectory, matching the path the in-game client mod reads.
+/// Falls back to `{mods_dir}/../highbeam-launcher.json` if `userfolder` is
+/// not available.
+pub fn ipc_state_file_path_from_userfolder(userfolder: &Path) -> PathBuf {
+    userfolder.join("userdata").join(IPC_STATE_FILE)
+}
+
+/// Legacy helper: derive the IPC state file path from the resolved mods_dir.
+/// Prefer `ipc_state_file_path_from_userfolder` when the userfolder root is known.
+#[allow(dead_code)]
 pub fn ipc_state_file_path(mods_dir: &Path) -> PathBuf {
     mods_dir
         .parent()
@@ -52,6 +61,12 @@ pub fn ipc_state_file_path(mods_dir: &Path) -> PathBuf {
 
 /// Write the IPC state file so the in-game client can discover the port.
 pub fn write_state_file(path: &Path, port: u16) -> Result<()> {
+    tracing::info!(
+        path = %path.display(),
+        port,
+        pid = std::process::id(),
+        "Writing IPC state file"
+    );
     let state = IpcStateFile {
         port,
         pid: std::process::id(),
@@ -217,8 +232,15 @@ fn handle_join_request(
     };
 
     // ----- Query server for mod sync capability -----
+    tracing::info!(server = %server, timeout_ms = cfg.query_timeout_ms, "IPC: querying server for mod sync capability");
     let should_sync = match crate::discovery::query_server(&server, cfg.query_timeout_ms) {
         Ok(server_info) => {
+            tracing::info!(
+                server = %server,
+                mod_sync_port = ?server_info.mod_sync_port,
+                name = %server_info.name,
+                "IPC: server discovery succeeded"
+            );
             if let Some(mod_sync_port) = server_info.mod_sync_port {
                 let (host, _) = server.rsplit_once(':').unwrap_or((&server, "18860"));
                 Some(format!("{host}:{mod_sync_port}"))

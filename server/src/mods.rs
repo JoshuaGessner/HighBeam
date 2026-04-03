@@ -10,6 +10,10 @@ use crate::net::packet::ModDescriptor;
 /// Build a deterministic manifest of server mods from `Resources/Client/*.zip`.
 pub fn build_manifest(resource_folder: &str) -> Result<Vec<ModDescriptor>> {
     let client_dir = Path::new(resource_folder).join("Client");
+    tracing::info!(
+        path = %client_dir.display(),
+        "Building mod manifest from Resources/Client/"
+    );
 
     if !client_dir.exists() {
         tracing::warn!(
@@ -56,6 +60,27 @@ pub fn build_manifest(resource_folder: &str) -> Result<Vec<ModDescriptor>> {
     }
 
     mods.sort_by(|a, b| a.name.cmp(&b.name));
+
+    if mods.is_empty() {
+        tracing::info!(
+            path = %client_dir.display(),
+            "No client mods found in Resources/Client/ (directory exists but contains no .zip files)"
+        );
+    } else {
+        tracing::info!(
+            count = mods.len(),
+            "Mod manifest built"
+        );
+        for m in &mods {
+            tracing::info!(
+                name = %m.name,
+                size = m.size,
+                hash = %m.hash,
+                "Registered client mod"
+            );
+        }
+    }
+
     Ok(mods)
 }
 
