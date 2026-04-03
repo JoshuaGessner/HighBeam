@@ -1,7 +1,7 @@
 local M = {}
 local logTag = "HighBeam.Protocol"
 
-M.VERSION = 1
+M.VERSION = 2
 
 -- TCP packet encode/decode stubs
 M.encodeTcp = function(packetType, data)
