@@ -18,7 +18,7 @@ HighBeam lets you host and join real-time multiplayer sessions in BeamNG.drive �
 
 ---
 
-## Current Status — v0.6.80-dev.1 (In Progress)
+## Current Status — v0.8.0-dev.1 (In Progress)
 
 | Feature | Status |
 |---------|--------|
@@ -65,7 +65,7 @@ Once in BeamNG, the HighBeam window opens automatically with four tabs:
 | Tab | What it does |
 |-----|--------------|
 | **Direct Connect** | Type a host, port, username, and optional password and connect directly |
-| **Browse Servers** | Enter a relay URL and click Refresh to see public servers with live ping |
+| **Browse Servers** | Browse community-node mesh; servers show name, map, players, mods, and latency — no IP addresses visible |
 | **Favorites** | One-click connect to saved servers |
 | **Recent** | Reconnect to previously visited servers |
 
@@ -122,7 +122,8 @@ For Linux servers, a `highbeam-server.service` systemd unit and a `docker-compos
 | v0.3.0 | Chat, mod distribution, launcher | ✅ Done |
 | v0.4.x | Server-side Lua plugins, auto-update, auto-detection | ✅ Done |
 | v0.5.0 | Stability & deployment polish | ✅ Done |
-| v0.6.x | Server GUI, discovery, in-game browser, join-scoped mod sync | 🔧 In Progress (v0.6.80-dev.1) |
+| v0.6.x | Server GUI, discovery, in-game browser, join-scoped mod sync | ✅ Done |
+| v0.8.0 | Community Node Discovery Mesh | 🔧 In Progress (v0.8.0-dev.1) |
 | v0.7.0 | Binary protocol (bandwidth optimization) | 📋 Next |
 | v1.0.0 | Stable release | 🔭 Target |
 

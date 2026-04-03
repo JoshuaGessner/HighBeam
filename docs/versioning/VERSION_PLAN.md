@@ -2,8 +2,8 @@
 
 > **Last updated:** 2026-04-02
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.6.80-dev.1 (protocol v2)
-> **Status:** v0.6.80-dev.1 — testing cycle for v0.6.80
+> **Current version:** v0.8.0-dev.1 (protocol v2)
+> **Status:** v0.8.0-dev.1 — Community Node Discovery Mesh
 
 ---
 
@@ -595,7 +595,7 @@ As of 2026-03-30, historical hardening notes were merged into this plan.
 
 ### v0.8.0 — Community Node Discovery Mesh (Beta)
 
-**Status:** Not started
+**Status:** In progress (v0.8.0-dev.1)
 **Goal:** Decentralized, P2P server discovery mesh built into every HighBeam server. Server operators opt in via the GUI to make their server discoverable. Players browse and connect to servers entirely in-game without knowing any IP addresses. No central relay infrastructure required.
 
 **Problem Statement:**
@@ -710,75 +710,75 @@ Every community node:
 ---
 
 **Server — Community Node Core (`community_node.rs`, new file):**
-- [ ] `CommunityNodeState` struct with `Arc<RwLock<...>>` for thread-safe access
-- [ ] Server ID generation (`hb-` + 6 random hex chars) on first enable
-- [ ] HTTP listener on configurable port (default: gameplay port + 2) using `tokio::net::TcpListener`
-- [ ] Minimal hand-built HTTP request parser (method + path routing, `Content-Length` body reads)
-- [ ] `GET /servers` handler — returns aggregated server list WITHOUT `addr` fields
-- [ ] `GET /resolve/{id}` handler — returns `{"addr": "ip:port"}` for a single server, rate-limited
-- [ ] `GET /peers` handler — returns known peer list
-- [ ] `POST /gossip` handler — receives peer+server lists, merges, returns own state
-- [ ] `GET /health` handler — returns peer/server counts
-- [ ] Gossip loop (tokio task): 30s interval, pick ≤3 peers, POST `/gossip`, merge responses
-- [ ] Self-registration: update own server entry each gossip round (player count, map, mod list from control plane)
-- [ ] Merge logic: newer `last_seen` wins for duplicate `server_id` or peer `addr`
-- [ ] Pruning: server entries >90s stale, peer entries >5min stale
-- [ ] Caps: max 500 servers, max 200 peers
-- [ ] Exponential backoff on peer failures (30s → 60s → 120s → 300s cap)
-- [ ] Seed node resilience: always include ≥1 seed in gossip target selection
-- [ ] Rate limiting: 30 req/min per IP (all endpoints), 10 `/resolve` per min per IP
-- [ ] Max request body: 256 KB
-- [ ] Persistence: load `community_node.json` on startup, save on shutdown and on Apply
-- [ ] `start()` function: loads state, spawns HTTP listener + gossip loop if enabled; no-op if disabled
-- [ ] Hot-start/stop: GUI can enable/disable without restarting game server
+- [x] `CommunityNodeState` struct with `Arc<RwLock<...>>` for thread-safe access
+- [x] Server ID generation (`hb-` + 6 random hex chars) on first enable
+- [x] HTTP listener on configurable port (default: gameplay port + 2) using `tokio::net::TcpListener`
+- [x] Minimal hand-built HTTP request parser (method + path routing, `Content-Length` body reads)
+- [x] `GET /servers` handler — returns aggregated server list WITHOUT `addr` fields
+- [x] `GET /resolve/{id}` handler — returns `{"addr": "ip:port"}` for a single server, rate-limited
+- [x] `GET /peers` handler — returns known peer list
+- [x] `POST /gossip` handler — receives peer+server lists, merges, returns own state
+- [x] `GET /health` handler — returns peer/server counts
+- [x] Gossip loop (tokio task): 30s interval, pick ≤3 peers, POST `/gossip`, merge responses
+- [x] Self-registration: update own server entry each gossip round (player count, map, mod list from control plane)
+- [x] Merge logic: newer `last_seen` wins for duplicate `server_id` or peer `addr`
+- [x] Pruning: server entries >90s stale, peer entries >5min stale
+- [x] Caps: max 500 servers, max 200 peers
+- [x] Exponential backoff on peer failures (30s → 60s → 120s → 300s cap)
+- [x] Seed node resilience: always include ≥1 seed in gossip target selection
+- [x] Rate limiting: 30 req/min per IP (all endpoints), 10 `/resolve` per min per IP
+- [x] Max request body: 256 KB
+- [x] Persistence: load `community_node.json` on startup, save on shutdown and on Apply
+- [x] `start()` function: loads state, spawns HTTP listener + gossip loop if enabled; no-op if disabled
+- [x] Hot-start/stop: GUI can enable/disable without restarting game server
 
 **Server — Validation (`validation.rs`):**
-- [ ] `validate_community_node_settings()`: tags (max 5, 1-20 chars, `[a-z0-9-]`), region (empty or known code), seed addresses (valid `host:port`, not private/loopback), port (1024-65535), server ID format
+- [x] `validate_community_node_settings()`: tags (max 5, 1-20 chars, `[a-z0-9-]`), region (empty or known code), seed addresses (valid `host:port`, not private/loopback), port (1024-65535), server ID format
 
 **Server — Startup Integration (`main.rs`):**
-- [ ] Add `mod community_node;` declaration
-- [ ] Call `community_node::start(config, control_plane, mod_manifest)` in `run_server()` after discovery relay
-- [ ] Pass returned `Arc<CommunityNodeState>` to GUI
+- [x] Add `mod community_node;` declaration
+- [x] Call `community_node::start(config, control_plane, mod_manifest)` in `run_server()` after discovery relay
+- [x] Pass returned `Arc<CommunityNodeState>` to GUI
 
 **Server — GUI Community Tab (`gui.rs`):**
-- [ ] Add `Tab::Community` variant to tab enum
-- [ ] Add "Community" tab to tab selector bar
-- [ ] Enable/disable checkbox with Apply button (writes `community_node.json`, hot-starts/stops node)
-- [ ] Display server ID (read-only)
-- [ ] Node port input field
-- [ ] Region dropdown (NA, EU, AP, SA, OC, AF, or empty)
-- [ ] Tags text input (comma-separated, validated on Apply)
-- [ ] Seed node management: list with Remove buttons, Add input with validation
-- [ ] Live status display: peer count, server count, last gossip time, health indicators
+- [x] Add `Tab::Community` variant to tab enum
+- [x] Add "Community" tab to tab selector bar
+- [x] Enable/disable checkbox with Apply button (writes `community_node.json`, hot-starts/stops node)
+- [x] Display server ID (read-only)
+- [x] Node port input field
+- [x] Region dropdown (NA, EU, AP, SA, OC, AF, or empty)
+- [x] Tags text input (comma-separated, validated on Apply)
+- [x] Seed node management: list with Remove buttons, Add input with validation
+- [x] Live status display: peer count, server count, last gossip time, health indicators
 
 **Server — Console Commands (`control.rs`):**
-- [ ] `community enable` — enable and start the node
-- [ ] `community disable` — stop the node
-- [ ] `community status` — show peer/server counts, listening port, server ID
-- [ ] `community port <port>` — set node HTTP port
-- [ ] `community region <code>` — set region
-- [ ] `community tags <a,b,c>` — set tags (comma-separated)
-- [ ] `community add-seed <addr>` — add a seed node address
-- [ ] `community remove-seed <addr>` — remove a seed node address
+- [x] `community enable` — enable and start the node
+- [x] `community disable` — stop the node
+- [x] `community status` — show peer/server counts, listening port, server ID
+- [x] `community port <port>` — set node HTTP port
+- [x] `community region <code>` — set region
+- [x] `community tags <a,b,c>` — set tags (comma-separated)
+- [x] `community add-seed <addr>` — add a seed node address
+- [x] `community remove-seed <addr>` — remove a seed node address
 
 **Server — Config Comment (`ServerConfig.default.toml`):**
-- [ ] Add comment block explaining Community Node is managed via GUI/console, not this file
+- [x] Add comment block explaining Community Node is managed via GUI/console, not this file
 
 **Client — Browser Rewrite (`browser.lua`):**
-- [ ] Replace single `relayUrl` config key with `communityNodes` list (persisted to `userdata/highbeam/community_nodes.json`)
-- [ ] `fetchCommunityServers()`: try `GET /servers` against each known node until one succeeds; merge returned `nodes` into stored list for redundancy
-- [ ] Auto-fetch on Browse tab open if nodes are configured and servers not yet fetched this session
-- [ ] `resolveAndConnect(serverId)`: call `GET /resolve/{id}` on last successful node, then pass returned `addr` to `connection.connect()` — IP never displayed
-- [ ] Browse tab UI: Name, Map, Players, Mods, Ping (~Xms from HTTP round-trip), Actions (Connect button)
-- [ ] Mods column: show mod count, tooltip with full mod list on hover
-- [ ] Password servers: show lock icon, prompt for password on Connect
-- [ ] Favorites/Recents: store by `server_id` instead of `host:port`; resolve on connect
-- [ ] "Add node" input field with validation (replaces relay URL field)
-- [ ] Node management: show configured node count, allow add/remove
-- [ ] Keep Direct Connect tab unchanged (host:port manual entry still works)
+- [x] Replace single `relayUrl` config key with `communityNodes` list (persisted to `userdata/highbeam/community_nodes.json`)
+- [x] `fetchCommunityServers()`: try `GET /servers` against each known node until one succeeds; merge returned `nodes` into stored list for redundancy
+- [x] Auto-fetch on Browse tab open if nodes are configured and servers not yet fetched this session
+- [x] `resolveAndConnect(serverId)`: call `GET /resolve/{id}` on last successful node, then pass returned `addr` to `connection.connect()` — IP never displayed
+- [x] Browse tab UI: Name, Map, Players, Mods, Ping (~Xms from HTTP round-trip), Actions (Connect button)
+- [x] Mods column: show mod count, tooltip with full mod list on hover
+- [x] Password servers: show lock icon, prompt for password on Connect
+- [x] Favorites/Recents: store by `server_id` instead of `host:port`; resolve on connect
+- [x] "Add node" input field with validation (replaces relay URL field)
+- [x] Node management: show configured node count, allow add/remove
+- [x] Keep Direct Connect tab unchanged (host:port manual entry still works)
 
 **Client — Config (`config.lua`):**
-- [ ] Replace `relayUrl = ""` default with `communityNodes = {}` in `M.defaults`
+- [x] Replace `relayUrl = ""` default with `communityNodes = {}` in `M.defaults`
 
 **Existing Systems — No Changes:**
 - `discovery_relay.rs` — private relay infrastructure remains untouched (complementary system)
@@ -789,9 +789,9 @@ Every community node:
 ---
 
 **Implementation Phases:**
-- [ ] **Phase A (Server Node Core):** `community_node.rs` — state structs, HTTP listener, gossip loop, merge logic, persistence, validation. All unit-testable without network.
-- [ ] **Phase B (Server GUI + Console):** Community tab in `gui.rs`, console commands in `control.rs`, hot-start/stop wiring.
-- [ ] **Phase C (Client Browser):** Rewrite `browser.lua` Browse tab to use community nodes, add resolve-on-connect, favorites/recents by server_id.
+- [x] **Phase A (Server Node Core):** `community_node.rs` — state structs, HTTP listener, gossip loop, merge logic, persistence, validation. All unit-testable without network.
+- [x] **Phase B (Server GUI + Console):** Community tab in `gui.rs`, console commands in `control.rs`, hot-start/stop wiring.
+- [x] **Phase C (Client Browser):** Rewrite `browser.lua` Browse tab to use community nodes, add resolve-on-connect, favorites/recents by server_id.
 - [ ] **Phase D (Integration & Testing):** Two-node gossip convergence test, client fetch→resolve→connect end-to-end, security validation (rate limits, input validation, no IP leaks in `/servers`).
 
 **Deliverable:**
@@ -890,6 +890,15 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.0-dev.1 — 2026-04-04 (draft)
+- **Community Node Discovery Mesh:** Decentralized P2P server discovery built into every HighBeam server. Server operators enable via GUI or console to join the mesh. Players browse and connect without knowing any IP addresses.
+- **`community_node.rs`:** New module — HTTP listener, gossip loop (30s), merge logic, rate limiting (30/min all, 10/min /resolve), TTL pruning (servers 90s, peers 5min), caps (500 servers, 200 peers), persistence to `community_node.json`.
+- **GUI Community tab:** Enable/disable, server ID display, port, region, tags, seed node management, live status (peer/server counts, last gossip, health).
+- **Console commands:** `community enable/disable/status/port/region/tags/add-seed/remove-seed`.
+- **browser.lua rewrite:** Community-node-based server browser replacing relay URL; sequential node fallback; serverId-aware favorites/recents; password modal; mod tooltip; ping color coding.
+- **config.lua:** `relayUrl` → `communityNodes`.
+- Version bumped to `0.8.0-dev.1`.
 
 ### v0.6.80-dev.1 — 2026-04-03 (draft)
 - **JSON fallback fix (critical):** client Lua now checks BeamNG global `jsonEncode`/`jsonDecode` as the primary JSON encoder/decoder, fixing "JSON encode failed — no encoder available" that prevented all connections.

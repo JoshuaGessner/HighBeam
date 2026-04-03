@@ -10,7 +10,7 @@ M.defaults = {
   directConnectHost = "",
   directConnectPort = 18860,
   username = "",
-  relayUrl = "",
+  communityNodes = {},
   showChat = true,
 }
 

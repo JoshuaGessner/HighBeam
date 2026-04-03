@@ -12,6 +12,7 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 
 mod cli;
+mod community_node;
 mod config;
 mod control;
 mod discovery_relay;
@@ -212,6 +213,10 @@ async fn run_server(
     shutdown_tx: broadcast::Sender<()>,
 ) -> Result<()> {
     discovery_relay::spawn_registration_task(config.clone(), control_plane.clone());
+
+    // Community Node Discovery Mesh: starts supervisor task; no-op when disabled.
+    let community_node = community_node::start(config.clone(), control_plane.clone());
+    control_plane.set_community_node(community_node);
 
     metrics::spawn_metrics_logger(
         config.logging.metrics_interval_sec,

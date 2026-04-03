@@ -114,6 +114,13 @@ struct ServerGuiApp {
     console_output: Vec<String>,
     kick_reason: String,
     selected_map_path: String,
+    // Community tab state
+    community_enabled: bool,
+    community_port_buf: String,
+    community_region_buf: String,
+    community_tags_buf: String,
+    community_seed_input: String,
+    community_apply_error: String,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq)]
@@ -124,12 +131,23 @@ enum Tab {
     Mods,
     Plugins,
     Console,
+    Community,
     Settings,
 }
 
 impl ServerGuiApp {
     fn new(control: Arc<ControlPlane>, tray_bridge: TrayBridge) -> Self {
         let snapshot = control.snapshot();
+        // Pre-populate community fields from current state
+        let (cn_enabled, cn_port, cn_region, cn_tags) = {
+            control
+                .get_community_node()
+                .map(|cn| {
+                    let s = cn.status();
+                    (s.enabled, s.listen_port.to_string(), s.region, s.tags.join(", "))
+                })
+                .unwrap_or_else(|| (false, "18862".to_string(), String::new(), String::new()))
+        };
         Self {
             control,
             tray_bridge,
@@ -146,6 +164,12 @@ impl ServerGuiApp {
             console_output: Vec::new(),
             kick_reason: "Kicked by admin".to_string(),
             selected_map_path: String::new(),
+            community_enabled: cn_enabled,
+            community_port_buf: cn_port,
+            community_region_buf: cn_region,
+            community_tags_buf: cn_tags,
+            community_seed_input: String::new(),
+            community_apply_error: String::new(),
         }
     }
 
@@ -231,6 +255,7 @@ impl ServerGuiApp {
             ui.selectable_value(&mut self.selected_tab, Tab::Mods, "Mods");
             ui.selectable_value(&mut self.selected_tab, Tab::Plugins, "Plugins");
             ui.selectable_value(&mut self.selected_tab, Tab::Console, "Console");
+            ui.selectable_value(&mut self.selected_tab, Tab::Community, "Community");
             ui.selectable_value(&mut self.selected_tab, Tab::Settings, "Settings");
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -450,6 +475,164 @@ impl ServerGuiApp {
         ui.label("Map selection now lives in the Maps tab.");
         ui.label("Settings in this tab are reserved for non-map server controls.");
     }
+
+    fn render_community(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Community Node Discovery");
+        ui.separator();
+
+        let Some(cn) = self.control.get_community_node() else {
+            ui.label("Community node not initialised.");
+            return;
+        };
+
+        let status = cn.status();
+
+        // ── Status row ──────────────────────────────────────────────────────
+        ui.horizontal(|ui| {
+            let dot = if status.running { "🟢" } else { "⚫" };
+            ui.label(format!(
+                "{} {} | {} peers | {} servers",
+                dot,
+                if status.running { "Running" } else { "Stopped" },
+                status.peer_count,
+                status.server_count,
+            ));
+            if status.last_gossip_at > 0 {
+                let ago = crate::community_node::now_secs_pub()
+                    .saturating_sub(status.last_gossip_at);
+                ui.label(format!("| last gossip {}s ago", ago));
+            }
+        });
+        if !status.server_id.is_empty() {
+            ui.label(format!("Server ID: {}", status.server_id));
+        }
+        ui.separator();
+
+        // ── Settings form ────────────────────────────────────────────────────
+        egui::Grid::new("cn_grid")
+            .num_columns(2)
+            .spacing([12.0, 6.0])
+            .show(ui, |ui| {
+                ui.label("Enable");
+                ui.checkbox(&mut self.community_enabled, "Participate in discovery mesh");
+                ui.end_row();
+
+                ui.label("HTTP Port");
+                ui.text_edit_singleline(&mut self.community_port_buf);
+                ui.end_row();
+
+                ui.label("Region");
+                egui::ComboBox::from_id_salt("cn_region")
+                    .selected_text(
+                        if self.community_region_buf.is_empty() {
+                            "(any)"
+                        } else {
+                            &self.community_region_buf
+                        },
+                    )
+                    .show_ui(ui, |ui| {
+                        for code in &["", "NA", "EU", "AP", "SA", "OC", "AF"] {
+                            ui.selectable_value(
+                                &mut self.community_region_buf,
+                                code.to_string(),
+                                if code.is_empty() { "(any)" } else { code },
+                            );
+                        }
+                    });
+                ui.end_row();
+
+                ui.label("Tags");
+                ui.add(egui::TextEdit::singleline(&mut self.community_tags_buf)
+                    .hint_text("drift, racing  (comma-separated, max 5)"));
+                ui.end_row();
+            });
+
+        ui.add_space(4.0);
+        if !self.community_apply_error.is_empty() {
+            ui.colored_label(egui::Color32::RED, &self.community_apply_error);
+        }
+        if ui.button("Apply").clicked() {
+            let port: u16 = self
+                .community_port_buf
+                .trim()
+                .parse()
+                .unwrap_or(18862);
+            let tags: Vec<String> = self
+                .community_tags_buf
+                .split(',')
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .collect();
+            let seeds = status.seed_nodes.clone();
+            match crate::validation::validate_community_node_settings(
+                &tags,
+                &self.community_region_buf,
+                &seeds,
+                port,
+            ) {
+                Ok(()) => {
+                    cn.apply_settings(
+                        self.community_enabled,
+                        port,
+                        self.community_region_buf.clone(),
+                        tags,
+                        seeds,
+                    );
+                    self.community_apply_error.clear();
+                    self.push_console_line("Community node settings applied.".to_string());
+                }
+                Err(e) => {
+                    self.community_apply_error = e.to_string();
+                }
+            }
+        }
+
+        // ── Seed node management ─────────────────────────────────────────────
+        ui.separator();
+        ui.label("Seed Nodes");
+        egui::ScrollArea::vertical()
+            .max_height(120.0)
+            .id_salt("cn_seeds_scroll")
+            .show(ui, |ui| {
+                let mut remove_addr: Option<String> = None;
+                for seed in &status.seed_nodes {
+                    ui.horizontal(|ui| {
+                        ui.label(seed);
+                        if ui.small_button("Remove").clicked() {
+                            remove_addr = Some(seed.clone());
+                        }
+                    });
+                }
+                if let Some(addr) = remove_addr {
+                    cn.remove_seed_node(&addr);
+                }
+            });
+        ui.horizontal(|ui| {
+            ui.label("Add seed:");
+            ui.text_edit_singleline(&mut self.community_seed_input);
+            if ui.button("Add").clicked() {
+                let addr = self.community_seed_input.trim().to_string();
+                let dummy: Vec<String> = vec![];
+                match crate::validation::validate_community_node_settings(
+                    &dummy,
+                    "",
+                    &[addr.clone()],
+                    18862,
+                ) {
+                    Ok(()) => {
+                        cn.add_seed_node(addr);
+                        self.community_seed_input.clear();
+                        self.community_apply_error.clear();
+                    }
+                    Err(e) => {
+                        self.community_apply_error = e.to_string();
+                    }
+                }
+            }
+        });
+        ui.add_space(4.0);
+        ui.label("Seed node format: host:port  (e.g. relay.example.com:18862)");
+    }
 }
 
 impl eframe::App for ServerGuiApp {
@@ -481,6 +664,7 @@ impl eframe::App for ServerGuiApp {
             Tab::Mods => self.render_mods(ui),
             Tab::Plugins => self.render_plugins(ui),
             Tab::Console => self.render_console(ui),
+            Tab::Community => self.render_community(ui),
             Tab::Settings => self.render_settings(ui),
         });
 
