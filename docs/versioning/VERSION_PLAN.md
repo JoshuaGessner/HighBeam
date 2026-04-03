@@ -2,8 +2,8 @@
 
 > **Last updated:** 2026-04-03
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.0 (protocol v2)
-> **Status:** v0.8.0 released | v0.9.0 planned
+> **Current version:** v0.9.0-dev.1 (protocol v2)
+> **Status:** v0.8.0 released | v0.9.0 in development
 
 ---
 
