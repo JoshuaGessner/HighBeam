@@ -2,7 +2,7 @@ local EXT_NAME = "highbeam"
 local LOG_TAG = "HighBeam.Bootstrap"
 
 local function setManualUnloadMode()
-	if extensions and extensions.setExtensionUnloadMode then
+	if extensions and rawget(extensions, 'setExtensionUnloadMode') then
 		local ok_mode, err_mode = pcall(extensions.setExtensionUnloadMode, EXT_NAME, 'manual')
 		if not ok_mode then
 			log('W', LOG_TAG, 'Failed to set unload mode via extensions.setExtensionUnloadMode: ' .. tostring(err_mode))

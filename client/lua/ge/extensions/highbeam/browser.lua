@@ -13,6 +13,10 @@ local MAX_FAVORITES = 50
 -- ──────────────────────────────────────────────────────────────────────────────
 
 local function _jsonEncode(t)
+  if jsonEncode then
+    local ok, s = pcall(jsonEncode, t)
+    if ok then return s end
+  end
   if Engine and Engine.JSONEncode then
     local ok, s = pcall(Engine.JSONEncode, t)
     if ok then return s end
@@ -24,6 +28,10 @@ end
 
 local function _jsonDecode(s)
   if not s or s == "" then return nil end
+  if jsonDecode then
+    local ok, t = pcall(jsonDecode, s)
+    if ok then return t end
+  end
   if Engine and Engine.JSONDecode then
     local ok, t = pcall(Engine.JSONDecode, s)
     if ok then return t end
