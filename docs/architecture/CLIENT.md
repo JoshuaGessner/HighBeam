@@ -177,6 +177,24 @@ local defaults = {
 
 ---
 
+## Mod Sandbox (v0.9.0)
+
+Server-pushed mods run in BeamNG's shared Lua state alongside HighBeam's own code. To prevent malicious mods from exploiting the game environment, a runtime sandbox (`sandbox.lua`) is applied at startup before any server mods load.
+
+**Sandbox restrictions:**
+- `os.execute`, `os.remove`, `os.rename`, `os.getenv`, `os.tmpname`, `os.exit` — replaced with no-op stubs (logging warnings). Safe time functions (`os.clock`, `os.time`, `os.date`, `os.difftime`) preserved.
+- `io.popen` — fully blocked. `io.open` — write modes blocked, read mode allowed.
+- `debug` library — fully removed from global scope.
+- `ffi.cdef`, `ffi.C`, `ffi.load`, `ffi.new`, `ffi.cast`, `ffi.metatype` — blocked via metatable proxy. Safe read-only FFI operations (`ffi.sizeof`, `ffi.typeof`, `ffi.istype`, `ffi.string`) preserved.
+- `loadstring` — blocked. `load(string)` — blocked. `load(function)` — preserved (BeamNG internal use).
+- `package.loadlib` — blocked.
+
+The sandbox is applied in `onExtensionLoaded()` after BeamNG core initialization. Originals are stored internally for HighBeam's own use. This is the last line of defense — the launcher also performs ZIP content scanning and Lua static analysis before any mod reaches the game.
+
+See the v0.9.0 milestone in [VERSION_PLAN.md](../versioning/VERSION_PLAN.md) for the full five-layer sandbox architecture.
+
+---
+
 ## Packaging
 
 The client mod is distributed as a `.zip` file placed in BeamNG's mod directory:

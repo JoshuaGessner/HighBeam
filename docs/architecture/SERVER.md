@@ -206,8 +206,8 @@ server/
 | `HB.Event.BroadcastClientEvent(name, payload?)` | Send custom event to all clients |
 | `HB.Util.Log(level, message)` | Structured logging (trace/debug/info/warn/error) |
 | `HB.Util.RandomInt(min, max)` | Generate random integer in range |
-| `HB.FS.ReadFile(path)` | Read file relative to plugin dir (traversal-protected) |
-| `HB.FS.WriteFile(path, contents)` | Write file relative to plugin dir (traversal-protected) |
+| `HB.FS.ReadFile(path)` | Read file relative to plugin dir (traversal-protected, max 50 MB per read — v0.9.0) |
+| `HB.FS.WriteFile(path, contents)` | Write file relative to plugin dir (traversal-protected, max 10 MB per write, 100 MB per-plugin quota — v0.9.0) |
 | `HB.FS.Exists(path)` | Check file existence relative to plugin dir |
 
 #### Events (`events.rs`)
@@ -256,6 +256,12 @@ TcpKeepAliveSec = 15       # TCP keepalive interval
 Level = "info"             # "debug", "info", "warn", "error"
 LogFile = "server.log"
 LogChat = true
+
+[Security]
+AllowPluginEval = false    # Allow `lua <plugin> <code>` console command (v0.9.0)
+PluginStorageQuotaMB = 100 # Per-plugin storage quota in megabytes (v0.9.0)
+PluginMaxFileSizeMB = 10   # Maximum single plugin file size in megabytes (v0.9.0)
+MaxEventPayloadKB = 64     # Maximum event payload size in kilobytes (v0.9.0)
 ```
 
 ---
@@ -325,8 +331,10 @@ See [RELAY.md](RELAY.md) for the full relay architecture, JSON API contract, and
 1. **Never trust client input.** All data from clients is untrusted. Validate packet sizes, field ranges, string lengths, and JSON structure before processing. Reject malformed data immediately.
 2. **Authenticate everything.** TCP packets are only processed from authenticated sessions. UDP packets are validated against session token hashes — unknown hashes are silently dropped.
 3. **Rate limit aggressively.** Auth attempts, chat messages, vehicle spawns, and plugin events all have configurable rate limits. Exceeding limits results in temporary bans or disconnects.
-4. **Isolate plugin execution.** Each Lua plugin runs in its own sandboxed state. Plugins cannot access the filesystem outside their own directory without explicit `FS.*` API calls. No `os.execute`, `io.popen`, or raw FFI access in plugin Lua states.
+4. **Isolate plugin execution.** Each Lua plugin runs in its own sandboxed state. Plugins cannot access the filesystem outside their own directory without explicit `FS.*` API calls. No `os.execute`, `io.popen`, or raw FFI access in plugin Lua states. FS operations are subject to per-plugin storage quotas (100 MB), file size limits (10 MB write / 50 MB read), and file count caps (1,000 per plugin). See v0.9.0 milestone.
 5. **Hash and salt credentials.** Server passwords are Argon2-hashed on disk. Session tokens are cryptographically random and short-lived.
-6. **Enforce resource limits.** MaxPlayers, MaxCarsPerPlayer, max packet size (1MB), and per-player bandwidth caps prevent resource exhaustion.
+6. **Enforce resource limits.** MaxPlayers, MaxCarsPerPlayer, max packet size (1MB), per-player bandwidth caps, and event payload limits (64 KB) prevent resource exhaustion.
 7. **Graceful error handling.** Invalid packets, malformed JSON, and unexpected disconnects must never crash the server. All error paths log structured warnings and clean up state.
 8. **Minimize attack surface.** The server exposes only port 18860 (TCP + UDP). No HTTP endpoints, no admin panels over the network. The GUI is local-only (rendered via egui, not a web server).
+9. **Sign mod manifests.** The server signs the mod manifest with an Ed25519 key so launchers can verify mod integrity. See v0.9.0 milestone.
+10. **Restrict console eval.** `AllowPluginEval` defaults to `false` in production to prevent arbitrary code injection into plugin Lua states via console. See v0.9.0 milestone.

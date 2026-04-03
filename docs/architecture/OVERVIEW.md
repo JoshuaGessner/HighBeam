@@ -225,7 +225,9 @@ Client                              Server
 
 - All input from clients is treated as untrusted. Packet sizes, field values, string lengths, and JSON structure are validated before processing.
 - Rate limiting is applied to auth attempts, chat messages, vehicle spawns, and all other client-initiated actions.
-- Plugin sandboxing prevents access to `os.execute`, `io.popen`, and raw FFI. Plugins cannot escape their directory.
+- **Server plugin sandboxing** prevents access to `os.execute`, `io.popen`, and raw FFI. Plugins cannot escape their directory. FS operations have per-plugin storage quotas and file size limits (v0.9.0).
+- **Client mod sandboxing** (v0.9.0) applies defense-in-depth: ZIP content scanning (path traversal, file type whitelist, zip bomb detection), Lua static analysis (regex-based dangerous API detection), and runtime environment hardening (dangerous globals neutered before server mods load).
+- **Mod transfer integrity** (v0.9.0): Ed25519 manifest signing with TOFU key management, TLS enforcement for mod downloads, per-mod size limits.
 - The server GUI is local-only (egui desktop rendering) — not a web server. No network-exposed admin surface.
 - Session tokens are cryptographically random and short-lived. Passwords are Argon2-hashed.
 - Resource limits (MaxPlayers, MaxCarsPerPlayer, max packet size) are always enforced.

@@ -31,9 +31,6 @@ server/Resources/Client/*
 server/Resources/Server/*
 !server/Resources/Server/.gitkeep
 
-# Documentation (local dev reference only)
-docs/
-
 # Copilot/agent instructions
 .copilot-instructions.md
 

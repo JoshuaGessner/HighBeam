@@ -122,7 +122,8 @@ For each requested mod, the server streams the file over TCP using a simple bina
 ### 3. Post-sync & Session Staging
 
 Before launching the game:
-1. Server mods are copied from cache into BeamNG's mods directory with a `highbeam-session-{original_name}` filename prefix.
+1. Each downloaded mod zip is run through the **mod sandbox scanner** (v0.9.0): ZIP content validation (path traversal, file type whitelist, zip bomb detection, compression ratio checks) and Lua static analysis (regex-based detection of dangerous APIs like `os.execute`, `io.popen`, `ffi.cdef`, `loadstring`, etc.). Mods that fail the scan are NOT installed and the user is warned.
+2. Server mods that pass the scan are copied from cache into BeamNG's mods directory with a `highbeam-session-{original_name}` filename prefix.
 2. A session manifest (`highbeam-session-manifest.json`) is written alongside the staged files, listing all staged filenames.
 3. The HighBeam client mod zip is installed if missing or outdated.
 4. BeamNG.drive is launched.
@@ -181,6 +182,16 @@ CacheDir = "~/.highbeam/cache"
 # Default server to connect to (can be overridden via CLI)
 Host = ""
 Port = 18860
+
+[Security]
+# Require TLS for mod downloads (recommended) (v0.9.0)
+RequireTlsForMods = true
+# Maximum mod file size in megabytes (per mod) (v0.9.0)
+MaxModSizeMB = 500
+# Per-mod download timeout in seconds (v0.9.0)
+ModDownloadTimeoutSec = 600
+# Trust-on-first-use for server mod signing keys (v0.9.0)
+ModSigningTrust = "tofu"  # "tofu", "pinned", or "none"
 ```
 
 ### CLI Usage
@@ -222,6 +233,12 @@ OPTIONS:
 ## Security
 
 - Mod files are verified via SHA-256 hash after download — corrupted or tampered files are discarded
+- **Mod sandbox scanning** (v0.9.0): Before installation, every mod zip is run through a multi-layer scanner:
+  - **ZIP content validation:** path traversal checks, symlink rejection, file extension whitelist (blocks `.exe`, `.dll`, `.sh`, `.bat`, etc.), zip bomb detection (entry count, uncompressed size, compression ratio), OS-reserved filename rejection
+  - **Lua static analysis:** regex-based scanning of all `.lua` files for dangerous API calls (`os.execute`, `io.popen`, `ffi.cdef`, `loadstring`, `debug.*`, etc.), obfuscation detection (non-ASCII ratio, hex string chains, `string.char` abuse)
+  - Mods that fail the scan are NOT installed; the user is warned with specific violation details
+- **Mod manifest signing** (v0.9.0): Server signs the mod manifest with an Ed25519 key; launcher verifies signature using a trust-on-first-use (TOFU) model stored in `~/.highbeam/known_servers.json`
+- **TLS enforcement** (v0.9.0): `RequireTlsForMods = true` (default) refuses plaintext mod downloads to prevent MITM injection
 - The launcher only connects to servers the user explicitly specifies (no auto-discovery)
 - Downloaded mod zips are written to BeamNG's standard mods directory — no code injection or process manipulation
 - The launcher does not have elevated privileges and does not modify the game binary
