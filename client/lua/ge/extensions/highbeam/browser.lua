@@ -751,7 +751,14 @@ M.onConnected = function()
 end
 
 M.onConnectionStatus = function(status, detail)
-  if status == "disconnected" or status == "reconnect_failed" then
+  if status == "kicked" then
+    M._connectError = "Kicked from server: " .. (detail or "No reason given")
+    M._visible = true  -- Re-open browser to show kick reason
+    if M._bridge.state == "syncing" then
+      M._bridge.state = "failed"
+      M._bridge.error = detail or "Kicked"
+    end
+  elseif status == "disconnected" or status == "reconnect_failed" then
     if M._bridge.state == "syncing" then
       M._bridge.state = "failed"
       M._bridge.error = detail or "Connection closed during sync"
@@ -853,6 +860,10 @@ local function _tabDirectConnect()
       M._bridge.state = "idle"
       _bridgeDirectConnect()
     end
+    _im.Spacing()
+  elseif M._bridge.state == "unavailable" then
+    _im.TextColored(_im.ImVec4(1.0, 0.85, 0.2, 1.0),
+      "Launcher not running -- server mods may not be available.")
     _im.Spacing()
   end
 

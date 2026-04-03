@@ -33,17 +33,15 @@ struct TrayBridge {
 fn setup_system_tray_bridge() -> TrayBridge {
     let (tx, rx) = mpsc::channel::<TrayCommand>();
 
-    // On Linux (ksni) we can supply raw pixel data for a custom tray icon.
-    // On Windows, fall back to a system resource icon; the app icon is embedded
-    // via build.rs/winresource separately.
-    #[cfg(target_os = "linux")]
+    // Decode the embedded PNG into raw pixel data for the tray icon.
+    // Both Linux (ksni) and Windows (winit) accept IconSource::Data.
     let icon = {
         let bytes = include_bytes!("../assets/icon.png");
         let img = image::load_from_memory(bytes)
             .expect("embedded tray icon is valid PNG")
             .to_rgba8();
         let (w, h) = img.dimensions();
-        // ksni expects ARGB pixel data
+        // tray-item expects ARGB pixel data
         let argb: Vec<u8> = img
             .pixels()
             .flat_map(|p| [p[3], p[0], p[1], p[2]])
@@ -54,8 +52,6 @@ fn setup_system_tray_bridge() -> TrayBridge {
             data: argb,
         }
     };
-    #[cfg(target_os = "windows")]
-    let icon = IconSource::Resource("network-workgroup");
 
     let mut tray = match TrayItem::new("HighBeam Server", icon) {
         Ok(item) => item,
@@ -148,6 +144,7 @@ struct ServerGuiApp {
     mods: Vec<crate::control::ClientModEntry>,
     console_input: String,
     console_output: Vec<String>,
+    advanced_console: bool,
     kick_reason: String,
     selected_map_path: String,
     // Mod sync state
@@ -212,6 +209,7 @@ impl ServerGuiApp {
             snapshot,
             console_input: String::new(),
             console_output: Vec::new(),
+            advanced_console: false,
             kick_reason: "Kicked by admin".to_string(),
             selected_map_path: String::new(),
             mod_sync_enabled,
@@ -344,10 +342,6 @@ impl ServerGuiApp {
 
     fn push_console_line(&mut self, line: String) {
         self.console_output.push(line);
-        if self.console_output.len() > 100 {
-            let overflow = self.console_output.len() - 100;
-            self.console_output.drain(0..overflow);
-        }
     }
 
     fn render_players(&mut self, ui: &mut egui::Ui) {
@@ -524,7 +518,12 @@ impl ServerGuiApp {
     }
 
     fn render_console(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Console");
+        ui.horizontal(|ui| {
+            ui.heading("Console");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.checkbox(&mut self.advanced_console, "Advanced");
+            });
+        });
         ui.separator();
 
         ui.horizontal(|ui| {
@@ -545,15 +544,26 @@ impl ServerGuiApp {
                     self.console_input.clear();
                 }
             }
+            if ui.button("Clear").clicked() {
+                self.console_output.clear();
+            }
         });
 
-        egui::ScrollArea::vertical()
-            .max_height(420.0)
-            .show(ui, |ui| {
-                for line in &self.console_output {
-                    ui.label(line);
-                }
-            });
+        let max_lines = if self.advanced_console { 5000 } else { 100 };
+        while self.console_output.len() > max_lines {
+            self.console_output.remove(0);
+        }
+
+        let scroll = if self.advanced_console {
+            egui::ScrollArea::vertical()
+        } else {
+            egui::ScrollArea::vertical().max_height(420.0)
+        };
+        scroll.stick_to_bottom(true).show(ui, |ui| {
+            for line in &self.console_output {
+                ui.label(line);
+            }
+        });
     }
 
     fn render_settings(&mut self, ui: &mut egui::Ui) {
