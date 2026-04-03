@@ -1,9 +1,9 @@
 # HighBeam Version Plan
 
-> **Last updated:** 2026-04-02
+> **Last updated:** 2026-04-03
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.0-dev.1 (protocol v2)
-> **Status:** v0.8.0-dev.1 — Community Node Discovery Mesh
+> **Current version:** v0.8.0-dev.3 (protocol v2)
+> **Status:** v0.8.0-dev.3 — Community Node Discovery Mesh
 
 ---
 
@@ -595,7 +595,7 @@ As of 2026-03-30, historical hardening notes were merged into this plan.
 
 ### v0.8.0 — Community Node Discovery Mesh (Beta)
 
-**Status:** In progress (v0.8.0-dev.1)
+**Status:** In progress (v0.8.0-dev.3)
 **Goal:** Decentralized, P2P server discovery mesh built into every HighBeam server. Server operators opt in via the GUI to make their server discoverable. Players browse and connect to servers entirely in-game without knowing any IP addresses. No central relay infrastructure required.
 
 **Problem Statement:**
@@ -890,6 +890,17 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.0-dev.3 — 2026-04-03 (draft)
+- **Dev iteration:** incremented release iteration from `v0.8.0-dev.2` to `v0.8.0-dev.3`.
+- **Automation alignment:** this tag triggers the automated GitHub draft prerelease pipeline.
+- Version bumped to `0.8.0-dev.3`.
+
+### v0.8.0-dev.2 — 2026-04-03 (draft)
+- **CI hardening follow-up:** fixed strict clippy violations (`cloned_ref_to_slice_refs`) in community seed validation call sites.
+- **Formatting normalization:** applied `cargo fmt` updates in server sources to match GitHub Actions `cargo fmt --check` output.
+- **No behavior changes:** code path changes are mechanical/idiomatic only.
+- Version bumped to `0.8.0-dev.2`.
 
 ### v0.8.0-dev.1 — 2026-04-04 (draft)
 - **Community Node Discovery Mesh:** Decentralized P2P server discovery built into every HighBeam server. Server operators enable via GUI or console to join the mesh. Players browse and connect without knowing any IP addresses.

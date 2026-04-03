@@ -4,6 +4,7 @@ local logTag = "HighBeam.State"
 M.localVehicles = {}  -- [gameVehicleId] = serverVehicleId
 M.playerId = nil
 M.sessionToken = nil
+M._pendingSpawnQueue = {}  -- FIFO queue of game vehicle IDs awaiting server assignment
 
 local sendTimer = 0
 local connection = nil
@@ -54,17 +55,19 @@ M.onWorldState = function(players)
 end
 
 M.onLocalVehicleSpawned = function(serverVehicleId, configData)
-  -- Map latestPendingSpawn game vehicle ID to server vehicle ID
-  if M._pendingSpawnGameId then
-    M.localVehicles[M._pendingSpawnGameId] = serverVehicleId
-    log('I', logTag, 'Local vehicle mapped: game=' .. tostring(M._pendingSpawnGameId) .. ' server=' .. tostring(serverVehicleId))
-    M._pendingSpawnGameId = nil
+  -- Pop the oldest pending game vehicle ID from the FIFO queue
+  if #M._pendingSpawnQueue > 0 then
+    local gameVid = table.remove(M._pendingSpawnQueue, 1)
+    M.localVehicles[gameVid] = serverVehicleId
+    log('I', logTag, 'Local vehicle mapped: game=' .. tostring(gameVid) .. ' server=' .. tostring(serverVehicleId))
+  else
+    log('W', logTag, 'Received vehicle spawn confirmation but no pending spawn in queue (server vid=' .. tostring(serverVehicleId) .. ')')
   end
 end
 
 M.requestSpawn = function(gameVehicleId, configData)
   if not connection or connection.getState() ~= connection.STATE_CONNECTED then return end
-  M._pendingSpawnGameId = gameVehicleId
+  table.insert(M._pendingSpawnQueue, gameVehicleId)
   connection._sendPacket({
     type = "vehicle_spawn",
     vehicle_id = 0,  -- Server will assign
@@ -82,6 +85,15 @@ M.requestDelete = function(gameVehicleId)
     })
     M.localVehicles[gameVehicleId] = nil
   end
+end
+
+M.onDisconnect = function()
+  log('I', logTag, 'Clearing local vehicle state on disconnect')
+  M.localVehicles = {}
+  M._pendingSpawnQueue = {}
+  M.playerId = nil
+  M.sessionToken = nil
+  sendTimer = 0
 end
 
 return M

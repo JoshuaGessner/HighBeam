@@ -41,6 +41,7 @@ M._autoReconnect = false  -- Whether we should attempt reconnection
 -- Player tracking
 M._players = {}  -- player_id -> { name = "..." }
 M._serverEventHandlers = {}  -- event_name -> callback(payload)
+M._serverMap = nil  -- map path from ServerHello
 
 -- Error tracking for diagnostics (Phase 2.4)
 M._errorCount = 0
@@ -250,6 +251,17 @@ M.disconnect = function()
   M._setState(M.STATE_DISCONNECTING, "disconnect")
   M._notifyStatus("disconnecting")
 
+  -- Clean up all remote vehicles before closing sockets
+  if vehicles then
+    for pid, _ in pairs(M._players) do
+      pcall(vehicles.removeAllForPlayer, pid)
+    end
+  end
+  -- Clear local vehicle mappings
+  if state and state.onDisconnect then
+    pcall(state.onDisconnect)
+  end
+
   if tcp then
     pcall(function() tcp:close() end)
     tcp = nil
@@ -262,6 +274,7 @@ M.disconnect = function()
   M._sessionHash = nil
   M._lastPingTime = nil
   M._connectStartTime = nil
+  M._serverMap = nil
   M._players = {}
   M._setState(M.STATE_DISCONNECTED, "disconnect_complete")
   M._notifyStatus("disconnected")
@@ -474,7 +487,8 @@ M._handlePacket = function(jsonStr)
 
   local ptype = packet.type
   if ptype == "server_hello" then
-    log('I', logTag, 'Received ServerHello: ' .. tostring(packet.name))
+    log('I', logTag, 'Received ServerHello: ' .. tostring(packet.name) .. ' map=' .. tostring(packet.map))
+    M._serverMap = packet.map
     -- Validate protocol version
     if packet.version ~= 1 and packet.version ~= 2 then
       log('E', logTag, 'Protocol version mismatch: ' .. tostring(packet.version))
@@ -522,12 +536,38 @@ M._handlePacket = function(jsonStr)
     end
   elseif ptype == "world_state" then
     log('I', logTag, 'Received WorldState: ' .. tostring(#(packet.players or {})) .. ' players, ' .. tostring(#(packet.vehicles or {})) .. ' vehicles')
+    -- Load the server's map if it differs from the current level
+    if M._serverMap then
+      local currentLevel = nil
+      if getCurrentLevelIdentifier then
+        currentLevel = getCurrentLevelIdentifier()
+      end
+      -- Normalise: strip /levels/ prefix and /info.json suffix for comparison
+      local serverLevel = M._serverMap:gsub('^/levels/', ''):gsub('/info%.json$', '')
+      local needsLoad = true
+      if currentLevel and currentLevel ~= '' then
+        local currentNorm = currentLevel:gsub('^/levels/', ''):gsub('/info%.json$', '')
+        if currentNorm == serverLevel then
+          needsLoad = false
+        end
+      end
+      if needsLoad and serverLevel ~= '' then
+        log('I', logTag, 'Loading server map: ' .. serverLevel)
+        if freeroam_freeroam and freeroam_freeroam.startFreeroam then
+          pcall(freeroam_freeroam.startFreeroam, '/levels/' .. serverLevel .. '/info.json')
+        elseif core_levels and core_levels.loadLevel then
+          pcall(core_levels.loadLevel, '/levels/' .. serverLevel .. '/info.json')
+        else
+          log('W', logTag, 'No map loader available — player may be on wrong map')
+        end
+      end
+    end
     -- Populate player tracking from world state
     M._players = {}
     if packet.players then
       for _, p in ipairs(packet.players) do
-        if p.id and p.name then
-          M._players[p.id] = { name = p.name }
+        if p.player_id and p.name then
+          M._players[p.player_id] = { name = p.name }
         end
       end
     end
@@ -732,6 +772,18 @@ end
 
 M._onDisconnect = function(reason)
   log('I', logTag, 'Disconnected: ' .. tostring(reason))
+
+  -- Clean up all remote vehicles before closing sockets
+  if vehicles then
+    for pid, _ in pairs(M._players) do
+      pcall(vehicles.removeAllForPlayer, pid)
+    end
+  end
+  -- Clear local vehicle mappings
+  if state and state.onDisconnect then
+    pcall(state.onDisconnect)
+  end
+
   if tcp then
     pcall(function() tcp:close() end)
     tcp = nil
@@ -743,6 +795,7 @@ M._onDisconnect = function(reason)
   recvBuffer = ""
   M._sessionHash = nil
   M._lastPingTime = nil  -- Clear ping tracking on disconnect (Phase 2.2)
+  M._serverMap = nil
   M._players = {}
   M._setState(M.STATE_DISCONNECTED, "remote_disconnect")
   -- Trigger auto-reconnection if enabled
