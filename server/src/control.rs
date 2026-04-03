@@ -104,9 +104,7 @@ fn canonical_map_path(input: &str, fallback: &str) -> String {
 }
 
 fn map_display_name(map_path: &str) -> String {
-    let normalized = map_path
-        .trim()
-        .replace('\\', "/");
+    let normalized = map_path.trim().replace('\\', "/");
     let level = normalized
         .trim_start_matches("/levels/")
         .trim_start_matches("levels/")
@@ -147,6 +145,7 @@ fn make_map_entry(map_path: String, source: &str) -> MapEntry {
 }
 
 fn default_beamng_levels_roots() -> Vec<std::path::PathBuf> {
+    #[allow(unused_mut)]
     let mut roots = Vec::new();
 
     #[cfg(target_os = "windows")]
@@ -162,10 +161,9 @@ fn default_beamng_levels_roots() -> Vec<std::path::PathBuf> {
     #[cfg(target_os = "macos")]
     {
         if let Some(home) = std::env::var_os("HOME") {
-            roots.push(
-                std::path::PathBuf::from(home)
-                    .join("Library/Application Support/Steam/steamapps/common/BeamNG.drive/content/levels"),
-            );
+            roots.push(std::path::PathBuf::from(home).join(
+                "Library/Application Support/Steam/steamapps/common/BeamNG.drive/content/levels",
+            ));
         }
     }
 
@@ -366,7 +364,12 @@ impl ControlPlane {
         let fallback = self.config.general.map.clone();
         let mut map_entries = std::collections::BTreeMap::new();
 
-        insert_map_entry(&mut map_entries, &self.get_active_map(), &fallback, "Active");
+        insert_map_entry(
+            &mut map_entries,
+            &self.get_active_map(),
+            &fallback,
+            "Active",
+        );
 
         for entry in discover_default_game_maps() {
             map_entries.entry(entry.map_path.clone()).or_insert(entry);
@@ -645,10 +648,7 @@ mod tests {
         control
             .set_active_map("west_coast_usa".to_string())
             .expect("set map should succeed");
-        assert_eq!(
-            control.get_active_map(),
-            "/levels/west_coast_usa/info.json"
-        );
+        assert_eq!(control.get_active_map(), "/levels/west_coast_usa/info.json");
     }
 
     #[test]
@@ -694,10 +694,14 @@ mod tests {
         let levels_dir = temp.path().join("levels");
         std::fs::create_dir_all(&levels_dir).expect("levels dir should be created");
         std::fs::write(levels_dir.join("gridmap_v2.zip"), b"zip").expect("write zip placeholder");
-        std::fs::write(levels_dir.join("west_coast_usa.zip"), b"zip").expect("write zip placeholder");
+        std::fs::write(levels_dir.join("west_coast_usa.zip"), b"zip")
+            .expect("write zip placeholder");
 
         let mut map_entries = std::collections::BTreeMap::new();
-        for entry in std::fs::read_dir(&levels_dir).expect("read_dir should succeed").flatten() {
+        for entry in std::fs::read_dir(&levels_dir)
+            .expect("read_dir should succeed")
+            .flatten()
+        {
             let path = entry.path();
             if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                 insert_map_entry(
@@ -710,7 +714,11 @@ mod tests {
         }
 
         let maps: Vec<MapEntry> = map_entries.into_values().collect();
-        assert!(maps.iter().any(|m| m.map_path == "/levels/gridmap_v2/info.json"));
-        assert!(maps.iter().any(|m| m.map_path == "/levels/west_coast_usa/info.json"));
+        assert!(maps
+            .iter()
+            .any(|m| m.map_path == "/levels/gridmap_v2/info.json"));
+        assert!(maps
+            .iter()
+            .any(|m| m.map_path == "/levels/west_coast_usa/info.json"));
     }
 }

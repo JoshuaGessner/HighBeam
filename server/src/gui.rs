@@ -341,7 +341,10 @@ impl ServerGuiApp {
         ui.heading("Map Management");
         ui.separator();
 
-        ui.label(format!("Current active map: {}", self.snapshot.map_display_name));
+        ui.label(format!(
+            "Current active map: {}",
+            self.snapshot.map_display_name
+        ));
         if ui.button("Refresh available maps").clicked() {
             self.maps = self.control.list_available_maps().unwrap_or_default();
         }
