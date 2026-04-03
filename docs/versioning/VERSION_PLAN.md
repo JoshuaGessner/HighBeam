@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-04-03
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.1-dev.2 (protocol v2)
+> **Current version:** v0.8.1-dev.3 (protocol v2)
 > **Status:** v0.8.0 released | v0.8.1 in development
 
 ---
@@ -1167,6 +1167,15 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.1-dev.3 — 2026-04-03 (draft)
+- **Windows tray fix:** Use decoded PNG data (`IconSource::Data`) for tray icon instead of invalid `IconSource::Resource("network-workgroup")`. Fixes close-to-tray not working on Windows.
+- **Kick notification:** Kick reason now propagated via status callback; browser re-opens to display "Kicked from server: reason". Auto-reconnect disabled after kick.
+- **Advanced console:** Toggle checkbox in server GUI Console tab. Normal mode: 100-line buffer, fixed height. Advanced mode: 5000-line buffer, fills available space, auto-scroll to bottom. Added Clear button.
+- **More menu retry:** Registration now retries on `onClientPostStartMission` if `core_quickAccess` wasn't ready at load time. Tries method-call and function-call signatures.
+- **Mod refresh on join:** `core_modmanager.initDB()` called before spawning remote vehicles on WorldState, ensuring synced mods are loaded.
+- **Launcher warning:** Browser shows yellow "Launcher not running" note when connecting without the launcher IPC.
+- Version bumped to `0.8.1-dev.3`.
 
 ### v0.8.0-dev.4 — 2026-04-03 (draft)
 - **Connection flow cleanup:** Fixed client map loading, player tracking, and disconnect cleanup.

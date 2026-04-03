@@ -576,6 +576,12 @@ M._handlePacket = function(jsonStr)
         end
       end
     end
+    -- Refresh mod database so newly synced mods are available for vehicle spawning
+    local modMgr = (extensions and extensions.core_modmanager) or core_modmanager
+    if modMgr and modMgr.initDB then
+      log('I', logTag, 'Refreshing mod database before spawning vehicles')
+      pcall(modMgr.initDB)
+    end
     if vehicles and packet.vehicles then
       for _, v in ipairs(packet.vehicles) do
         vehicles.spawnRemote(v.player_id, v.vehicle_id, v.data)
@@ -663,6 +669,8 @@ M._handlePacket = function(jsonStr)
     })
   elseif ptype == "kick" then
     log('W', logTag, 'Kicked: ' .. tostring(packet.reason))
+    M._notifyStatus("kicked", packet.reason or "No reason given")
+    M._autoReconnect = false  -- Don't auto-reconnect after kick
     M.disconnect()
   else
     log('D', logTag, 'Unhandled packet type: ' .. tostring(ptype))

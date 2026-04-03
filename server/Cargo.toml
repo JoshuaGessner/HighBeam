@@ -1,6 +1,6 @@
 [package]
 name = "highbeam-server"
-version = "0.8.1-dev.2"
+version = "0.8.1-dev.3"
 edition = "2021"
 description = "HighBeam multiplayer server for BeamNG.drive"
 license = "GPL-3.0-only"
@@ -37,6 +37,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 tray-item = "0.10"
+windows-sys = { version = "0.52", features = ["Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader"] }
 
 # On Linux tray-item 0.10 requires an explicit backend feature — ksni uses D-Bus
 [target.'cfg(target_os = "linux")'.dependencies]

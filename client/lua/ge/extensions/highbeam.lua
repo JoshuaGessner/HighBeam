@@ -38,6 +38,7 @@ end
 local function _registerMenuEntry()
   local qa = _menuController()
   if not qa then
+    log('D', logTag, 'core_quickAccess not available yet — will retry later')
     return false
   end
 
@@ -49,12 +50,17 @@ local function _registerMenuEntry()
     onSelect = _openBrowserFromMenu,
   }
 
-  -- BeamNG builds differ in addEntry/removeEntry signatures; try common variants.
-  -- Try single-arg (table with id field) first to avoid triggering warnings from
-  -- the two-arg form where the API misinterprets the ID string as the entry.
+  -- BeamNG builds differ in addEntry/removeEntry signatures; try method-call
+  -- (qa:addEntry) and plain-function variants.
   local ok = false
   if qa.addEntry then
-    ok = pcall(qa.addEntry, entry)
+    ok = pcall(qa.addEntry, qa, MENU_ENTRY_ID, entry)
+    if not ok then
+      ok = pcall(qa.addEntry, qa, entry)
+    end
+    if not ok then
+      ok = pcall(qa.addEntry, entry)
+    end
     if not ok then
       ok = pcall(qa.addEntry, MENU_ENTRY_ID, entry)
     end
@@ -64,7 +70,7 @@ local function _registerMenuEntry()
     _menuRegistered = true
     log('I', logTag, 'Registered More menu button: HighBeam Multiplayer')
   else
-    log('W', logTag, 'Could not register More menu button (core_quickAccess API unavailable)')
+    log('W', logTag, 'Could not register More menu button (addEntry failed)')
   end
 
   return ok
@@ -136,6 +142,13 @@ M.onExtensionUnloaded = function()
 
   if connection then
     connection.disconnect()
+  end
+end
+
+-- Retry menu registration after the UI is fully initialised
+M.onClientPostStartMission = function()
+  if not _menuRegistered then
+    _registerMenuEntry()
   end
 end
 
