@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-04-03
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.1-dev.1 (protocol v2)
+> **Current version:** v0.8.1-dev.2 (protocol v2)
 > **Status:** v0.8.0 released | v0.8.1 in development
 
 ---
@@ -1197,6 +1197,10 @@ Ideas for future development (not committed):
 - **JSON fallback fix (critical):** client Lua now checks BeamNG global `jsonEncode`/`jsonDecode` as the primary JSON encoder/decoder, fixing "JSON encode failed — no encoder available" that prevented all connections.
 - **Bootstrap cleanup:** `scripts/modScript.lua` uses `rawget` to avoid false "extension unavailable" log errors; duplicate `scripts/highbeam/modScript.lua` replaced with no-op guard.
 - Adopted dev-release workflow: internal test builds use `-dev.N` suffix and GitHub draft releases.
+
+### v0.8.1-dev.2 — 2026-04-03
+- **Hostname support in Direct Connect:** entering a URL/hostname (e.g. `play.example.com`) now resolves via DNS instead of failing with "Invalid server address". Fixed in both launcher (`ToSocketAddrs`) and client (`socket.dns.toip()`).
+- Server and launcher versions bumped to `0.8.1-dev.2`; protocol remains `v2`.
 
 ### v0.8.0 — 2026-04-03
 - **Community Node Discovery Mesh:** Decentralized P2P server discovery built into every HighBeam server. Operators opt in from the GUI "Community" tab — no central relay required.
