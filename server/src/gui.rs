@@ -33,8 +33,31 @@ struct TrayBridge {
 fn setup_system_tray_bridge() -> TrayBridge {
     let (tx, rx) = mpsc::channel::<TrayCommand>();
 
-    let mut tray = match TrayItem::new("HighBeam Server", IconSource::Resource("network-workgroup"))
-    {
+    // On Linux (ksni) we can supply raw pixel data for a custom tray icon.
+    // On Windows, fall back to a system resource icon; the app icon is embedded
+    // via build.rs/winresource separately.
+    #[cfg(target_os = "linux")]
+    let icon = {
+        let bytes = include_bytes!("../assets/icon.png");
+        let img = image::load_from_memory(bytes)
+            .expect("embedded tray icon is valid PNG")
+            .to_rgba8();
+        let (w, h) = img.dimensions();
+        // ksni expects ARGB pixel data
+        let argb: Vec<u8> = img
+            .pixels()
+            .flat_map(|p| [p[3], p[0], p[1], p[2]])
+            .collect();
+        IconSource::Data {
+            width: w as i32,
+            height: h as i32,
+            data: argb,
+        }
+    };
+    #[cfg(target_os = "windows")]
+    let icon = IconSource::Resource("network-workgroup");
+
+    let mut tray = match TrayItem::new("HighBeam Server", icon) {
         Ok(item) => item,
         Err(e) => {
             tracing::warn!(error = %e, "System tray unavailable; running without tray integration");
@@ -81,8 +104,21 @@ fn setup_system_tray_bridge() -> TrayBridge {
 pub fn run(control: Arc<ControlPlane>) {
     let tray_bridge = setup_system_tray_bridge();
 
+    let icon_bytes = include_bytes!("../assets/icon.png");
+    let icon_image = image::load_from_memory(icon_bytes)
+        .expect("embedded icon is valid PNG")
+        .to_rgba8();
+    let (w, h) = icon_image.dimensions();
+    let icon_data = egui::IconData {
+        rgba: icon_image.into_raw(),
+        width: w,
+        height: h,
+    };
+
     let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1024.0, 720.0]),
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([1024.0, 720.0])
+            .with_icon(Arc::new(icon_data)),
         ..Default::default()
     };
 
