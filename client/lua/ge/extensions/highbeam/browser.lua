@@ -876,7 +876,7 @@ local function _tabBrowse()
   _im.Spacing()
 
   -- Introduction
-  _im.TextDisabled("Community Nodes — add HighBeam server addresses to bootstrap discovery")
+  _im.TextDisabled("Add at least one public community node below, then refresh to browse available servers.")
   _im.Spacing()
   
   -- Node management bar
@@ -1026,7 +1026,7 @@ local function _tabFavorites()
       _im.TableSetColumnIndex(0)
       _im.Text(f.name or (f.serverId or ((f.host or "?") .. ":" .. tostring(f.port or "?"))))
       _im.TableSetColumnIndex(1)
-      if f.serverId then _im.TextDisabled("network") else _im.TextDisabled("direct") end
+      if f.serverId then _im.TextDisabled("community") else _im.TextDisabled("direct") end
       _im.TableSetColumnIndex(2)
       local rid = "fav_" .. tostring(i)
       if _im.SmallButton("Connect##fc" .. rid) then
@@ -1073,7 +1073,7 @@ local function _tabRecent()
       _im.TableSetColumnIndex(0)
       _im.Text(r.name or (r.serverId or ((r.host or "?") .. ":" .. tostring(r.port or "?"))))
       _im.TableSetColumnIndex(1)
-      if r.serverId then _im.TextDisabled("network") else _im.TextDisabled("direct") end
+      if r.serverId then _im.TextDisabled("community") else _im.TextDisabled("direct") end
       _im.TableSetColumnIndex(2)
       _im.TextDisabled(os.date("%Y-%m-%d %H:%M", r.connectedAt or 0))
       _im.TableSetColumnIndex(3)

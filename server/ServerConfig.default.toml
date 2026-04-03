@@ -1,7 +1,7 @@
 [General]
 Name = "My HighBeam Server"
 Port = 18860
-# PublicAddr = "your.public.ip.or.domain"  # Required only for community mesh participation; leave commented to disable public advertisement
+# PublicAddr = "play.example.com"  # Required only if you want this server listed in the community browser
 MaxPlayers = 20
 MaxCarsPerPlayer = 3
 Map = "/levels/gridmap_v2/info.json"
@@ -18,6 +18,8 @@ AuthTimeoutSec = 30
 TickRate = 20
 UdpBufferSize = 65535
 TcpKeepAliveSec = 15
+EnableModSync = false
+# ModSyncPort = 18861  # Optional. Used only when EnableModSync = true.
 
 [Logging]
 Level = "info"
@@ -62,12 +64,13 @@ RegistrationIntervalSec = 30
 # ──────────────────────────────────────────────────────────────────────────────
 # Community Node Discovery Mesh — managed via GUI / console commands
 #
-# The Community Node system is NOT configured in this file.  All settings
-# (enable/disable, HTTP port, region, tags, seed nodes) are managed through:
+# Community browser setup uses two places:
+#   • PublicAddr is set here once because it is part of your public network identity.
+#   • The rest (enable/disable, HTTP port, region, tags, seed nodes) are managed through:
 #   • The server GUI "Community" tab  — recommended for desktop installs
 #   • Console commands               — `community enable`, `community status`, etc.
 #
 # State is persisted to community_node.json alongside this file.
-# This file will never be modified by the community node system.
+# This file is never modified automatically by the community node system.
 # ──────────────────────────────────────────────────────────────────────────────
 

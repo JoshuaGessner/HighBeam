@@ -121,6 +121,7 @@ struct ServerGuiApp {
     community_tags_buf: String,
     community_seed_input: String,
     community_apply_error: String,
+    community_apply_success_until: Option<Instant>,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq)]
@@ -175,6 +176,7 @@ impl ServerGuiApp {
             community_tags_buf: cn_tags,
             community_seed_input: String::new(),
             community_apply_error: String::new(),
+            community_apply_success_until: None,
         }
     }
 
@@ -491,20 +493,24 @@ impl ServerGuiApp {
         };
 
         let status = cn.status();
+        let server_cfg = self.control.get_server_config();
 
         // ── Introduction ─────────────────────────────────────────────────────
-        ui.label("Community Node Discovery allows your server to be found by players without them knowing your IP. Enable to join the mesh, then add at least one seed node (another community server). Your server will gossip with peers every 30 seconds to keep discovery up-to-date.");
+        ui.label("Let players find your server by name without sharing its IP in the browser. To use this safely, set PublicAddr in ServerConfig.toml, open a separate TCP port for the node, then add at least one public seed node below.");
         ui.separator();
 
         // ── Status row ──────────────────────────────────────────────────────
         ui.horizontal(|ui| {
-            let dot = if status.running { "🟢" } else { "⚫" };
+            let (dot, label) = if status.running {
+                ("🟢", "Running")
+            } else if status.enabled {
+                ("🟡", "Starting")
+            } else {
+                ("⚫", "Stopped")
+            };
             ui.label(format!(
                 "{} {} | {} peers | {} servers",
-                dot,
-                if status.running { "Running" } else { "Stopped" },
-                status.peer_count,
-                status.server_count,
+                dot, label, status.peer_count, status.server_count,
             ));
             if status.last_gossip_at > 0 {
                 let ago =
@@ -515,20 +521,36 @@ impl ServerGuiApp {
         if !status.server_id.is_empty() {
             ui.label(format!("Server ID: {}", status.server_id));
         } else if self.community_enabled {
-            ui.colored_label(egui::Color32::YELLOW, "⚠ Server ID not yet generated — enable and apply to generate");
+            ui.colored_label(
+                egui::Color32::YELLOW,
+                "Server ID will be generated after you enable the node and click Apply.",
+            );
         }
-        
-        // ── PublicAddr warning ───────────────────────────────────────────────
+
         if self.community_enabled {
-            let cfg = self.control.get_server_config();
-            if cfg.general.public_addr.is_none() {
-                ui.colored_label(
-                    egui::Color32::YELLOW,
-                    "⚠ PublicAddr not configured — server will not be listed in the mesh. Set your public IP or domain in ServerConfig.toml and restart."
-                );
+            match server_cfg.general.public_addr.as_deref() {
+                Some(public_addr) => {
+                    if let Err(e) = crate::validation::validate_public_address(public_addr) {
+                        ui.colored_label(
+                            egui::Color32::YELLOW,
+                            format!(
+                                "PublicAddr needs attention: {}. Update ServerConfig.toml and restart before enabling public discovery.",
+                                e
+                            ),
+                        );
+                    } else {
+                        ui.label(format!("Advertised address: {}", public_addr));
+                    }
+                }
+                None => {
+                    ui.colored_label(
+                        egui::Color32::YELLOW,
+                        "PublicAddr is not set. Add your public IP or hostname to ServerConfig.toml and restart before players use the community browser.",
+                    );
+                }
             }
         }
-        
+
         ui.separator();
 
         // ── Settings form ────────────────────────────────────────────────────
@@ -544,7 +566,8 @@ impl ServerGuiApp {
                 ui.text_edit_singleline(&mut self.community_port_buf);
                 ui.end_row();
 
-                ui.label("Region");
+                ui.label("Region")
+                    .on_hover_text("Optional regional label shown to players. Leave empty to show the server worldwide.");
                 egui::ComboBox::from_id_salt("cn_region")
                     .selected_text(if self.community_region_buf.is_empty() {
                         "(any)"
@@ -560,7 +583,6 @@ impl ServerGuiApp {
                             );
                         }
                     });
-                ui.label("").on_hover_text("Filter visibility to a specific region. Empty = visible to all players worldwide.");
                 ui.end_row();
 
                 ui.label("Tags");
@@ -572,11 +594,20 @@ impl ServerGuiApp {
             });
 
         ui.add_space(4.0);
-        
-        // Port forwarding note
-        ui.colored_label(egui::Color32::GRAY, "Note: This HTTP port requires a separate port-forward on your router. Keep it different from your gameplay port (18860).");
+
+        ui.colored_label(
+            egui::Color32::GRAY,
+            "Open this TCP port only if you want community-browser discovery. It must be forwarded separately from gameplay port 18860.",
+        );
         ui.add_space(8.0);
-        
+
+        if let Some(until) = self.community_apply_success_until {
+            if Instant::now() < until {
+                ui.colored_label(egui::Color32::GREEN, "Settings applied.");
+            } else {
+                self.community_apply_success_until = None;
+            }
+        }
         if !self.community_apply_error.is_empty() {
             ui.colored_label(egui::Color32::RED, &self.community_apply_error);
         }
@@ -604,9 +635,12 @@ impl ServerGuiApp {
                         seeds,
                     );
                     self.community_apply_error.clear();
+                    self.community_apply_success_until =
+                        Some(Instant::now() + Duration::from_secs(2));
                     self.push_console_line("Community node settings applied.".to_string());
                 }
                 Err(e) => {
+                    self.community_apply_success_until = None;
                     self.community_apply_error = e.to_string();
                 }
             }
@@ -617,7 +651,7 @@ impl ServerGuiApp {
         ui.label("Seed Nodes");
         ui.colored_label(
             egui::Color32::LIGHT_GRAY,
-            "Seed nodes are other HighBeam server operators who run Community Node. Contact the HighBeam Discord or GitHub for a list of public seed nodes to bootstrap your mesh connection."
+            "Add one or more public community nodes here to bootstrap discovery. Seed nodes are shared by the HighBeam community and are safe to remove or replace later."
         );
         egui::ScrollArea::vertical()
             .max_height(120.0)

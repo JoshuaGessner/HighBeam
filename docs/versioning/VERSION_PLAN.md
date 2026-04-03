@@ -608,7 +608,7 @@ As of 2026-03-30, historical hardening notes were merged into this plan.
 - **P2P gossip mesh:** Every server that opts in IS a relay node. Nodes exchange server lists with each other, so any single node knows about every server in the mesh. No central infrastructure.
 - **Bootstrap via seeds:** Operators enter 1+ seed node addresses (shared via Discord, website, etc.) to join the mesh. Once connected, they discover all other nodes organically through gossip. Seeds are only needed for initial entry.
 - **IP privacy:** Server browser shows server names, maps, player counts, mods, and latency — never IP addresses. IPs are resolved internally at connect time only. Same privacy model as Discord voice / Steam matchmaking.
-- **All setup in GUI:** No config file editing. Community Node is enabled, configured, and monitored entirely from the server GUI "Community" tab (or console commands for headless).
+- **Low-friction setup:** Set `PublicAddr` once in `ServerConfig.toml`, then enable, configure, and monitor Community Node from the server GUI "Community" tab (or console commands for headless).
 - **No new crate dependencies:** Built on existing `tokio` (TCP listener), `serde_json`, `reqwest` (outbound gossip), `rand` (ID generation).
 
 **Architecture Overview:**

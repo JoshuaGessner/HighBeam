@@ -6,9 +6,13 @@ services:
     container_name: highbeam-server
     restart: unless-stopped
     ports:
+      # Required gameplay traffic
       - "18860:18860/tcp"
       - "18860:18860/udp"
-      - "18861:18861/tcp"
+      # Optional launcher mod sync
+      # - "18861:18861/tcp"
+      # Optional community browser discovery
+      # - "18862:18862/tcp"
     volumes:
       - ./ServerConfig.toml:/opt/highbeam/ServerConfig.toml
       - ./Resources:/opt/highbeam/Resources

@@ -250,6 +250,7 @@ AuthTimeoutSec = 30        # Time limit for auth handshake
 TickRate = 20              # Server tick rate (Hz)
 UdpBufferSize = 65535      # UDP receive buffer size
 TcpKeepAliveSec = 15       # TCP keepalive interval
+EnableModSync = false      # Turn on only if you want launcher-based mod downloads
 # ModSyncPort = 18861      # Optional separate port for launcher mod transfers (defaults to Port+1)
 
 [Logging]
@@ -335,6 +336,19 @@ See [RELAY.md](RELAY.md) for the full relay architecture, JSON API contract, and
 5. **Hash and salt credentials.** Server passwords are Argon2-hashed on disk. Session tokens are cryptographically random and short-lived.
 6. **Enforce resource limits.** MaxPlayers, MaxCarsPerPlayer, max packet size (1MB), per-player bandwidth caps, and event payload limits (64 KB) prevent resource exhaustion.
 7. **Graceful error handling.** Invalid packets, malformed JSON, and unexpected disconnects must never crash the server. All error paths log structured warnings and clean up state.
-8. **Minimize attack surface.** The server exposes only port 18860 (TCP + UDP). No HTTP endpoints, no admin panels over the network. The GUI is local-only (rendered via egui, not a web server).
+8. **Minimize attack surface.** The default server exposes only port 18860 (TCP + UDP). Extra listeners are opt-in: 18861/TCP for launcher mod sync and 18862/TCP for the community browser. The GUI is local-only (rendered via egui, not a web server).
 9. **Sign mod manifests.** The server signs the mod manifest with an Ed25519 key so launchers can verify mod integrity. See v0.9.0 milestone.
 10. **Restrict console eval.** `AllowPluginEval` defaults to `false` in production to prevent arbitrary code injection into plugin Lua states via console. See v0.9.0 milestone.
+
+### Port Matrix
+
+Use the smallest profile that matches how you want players to join:
+
+| Setup | Ports to Open | Why |
+|-------|---------------|-----|
+| Direct connect only | 18860 TCP + UDP | Base gameplay traffic |
+| Direct connect + launcher mod sync | 18860 TCP + UDP, 18861 TCP | Lets the launcher download required mods automatically |
+| Community browser listing | 18860 TCP + UDP, 18862 TCP | Lets players find the server by name through the community browser |
+| All features | 18860 TCP + UDP, 18861 TCP, 18862 TCP | Gameplay + launcher mod sync + community browser listing |
+
+Local launcher IPC uses an OS-assigned loopback port on `127.0.0.1` and is never exposed to the internet.

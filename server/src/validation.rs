@@ -275,6 +275,9 @@ fn community_node_is_private_host(host: &str) -> bool {
     if h.starts_with("10.") || h.starts_with("192.168.") {
         return true;
     }
+    if h.starts_with("fc") || h.starts_with("fd") || h.starts_with("fe80:") {
+        return true;
+    }
     if let Some(b) = h
         .strip_prefix("172.")
         .and_then(|rest| rest.split('.').next())
@@ -288,44 +291,71 @@ fn community_node_is_private_host(host: &str) -> bool {
 }
 
 /// Validate a public address for use in community node mesh advertisement.
-/// 
+///
 /// The address must:
 /// - Not be empty
 /// - Not be 0.0.0.0, 127.x.x.x, 192.168.x.x, 10.x.x.x, or 172.16–31.x.x (private/loopback)
 /// - Be at most 253 characters (DNS limit)
-/// 
+///
 /// Can be an IPv4, IPv6, or hostname.
 pub fn validate_public_address(addr: &str) -> anyhow::Result<()> {
     let trimmed = addr.trim();
-    
+
     if trimmed.is_empty() {
         return Err(anyhow!("Public address cannot be empty"));
     }
-    
+
     if trimmed.len() > 253 {
         return Err(anyhow!("Public address is too long (max 253 characters)"));
     }
-    
-    // Extract hostname part (strip :port if present)
-    let host = if let Some(idx) = trimmed.rfind(':') {
-        let potential_port = &trimmed[idx + 1..];
-        // If the part after : is numeric, treat it as port; otherwise it might be IPv6
-        if potential_port.parse::<u16>().is_ok() {
-            &trimmed[..idx]
-        } else {
-            trimmed
+
+    if trimmed.starts_with('[') {
+        let Some(end_bracket) = trimmed.find(']') else {
+            return Err(anyhow!("Public address has an invalid IPv6 bracket format"));
+        };
+        if end_bracket != trimmed.len() - 1 {
+            return Err(anyhow!(
+                "Public address must not include a port; set only the host or IP"
+            ));
         }
-    } else {
-        trimmed
-    };
-    
-    if community_node_is_private_host(host) {
+
+        let host = &trimmed[1..end_bracket];
+        host.parse::<std::net::Ipv6Addr>()
+            .map_err(|_| anyhow!("Public address '{}' is not a valid IPv6 host", trimmed))?;
+
+        if community_node_is_private_host(host) {
+            return Err(anyhow!(
+                "Public address '{}' resolves to a private or loopback address. Use your actual public IP or domain.",
+                host
+            ));
+        }
+
+        return Ok(());
+    }
+
+    if trimmed.parse::<std::net::Ipv6Addr>().is_ok() {
+        if community_node_is_private_host(trimmed) {
+            return Err(anyhow!(
+                "Public address '{}' resolves to a private or loopback address. Use your actual public IP or domain.",
+                trimmed
+            ));
+        }
+        return Ok(());
+    }
+
+    if trimmed.contains(':') {
         return Err(anyhow!(
-            "Public address '{}' resolves to a private or loopback address. Use your actual public IP or domain.",
-            host
+            "Public address must not include a port; set only the host or IP"
         ));
     }
-    
+
+    if community_node_is_private_host(trimmed) {
+        return Err(anyhow!(
+            "Public address '{}' resolves to a private or loopback address. Use your actual public IP or domain.",
+            trimmed
+        ));
+    }
+
     Ok(())
 }
 
@@ -380,5 +410,20 @@ mod community_node_validation_tests {
         assert!(
             validate_community_node_settings(&[], "", &["not-a-seed".to_string()], 18862).is_err()
         );
+    }
+
+    #[test]
+    fn test_public_address_accepts_hostname() {
+        assert!(validate_public_address("play.example.com").is_ok());
+    }
+
+    #[test]
+    fn test_public_address_rejects_private_ip() {
+        assert!(validate_public_address("192.168.1.50").is_err());
+    }
+
+    #[test]
+    fn test_public_address_rejects_host_with_port() {
+        assert!(validate_public_address("play.example.com:18860").is_err());
     }
 }
