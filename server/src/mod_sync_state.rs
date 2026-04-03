@@ -1,4 +1,6 @@
-use std::sync::RwLock;
+use std::sync::Arc;
+
+use parking_lot::RwLock;
 
 use crate::net::packet::ModDescriptor;
 
@@ -10,8 +12,8 @@ pub struct ModSyncInner {
     pub enabled: bool,
     /// The port the listener is bound to (static per startup).
     pub port: u16,
-    /// Current mod manifest loaded from Resources/Client/. May be empty.
-    pub manifest: Vec<ModDescriptor>,
+    /// Current mod manifest loaded from Resources/Client/. Stored as Arc for cheap sharing.
+    pub manifest: Arc<Vec<ModDescriptor>>,
 }
 
 pub struct ModSyncState {
@@ -25,54 +27,47 @@ impl ModSyncState {
             inner: RwLock::new(ModSyncInner {
                 enabled,
                 port,
-                manifest,
+                manifest: Arc::new(manifest),
             }),
         }
     }
 
     /// Toggle mod sync enable/disable. Takes effect immediately for new connections.
     pub fn set_enabled(&self, enabled: bool) {
-        if let Ok(mut guard) = self.inner.write() {
-            guard.enabled = enabled;
-        }
+        self.inner.write().enabled = enabled;
     }
 
     /// Check if mod sync is currently enabled.
     pub fn is_enabled(&self) -> bool {
-        self.inner.read().map(|g| g.enabled).unwrap_or(false)
+        self.inner.read().enabled
     }
 
     /// Get the manifest if mod sync is enabled, or None if disabled.
-    /// Returns an empty vec (not None) if enabled but no mods are present.
-    pub fn manifest_if_enabled(&self) -> Option<Vec<ModDescriptor>> {
-        let guard = self.inner.read().ok()?;
+    /// Returns a cheap Arc clone instead of copying the entire vec.
+    pub fn manifest_if_enabled(&self) -> Option<Arc<Vec<ModDescriptor>>> {
+        let guard = self.inner.read();
         if guard.enabled {
-            Some(guard.manifest.clone())
+            Some(Arc::clone(&guard.manifest))
         } else {
             None
         }
     }
 
     /// Get the current manifest regardless of enabled state (for GUI display).
-    pub fn get_manifest(&self) -> Vec<ModDescriptor> {
-        self.inner
-            .read()
-            .map(|g| g.manifest.clone())
-            .unwrap_or_default()
+    pub fn get_manifest(&self) -> Arc<Vec<ModDescriptor>> {
+        Arc::clone(&self.inner.read().manifest)
     }
 
     /// Refresh the manifest by replacing it with a new one (loaded from disk).
     /// Does not change the enabled state.
     pub fn refresh_manifest(&self, new_manifest: Vec<ModDescriptor>) {
-        if let Ok(mut guard) = self.inner.write() {
-            guard.manifest = new_manifest;
-        }
+        self.inner.write().manifest = Arc::new(new_manifest);
     }
 
     /// Return the active mod_sync port if enabled AND has mods, or None otherwise.
     /// Used by UDP discovery to advertise whether mod sync is actually available.
     pub fn active_port_if_ready(&self) -> Option<u16> {
-        let guard = self.inner.read().ok()?;
+        let guard = self.inner.read();
         if guard.enabled && !guard.manifest.is_empty() {
             Some(guard.port)
         } else {
@@ -87,11 +82,11 @@ impl ModSyncState {
 
     /// Get the bound port regardless of state (for GUI display).
     pub fn port(&self) -> u16 {
-        self.inner.read().map(|g| g.port).unwrap_or(0)
+        self.inner.read().port
     }
 
     /// Get the mod count for display.
     pub fn mod_count(&self) -> usize {
-        self.inner.read().map(|g| g.manifest.len()).unwrap_or(0)
+        self.inner.read().manifest.len()
     }
 }

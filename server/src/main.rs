@@ -271,8 +271,9 @@ async fn run_server(
 
     // Poll plugin directory for changes and hot-reload plugin states.
     let plugins_for_reload = plugins.clone();
+    let plugin_reload_sec = config.network.plugin_reload_interval_sec;
     tokio::spawn(async move {
-        let interval = std::time::Duration::from_secs(2);
+        let interval = std::time::Duration::from_secs(plugin_reload_sec);
         loop {
             tokio::time::sleep(interval).await;
             match plugins_for_reload.refresh_if_changed() {
@@ -330,8 +331,9 @@ async fn run_server(
     let autosave_control = control_plane.clone();
     let autosave_world = world.clone();
     let autosave_path = config.general.state_file.clone();
+    let autosave_sec = config.network.autosave_interval_sec;
     tokio::spawn(async move {
-        let interval = std::time::Duration::from_secs(30);
+        let interval = std::time::Duration::from_secs(autosave_sec);
         loop {
             tokio::time::sleep(interval).await;
             if let Err(e) =
@@ -389,11 +391,15 @@ async fn run_server(
     if config.network.enable_mod_sync {
         let mod_resource_folder = Arc::new(config.general.resource_folder.clone());
         let mod_sync_state_for_task = mod_sync_state.clone();
+        let max_mod_sync_connections = config.network.max_mod_sync_connections;
+        let mod_sync_timeout = config.network.mod_sync_connection_timeout_sec;
         tokio::spawn(async move {
             if let Err(e) = net::mod_transfer::start_listener(
                 mod_sync_port,
                 mod_resource_folder,
                 mod_sync_state_for_task,
+                max_mod_sync_connections,
+                mod_sync_timeout,
             )
             .await
             {

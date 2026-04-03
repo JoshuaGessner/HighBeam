@@ -300,6 +300,11 @@ fn handle_join_request(
             &report.server_mods,
         ) {
             Ok(_) => {
+                mod_cache::evict_to_size(
+                    cache_dir,
+                    &mut cache_index,
+                    cfg.max_cache_size_mb * 1024 * 1024,
+                );
                 let _ = mod_cache::save_index(cache_dir, &cache_index);
             }
             Err(e) => {

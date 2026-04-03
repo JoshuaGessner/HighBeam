@@ -501,6 +501,11 @@ fn main() -> Result<()> {
                 "Server mod installation completed"
             );
 
+            mod_cache::evict_to_size(
+                &cache_dir,
+                &mut cache_index,
+                cfg.max_cache_size_mb * 1024 * 1024,
+            );
             mod_cache::save_index(&cache_dir, &cache_index)?;
         }
     } else {
