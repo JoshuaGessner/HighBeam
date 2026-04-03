@@ -220,13 +220,13 @@ fn handle_join_request(
     let should_sync = match crate::discovery::query_server(&server, cfg.query_timeout_ms) {
         Ok(server_info) => {
             if let Some(mod_sync_port) = server_info.mod_sync_port {
-                let (host, _) = server
-                    .rsplit_once(':')
-                    .unwrap_or((&server, "18860"));
+                let (host, _) = server.rsplit_once(':').unwrap_or((&server, "18860"));
                 Some(format!("{host}:{mod_sync_port}"))
             } else {
                 tracing::info!(server = %server, "Server has mod sync disabled; skipping mod download");
-                if let Err(e) = installer::cleanup_staged_server_mods(cfg.beamng_userfolder.as_deref()) {
+                if let Err(e) =
+                    installer::cleanup_staged_server_mods(cfg.beamng_userfolder.as_deref())
+                {
                     tracing::warn!(error = %e, "Failed to clean up staged mods");
                 }
                 None
@@ -234,9 +234,7 @@ fn handle_join_request(
         }
         Err(e) => {
             tracing::warn!(error = %e, server = %server, "Server discovery failed; falling back to default mod sync port");
-            let (host, _) = server
-                .rsplit_once(':')
-                .unwrap_or((&server, "18860"));
+            let (host, _) = server.rsplit_once(':').unwrap_or((&server, "18860"));
             Some(format!("{host}:18861"))
         }
     };

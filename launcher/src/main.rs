@@ -455,7 +455,9 @@ fn main() -> Result<()> {
                     // Server has mod sync disabled; skip sync
                     tracing::info!(server = %server_addr, "Server has mod sync disabled; skipping mod download");
                     // Clean up any previously staged mods
-                    if let Err(e) = installer::cleanup_staged_server_mods(cfg.beamng_userfolder.as_deref()) {
+                    if let Err(e) =
+                        installer::cleanup_staged_server_mods(cfg.beamng_userfolder.as_deref())
+                    {
                         tracing::warn!(error = %e, "Failed to clean up staged mods");
                     }
                     None

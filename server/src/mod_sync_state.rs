@@ -39,10 +39,7 @@ impl ModSyncState {
 
     /// Check if mod sync is currently enabled.
     pub fn is_enabled(&self) -> bool {
-        self.inner
-            .read()
-            .map(|g| g.enabled)
-            .unwrap_or(false)
+        self.inner.read().map(|g| g.enabled).unwrap_or(false)
     }
 
     /// Get the manifest if mod sync is enabled, or None if disabled.
@@ -90,17 +87,11 @@ impl ModSyncState {
 
     /// Get the bound port regardless of state (for GUI display).
     pub fn port(&self) -> u16 {
-        self.inner
-            .read()
-            .map(|g| g.port)
-            .unwrap_or(0)
+        self.inner.read().map(|g| g.port).unwrap_or(0)
     }
 
     /// Get the mod count for display.
     pub fn mod_count(&self) -> usize {
-        self.inner
-            .read()
-            .map(|g| g.manifest.len())
-            .unwrap_or(0)
+        self.inner.read().map(|g| g.manifest.len()).unwrap_or(0)
     }
 }

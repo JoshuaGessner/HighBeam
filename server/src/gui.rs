@@ -156,12 +156,12 @@ impl ServerGuiApp {
                 })
                 .unwrap_or_else(|| (false, "18862".to_string(), String::new(), String::new()))
         };
-        
+
         let mod_sync_enabled = control
             .get_mod_sync_state()
             .map(|s| s.is_enabled())
             .unwrap_or(false);
-        
+
         Self {
             control,
             tray_bridge,
@@ -358,7 +358,7 @@ impl ServerGuiApp {
             let prev_enabled = self.mod_sync_enabled;
             ui.checkbox(&mut self.mod_sync_enabled, "Enable mod sync (port 18861)")
                 .on_hover_text("When enabled, the launcher can download mods before players join");
-            
+
             if self.mod_sync_enabled != prev_enabled {
                 mss.set_enabled(self.mod_sync_enabled);
             }
@@ -372,7 +372,9 @@ impl ServerGuiApp {
 
             ui.horizontal(|ui| {
                 if ui.button("Refresh Manifest").clicked() {
-                    match crate::mods::build_manifest(&self.control.get_server_config().general.resource_folder) {
+                    match crate::mods::build_manifest(
+                        &self.control.get_server_config().general.resource_folder,
+                    ) {
                         Ok(new_manifest) => {
                             mss.refresh_manifest(new_manifest);
                             self.push_console_line("Mod manifest refreshed.".to_string());

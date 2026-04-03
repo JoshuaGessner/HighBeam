@@ -19,8 +19,8 @@ mod discovery_relay;
 mod gui;
 mod log_rotation;
 mod metrics;
-mod mods;
 mod mod_sync_state;
+mod mods;
 mod net;
 mod persistence;
 mod plugin;
@@ -223,7 +223,10 @@ async fn run_server(
     let community_status = community_node.status();
     control_plane.set_community_node(community_node);
 
-    let network_profile = match (config.network.enable_mod_sync && control_plane.active_mod_sync_port().is_some(), community_status.enabled) {
+    let network_profile = match (
+        config.network.enable_mod_sync && control_plane.active_mod_sync_port().is_some(),
+        community_status.enabled,
+    ) {
         (false, false) => "minimal",
         (true, false) => "mod-sync",
         (false, true) => "mesh-node",
@@ -312,7 +315,10 @@ async fn run_server(
     );
 
     // Create ModSyncState for live toggle and manifest refresh without server restart.
-    let mod_sync_port = config.network.mod_sync_port.unwrap_or(config.general.port + 1);
+    let mod_sync_port = config
+        .network
+        .mod_sync_port
+        .unwrap_or(config.general.port + 1);
     let mod_sync_state = Arc::new(mod_sync_state::ModSyncState::new(
         mod_sync_port,
         mod_manifest,
@@ -395,9 +401,7 @@ async fn run_server(
             }
         });
     } else {
-        tracing::info!(
-            "Launcher mod sync listener disabled in config"
-        );
+        tracing::info!("Launcher mod sync listener disabled in config");
     }
 
     // Start UDP receiver in background

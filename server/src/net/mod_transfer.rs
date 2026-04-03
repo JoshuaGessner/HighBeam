@@ -43,10 +43,8 @@ async fn handle_connection(
 ) -> Result<()> {
     // Get manifest if mod sync is enabled; otherwise send empty list
     let mods = mod_sync_state.manifest_if_enabled().unwrap_or_default();
-    
-    let mod_list = TcpPacket::ModList {
-        mods: mods.clone(),
-    };
+
+    let mod_list = TcpPacket::ModList { mods: mods.clone() };
     write_packet(&mut stream, &mod_list).await?;
 
     let request = read_packet(&mut stream).await?;
