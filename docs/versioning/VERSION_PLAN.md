@@ -2,8 +2,8 @@
 
 > **Last updated:** 2026-04-02
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.6.78 (protocol v2)
-> **Status:** v0.6.78 Complete — Next up: v0.8.0 Community Node Discovery Mesh
+> **Current version:** v0.6.79 (protocol v2)
+> **Status:** v0.6.79 Complete — Next up: v0.8.0 Community Node Discovery Mesh
 
 ---
 
@@ -875,6 +875,10 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.6.79 — 2026-04-03
+- **Cargo fmt / clippy fixes:** resolved all formatting and lint warnings introduced in v0.6.78.
+- Server and launcher versions bumped to `0.6.79`; protocol remains `v2`.
 
 ### v0.6.78 — 2026-04-02
 - **Direct connect hardening:** browser now stays visible until a confirmed connection succeeds; bridge/direct-connect path guards missing connection subsystem access and surfaces connection/auth failure details back into the UI.
