@@ -2,8 +2,8 @@
 
 > **Last updated:** 2026-04-03
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.0-dev.4 (protocol v2)
-> **Status:** v0.8.0-dev.4 — Community Node Discovery Mesh + Connection Flow Cleanup | v0.9.0 planned
+> **Current version:** v0.8.0 (protocol v2)
+> **Status:** v0.8.0 released | v0.9.0 planned
 
 ---
 
@@ -595,7 +595,7 @@ As of 2026-03-30, historical hardening notes were merged into this plan.
 
 ### v0.8.0 — Community Node Discovery Mesh (Beta)
 
-**Status:** In progress (v0.8.0-dev.4)
+**Status:** Complete — v0.8.0 released
 **Goal:** Decentralized, P2P server discovery mesh built into every HighBeam server. Server operators opt in via the GUI to make their server discoverable. Players browse and connect to servers entirely in-game without knowing any IP addresses. No central relay infrastructure required.
 
 **Problem Statement:**
@@ -1197,6 +1197,16 @@ Ideas for future development (not committed):
 - **JSON fallback fix (critical):** client Lua now checks BeamNG global `jsonEncode`/`jsonDecode` as the primary JSON encoder/decoder, fixing "JSON encode failed — no encoder available" that prevented all connections.
 - **Bootstrap cleanup:** `scripts/modScript.lua` uses `rawget` to avoid false "extension unavailable" log errors; duplicate `scripts/highbeam/modScript.lua` replaced with no-op guard.
 - Adopted dev-release workflow: internal test builds use `-dev.N` suffix and GitHub draft releases.
+
+### v0.8.0 — 2026-04-03
+- **Community Node Discovery Mesh:** Decentralized P2P server discovery built into every HighBeam server. Operators opt in from the GUI "Community" tab — no central relay required.
+- **IP privacy:** Browse Servers shows names, maps, player counts, and latency — never raw IP addresses. IPs resolved internally at connect time via `/resolve/{id}`.
+- **Gossip protocol:** Nodes exchange server/peer lists every 30s with automatic stale-entry pruning (90s servers, 5min peers). Eclipse-resistant seed pinning.
+- **Client browser rewrite:** Browse tab now queries community nodes instead of a single relay URL. Favorites and recents keyed by `server_id` (survive IP changes).
+- **Custom app icons:** Window icon (title bar), Windows embedded .exe icon, and Linux tray icon now use custom HighBeam branding assets.
+- **Security:** Rate-limited `/resolve` (10/min per IP), 256 KB body caps, input validation on all gossip data, 500-server / 200-peer hard caps.
+- **Console commands:** `community enable|disable|status|port|region|tags|add-seed|remove-seed` for headless operators.
+- Server and launcher versions bumped to `0.8.0`; protocol remains `v2`.
 
 ### v0.6.79 — 2026-04-03
 - **Cargo fmt / clippy fixes:** resolved all formatting and lint warnings introduced in v0.6.78.
