@@ -4,7 +4,6 @@ on:
   push:
     tags:
       - "v*"
-      - "!v*-dev*"
 
 concurrency:
   group: release-${{ github.ref }}
@@ -94,6 +93,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Rebuild launcher payload zip from client sources
+        shell: pwsh
+        run: |
+          Remove-Item -Force "launcher/payload/highbeam.zip" -ErrorAction SilentlyContinue
+          Push-Location client
+          Compress-Archive -Path scripts, lua, ui -DestinationPath ../launcher/payload/highbeam.zip
+          Pop-Location
+
       - name: Validate launcher Cargo version matches release tag
         shell: pwsh
         run: |
@@ -143,6 +150,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Delete existing dev release for this tag (fresh draft)
+        if: contains(github.ref_name, '-dev.')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
+            gh release delete "${{ github.ref_name }}" --yes --cleanup-tag=false
+          fi
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -153,4 +169,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          draft: ${{ contains(github.ref_name, '-dev.') }}
+          prerelease: ${{ contains(github.ref_name, '-dev.') }}
+          make_latest: false
           files: artifacts/*
