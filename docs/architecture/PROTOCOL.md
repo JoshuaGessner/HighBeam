@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-04-03
 > **Protocol version:** 2
-> **Applies to:** v0.8.0-dev.4
+> **Applies to:** v0.8.0
 > **Parent doc:** [OVERVIEW.md](OVERVIEW.md)
 
 ---
