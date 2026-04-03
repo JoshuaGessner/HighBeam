@@ -212,7 +212,12 @@ M.connect = function(host, port, username, password)
   tcp = socket.tcp()
   tcp:settimeout(0)  -- NON-BLOCKING: critical for not freezing the game
 
-  local result, err = tcp:connect(host, port)
+  -- Resolve hostname to IP (LuaSocket tcp:connect does not do DNS)
+  local resolved = host
+  local ip = socket.dns.toip(host)
+  if ip then resolved = ip end
+
+  local result, err = tcp:connect(resolved, port)
   -- Non-blocking connect returns nil, "timeout" immediately
   -- Must check with socket.select() on subsequent ticks
   if result or err == "timeout" then

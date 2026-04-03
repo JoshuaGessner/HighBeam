@@ -1,4 +1,4 @@
-use std::net::{SocketAddr, UdpSocket};
+use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -36,8 +36,10 @@ enum RelayListResponse {
 
 pub fn query_server(addr: &str, timeout_ms: u64) -> Result<ServerQueryResponse> {
     let target: SocketAddr = addr
-        .parse()
-        .with_context(|| format!("Invalid server address: {}", addr))?;
+        .to_socket_addrs()
+        .with_context(|| format!("Failed to resolve server address: {}", addr))?
+        .next()
+        .with_context(|| format!("No addresses found for: {}", addr))?;
 
     let socket = UdpSocket::bind("0.0.0.0:0").context("Failed to bind local UDP socket")?;
     socket
