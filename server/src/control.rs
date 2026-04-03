@@ -61,6 +61,7 @@ pub struct ControlPlane {
     plugins: Option<Arc<PluginRuntime>>,
     current_map: RwLock<String>,
     started_at: Instant,
+    community_node: RwLock<Option<Arc<crate::community_node::CommunityNodeState>>>,
 }
 
 fn canonical_map_path(input: &str, fallback: &str) -> String {
@@ -244,7 +245,23 @@ impl ControlPlane {
             plugins,
             current_map: RwLock::new(initial_map),
             started_at: Instant::now(),
+            community_node: RwLock::new(None),
         }
+    }
+
+    /// Wire in the community node state after it has been created.
+    pub fn set_community_node(&self, state: Arc<crate::community_node::CommunityNodeState>) {
+        if let Ok(mut guard) = self.community_node.write() {
+            *guard = Some(state);
+        }
+    }
+
+    /// Borrow the community node state, if available.
+    pub fn get_community_node(&self) -> Option<Arc<crate::community_node::CommunityNodeState>> {
+        self.community_node
+            .read()
+            .ok()
+            .and_then(|g| g.as_ref().map(Arc::clone))
     }
 
     pub fn snapshot(&self) -> ServerSnapshot {
@@ -553,7 +570,102 @@ impl ControlPlane {
             return Ok(format!("Lua eval ok: {}", result));
         }
 
-        Ok("Commands: status | say <text> | kick <player_id> [reason] | plugins reload | map <path> | lua <plugin_name> <code>".to_string())
+        if let Some(rest) = trimmed.strip_prefix("community") {
+            return self.execute_community_command(rest.trim());
+        }
+
+        Ok("Commands: status | say <text> | kick <player_id> [reason] | plugins reload | map <path> | lua <plugin_name> <code> | community <subcommand>".to_string())
+    }
+
+    fn execute_community_command(&self, cmd: &str) -> Result<String> {
+        let cn = self
+            .community_node
+            .read()
+            .map_err(|_| anyhow::anyhow!("Community node lock poisoned"))?;
+        let Some(state) = cn.as_ref() else {
+            bail!("Community node not initialised");
+        };
+
+        match cmd {
+            "enable" => {
+                state.set_enabled(true);
+                Ok("Community node enabled".to_string())
+            }
+            "disable" => {
+                state.set_enabled(false);
+                Ok("Community node disabled".to_string())
+            }
+            "status" => {
+                let s = state.status();
+                Ok(format!(
+                    "community node: enabled={} running={} id={} port={} region={} tags=[{}] seeds={} peers={} servers={} last_gossip={}s ago",
+                    s.enabled,
+                    s.running,
+                    if s.server_id.is_empty() { "(unset)" } else { &s.server_id },
+                    s.listen_port,
+                    if s.region.is_empty() { "-" } else { &s.region },
+                    s.tags.join(","),
+                    s.seed_nodes.len(),
+                    s.peer_count,
+                    s.server_count,
+                    if s.last_gossip_at == 0 { 0 } else {
+                        crate::community_node::now_secs_pub().saturating_sub(s.last_gossip_at)
+                    }
+                ))
+            }
+            other if other.starts_with("port ") => {
+                let port_str = other.trim_start_matches("port ").trim();
+                let port: u16 = port_str
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("Invalid port: {}", port_str))?;
+                if port < 1024 {
+                    bail!("Port must be 1024 or higher");
+                }
+                state.set_port(port);
+                Ok(format!("Community node port set to {}", port))
+            }
+            other if other.starts_with("region ") => {
+                let region = other.trim_start_matches("region ").trim().to_string();
+                if !region.is_empty()
+                    && !matches!(region.as_str(), "NA" | "EU" | "AP" | "SA" | "OC" | "AF")
+                {
+                    bail!("Region must be one of: NA, EU, AP, SA, OC, AF, or empty");
+                }
+                state.set_region(region.clone());
+                Ok(format!("Community node region set to '{}'", region))
+            }
+            other if other.starts_with("tags ") => {
+                let raw = other.trim_start_matches("tags ").trim();
+                let tags: Vec<String> = raw
+                    .split(',')
+                    .map(|t| t.trim().to_string())
+                    .filter(|t| !t.is_empty())
+                    .collect();
+                crate::validation::validate_community_node_settings(&tags, "", &[], 18862)?;
+                state.set_tags(tags.clone());
+                Ok(format!("Community node tags set to: {}", tags.join(", ")))
+            }
+            other if other.starts_with("add-seed ") => {
+                let addr = other.trim_start_matches("add-seed ").trim().to_string();
+                crate::validation::validate_community_node_settings(
+                    &[],
+                    "",
+                    std::slice::from_ref(&addr),
+                    18862,
+                )?;
+                state.add_seed_node(addr.clone());
+                Ok(format!("Added seed node: {}", addr))
+            }
+            other if other.starts_with("remove-seed ") => {
+                let addr = other.trim_start_matches("remove-seed ").trim();
+                state.remove_seed_node(addr);
+                Ok(format!("Removed seed node: {}", addr))
+            }
+            _ => Ok(
+                "community subcommands: enable | disable | status | port <n> | region <code> | tags <a,b> | add-seed <addr> | remove-seed <addr>"
+                    .to_string(),
+            ),
+        }
     }
 }
 

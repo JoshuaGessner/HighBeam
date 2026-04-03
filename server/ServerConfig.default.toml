@@ -57,3 +57,16 @@ AutoUpdate = true
 EnableRelay             = false
 RelayUrls               = []
 RegistrationIntervalSec = 30
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Community Node Discovery Mesh — managed via GUI / console commands
+#
+# The Community Node system is NOT configured in this file.  All settings
+# (enable/disable, HTTP port, region, tags, seed nodes) are managed through:
+#   • The server GUI "Community" tab  — recommended for desktop installs
+#   • Console commands               — `community enable`, `community status`, etc.
+#
+# State is persisted to community_node.json alongside this file.
+# This file will never be modified by the community node system.
+# ──────────────────────────────────────────────────────────────────────────────
+
