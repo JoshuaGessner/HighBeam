@@ -18,8 +18,8 @@ AuthTimeoutSec = 30
 TickRate = 20
 UdpBufferSize = 65535
 TcpKeepAliveSec = 15
-EnableModSync = false
-# ModSyncPort = 18861  # Optional. Used only when EnableModSync = true.
+EnableModSync = true
+# ModSyncPort = 18861  # Optional. Used only when EnableModSync = true. Auto-disabled if Resources/Client/ has no mods.
 
 [Logging]
 Level = "info"

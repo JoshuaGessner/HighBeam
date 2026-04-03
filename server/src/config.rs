@@ -64,7 +64,7 @@ pub struct NetworkConfig {
     pub udp_buffer_size: usize,
     #[serde(rename = "TcpKeepAliveSec", default = "default_tcp_keepalive")]
     pub tcp_keepalive_sec: u64,
-    #[serde(rename = "EnableModSync", default)]
+    #[serde(rename = "EnableModSync", default = "default_enable_mod_sync")]
     pub enable_mod_sync: bool,
     #[serde(rename = "ModSyncPort")]
     pub mod_sync_port: Option<u16>,
@@ -179,6 +179,9 @@ fn default_udp_buffer() -> usize {
 fn default_tcp_keepalive() -> u64 {
     15
 }
+fn default_enable_mod_sync() -> bool {
+    true
+}
 fn default_log_level() -> String {
     "info".into()
 }
@@ -232,11 +235,6 @@ impl NetworkConfig {
     pub fn resolved_mod_sync_port(&self, gameplay_port: u16) -> u16 {
         self.mod_sync_port
             .unwrap_or_else(|| gameplay_port.saturating_add(1))
-    }
-
-    pub fn active_mod_sync_port(&self, gameplay_port: u16) -> Option<u16> {
-        self.enable_mod_sync
-            .then(|| self.resolved_mod_sync_port(gameplay_port))
     }
 }
 

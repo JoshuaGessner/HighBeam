@@ -49,9 +49,7 @@ pub fn detect_beamng_userfolder() -> Option<PathBuf> {
         // Also check AppData\Local on Windows via USERPROFILE
         #[cfg(target_os = "windows")]
         {
-            let local = PathBuf::from(home)
-                .join("AppData")
-                .join("Local");
+            let local = PathBuf::from(home).join("AppData").join("Local");
             let modern = local.join("BeamNG").join("BeamNG.drive");
             if modern.is_dir() {
                 return Some(modern);

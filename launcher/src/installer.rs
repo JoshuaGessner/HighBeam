@@ -11,7 +11,6 @@ use crate::mod_sync::ServerMod;
 
 const SESSION_MANIFEST_FILE: &str = "highbeam-session-manifest.json";
 
-
 #[derive(Debug, Default)]
 pub struct CleanupReport {
     pub removed_files: usize,
@@ -556,8 +555,7 @@ mod tests {
             .expect("create payload directory");
         fs::create_dir_all(mods_dir.join("highbeam/old")).expect("create legacy extracted dir");
         write_test_client_zip(&payload_zip, b"return true");
-        fs::write(mods_dir.join("highbeam/old/file.txt"), "legacy")
-            .expect("write legacy file");
+        fs::write(mods_dir.join("highbeam/old/file.txt"), "legacy").expect("write legacy file");
 
         let installed =
             install_highbeam_client_mod(&payload_zip, &mods_dir).expect("install should succeed");
@@ -600,7 +598,11 @@ mod tests {
             .expect("second install should also succeed");
         let second_meta = fs::metadata(&second).expect("second zip metadata");
 
-        assert_eq!(first_size, second_meta.len(), "zip size should remain unchanged");
+        assert_eq!(
+            first_size,
+            second_meta.len(),
+            "zip size should remain unchanged"
+        );
         assert!(
             !mods_dir.join("highbeam.zip.tmp").exists(),
             "temporary zip should not remain"

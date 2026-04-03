@@ -114,6 +114,8 @@ struct ServerGuiApp {
     console_output: Vec<String>,
     kick_reason: String,
     selected_map_path: String,
+    // Mod sync state
+    mod_sync_enabled: bool,
     // Community tab state
     community_enabled: bool,
     community_port_buf: String,
@@ -154,6 +156,12 @@ impl ServerGuiApp {
                 })
                 .unwrap_or_else(|| (false, "18862".to_string(), String::new(), String::new()))
         };
+
+        let mod_sync_enabled = control
+            .get_mod_sync_state()
+            .map(|s| s.is_enabled())
+            .unwrap_or(false);
+
         Self {
             control,
             tray_bridge,
@@ -170,6 +178,7 @@ impl ServerGuiApp {
             console_output: Vec::new(),
             kick_reason: "Kicked by admin".to_string(),
             selected_map_path: String::new(),
+            mod_sync_enabled,
             community_enabled: cn_enabled,
             community_port_buf: cn_port,
             community_region_buf: cn_region,
@@ -343,8 +352,44 @@ impl ServerGuiApp {
         ui.heading("Client Mods");
         ui.separator();
 
+        // ── Mod sync control ────────────────────────────────────────────────
+        let mod_sync_state = self.control.get_mod_sync_state();
+        if let Some(ref mss) = mod_sync_state {
+            let prev_enabled = self.mod_sync_enabled;
+            ui.checkbox(&mut self.mod_sync_enabled, "Enable mod sync (port 18861)")
+                .on_hover_text("When enabled, the launcher can download mods before players join");
+
+            if self.mod_sync_enabled != prev_enabled {
+                mss.set_enabled(self.mod_sync_enabled);
+            }
+
+            let mod_count = mss.mod_count();
+            if self.mod_sync_enabled {
+                ui.label(format!("🔄 Serving {} mods on port 18861", mod_count));
+            } else {
+                ui.label("⊘ Mod sync disabled");
+            }
+
+            ui.horizontal(|ui| {
+                if ui.button("Refresh Manifest").clicked() {
+                    match crate::mods::build_manifest(
+                        &self.control.get_server_config().general.resource_folder,
+                    ) {
+                        Ok(new_manifest) => {
+                            mss.refresh_manifest(new_manifest);
+                            self.push_console_line("Mod manifest refreshed.".to_string());
+                        }
+                        Err(e) => {
+                            self.push_console_line(format!("Refresh manifest failed: {}", e));
+                        }
+                    }
+                }
+            });
+        }
+
+        ui.separator();
         ui.label("Client mods are discovered automatically from Resources/Client.");
-        if ui.button("Refresh mods").clicked() {
+        if ui.button("Refresh mods list").clicked() {
             self.mods = self.control.list_client_mods().unwrap_or_default();
         }
 

@@ -22,6 +22,8 @@ struct DiscoveryResponse {
     max_players: u32,
     port: u16,
     protocol_version: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mod_sync_port: Option<u16>,
 }
 
 /// Start the UDP receiver loop. Runs forever, routing packets between players.
@@ -104,6 +106,7 @@ pub async fn start_udp(
                         max_players: snap.max_players,
                         port: snap.port,
                         protocol_version: PROTOCOL_VERSION,
+                        mod_sync_port: control.active_mod_sync_port(),
                     };
                     let bytes = serde_json::to_vec(&payload).unwrap_or_default();
                     disc_cache = Some((bytes.clone(), now));
