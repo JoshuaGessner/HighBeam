@@ -57,8 +57,7 @@ fn setup_system_tray_bridge() -> TrayBridge {
     #[cfg(target_os = "windows")]
     let icon = IconSource::Resource("network-workgroup");
 
-    let mut tray = match TrayItem::new("HighBeam Server", icon)
-    {
+    let mut tray = match TrayItem::new("HighBeam Server", icon) {
         Ok(item) => item,
         Err(e) => {
             tracing::warn!(error = %e, "System tray unavailable; running without tray integration");
