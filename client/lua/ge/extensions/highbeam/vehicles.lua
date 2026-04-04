@@ -380,7 +380,7 @@ end
 
 M._escapeForLuaCmd = function(s)
   if type(s) ~= "string" then return tostring(s) end
-  return "'" .. s:gsub("'", "\\'") .. "'"
+  return string.format("%q", s)
 end
 
 M.removeRemote = function(playerId, vehicleId)

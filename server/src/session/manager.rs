@@ -62,31 +62,43 @@ impl SessionManager {
 
         let player_id = self.next_id.fetch_add(1, Ordering::Relaxed);
 
-        // Generate a session token: 64 random bytes, hex-encoded (extra entropy for uniqueness)
-        let token: String = {
-            let mut rng = rand::thread_rng();
-            let mut bytes = [0u8; 64];
-            use rand::RngCore;
-            rng.fill_bytes(&mut bytes);
-            // Include timestamp to further reduce collision risk
-            let timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos();
-            format!(
-                "{:x}:{}",
-                timestamp,
-                bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
-            )
-        };
+        // Generate a session token with collision retry (iterative, bounded).
+        const MAX_TOKEN_ATTEMPTS: u32 = 5;
+        let mut token = String::new();
+        let mut session_hash = [0u8; 16];
 
-        let session_hash = compute_session_hash(&token);
+        for attempt in 1..=MAX_TOKEN_ATTEMPTS {
+            token = {
+                let mut rng = rand::thread_rng();
+                let mut bytes = [0u8; 64];
+                use rand::RngCore;
+                rng.fill_bytes(&mut bytes);
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos();
+                format!(
+                    "{:x}:{}",
+                    timestamp,
+                    bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+                )
+            };
 
-        // Verify collision didn't occur (paranoia check)
-        if self.session_hashes.contains_key(&session_hash) {
-            tracing::warn!("Session hash collision detected (extremely rare), retrying...");
-            // In the extremely unlikely event of a collision, recursively retry.
-            return self.add_player(trimmed_name.to_string(), addr, tcp_tx);
+            session_hash = compute_session_hash(&token);
+
+            if !self.session_hashes.contains_key(&session_hash) {
+                break;
+            }
+
+            tracing::warn!(
+                attempt,
+                "Session hash collision detected (extremely rare), retrying..."
+            );
+            if attempt == MAX_TOKEN_ATTEMPTS {
+                bail!(
+                    "Failed to generate unique session token after {MAX_TOKEN_ATTEMPTS} attempts"
+                );
+            }
         }
 
         let now = Instant::now();

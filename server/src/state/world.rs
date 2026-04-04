@@ -48,7 +48,11 @@ impl WorldState {
 
     /// Spawn a new vehicle for the given player. Returns the assigned vehicle_id.
     pub fn spawn_vehicle(&self, owner_id: u32, config: String) -> u16 {
-        let vid = self.next_vehicle_id.fetch_add(1, Ordering::Relaxed);
+        let mut vid = self.next_vehicle_id.fetch_add(1, Ordering::Relaxed);
+        // Vehicle ID 0 is used as "unassigned" by the client — skip it on wrap.
+        if vid == 0 {
+            vid = self.next_vehicle_id.fetch_add(1, Ordering::Relaxed);
+        }
         let now = Instant::now();
         let vehicle = Vehicle {
             id: vid,

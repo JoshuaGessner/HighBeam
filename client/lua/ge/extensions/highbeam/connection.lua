@@ -854,12 +854,17 @@ end
 
 M._bindUdp = function(host, port, sessionToken)
   if not socket then return end
-  udp = socket.udp()
-  udp:settimeout(0)  -- Non-blocking
-  udp:setpeername(host, port)  -- Connected mode
 
   -- Compute session hash (SHA-256 truncated to 16 bytes)
   M._sessionHash = M._computeSessionHash(sessionToken)
+  if not M._sessionHash then
+    log('E', logTag, 'Cannot bind UDP: session hash computation failed (SHA-256 unavailable)')
+    return
+  end
+
+  udp = socket.udp()
+  udp:settimeout(0)  -- Non-blocking
+  udp:setpeername(host, port)  -- Connected mode
 
   -- Send UdpBind packet: hash + type 0x01
   udp:send(M._sessionHash .. string.char(0x01))
@@ -911,7 +916,10 @@ M._tickUdp = function()
           log('I', logTag, 'First UDP snapshot for remote vehicle ' .. firstKey)
         end
         vehicles.updateRemote(decoded)
+      elseif not decoded then
+        M._udpDecodeErrorCount = M._udpDecodeErrorCount + 1
       else
+        -- decoded is valid but vehicles subsystem not loaded
         M._udpDecodeErrorCount = M._udpDecodeErrorCount + 1
       end
     else
@@ -928,8 +936,8 @@ M._computeSessionHash = function(token)
   local tokenBytes = { token:byte(1, #token) }
   -- Portable SHA-256 implementation (standard FIPS 180-4)
   -- For BeamNG, we use the built-in hashStringSHA256 if available
-  local hashHex = hashStringSHA256(token)
-  if hashHex then
+  local okHash, hashHex = pcall(hashStringSHA256, token)
+  if okHash and hashHex and #hashHex >= 32 then
     -- Convert first 32 hex chars (16 bytes) to binary
     local result = ""
     for i = 1, 32, 2 do
@@ -937,10 +945,10 @@ M._computeSessionHash = function(token)
     end
     return result
   end
-  -- Fallback: use token bytes directly (padded/truncated to 16)
-  local result = token
-  while #result < 16 do result = result .. "\0" end
-  return result:sub(1, 16)
+  -- hashStringSHA256 unavailable — cannot compute a valid session hash.
+  -- Returning nil will prevent UDP binding; TCP still works.
+  log('E', logTag, 'hashStringSHA256 unavailable — UDP will be disabled for this session')
+  return nil
 end
 
 M.getSessionHash = function()
