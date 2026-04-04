@@ -17,6 +17,7 @@ local _configPollTimer = 0  -- timer for mid-session config change detection
 local _lastConfigs = {}  -- [gameVehicleId] = last known partConfig string
 local _electricsTimer = 0  -- timer for electrics polling
 local _lastElectrics = {}  -- [gameVehicleId] = last sent electrics state string
+M._cachedInputs = {}  -- [gameVehicleId] = {steer, throttle, brake} from vlua callback
 
 M.setSubsystems = function(conn, cfg)
   connection = conn
@@ -76,17 +77,9 @@ M.tick = function(dt)
       local vel = veh:getVelocity()
 
       -- Capture input state for input-augmented extrapolation
-      local inputs = nil
-      pcall(function()
-        local electrics = veh:getElectricsByName()
-        if electrics then
-          inputs = {
-            steer = electrics.steering_input or electrics.steering or 0,
-            throttle = electrics.throttle_input or electrics.throttle or 0,
-            brake = electrics.brake_input or electrics.brake or 0,
-          }
-        end
-      end)
+      -- NOTE: electrics are in vlua context, so we read from cached data
+      -- populated by _pollInputs via queueLuaCommand callback
+      local inputs = M._cachedInputs and M._cachedInputs[gameVid] or nil
 
       local data = protocol.encodePositionUpdate(
         sessionHash,
@@ -94,7 +87,7 @@ M.tick = function(dt)
         { pos.x, pos.y, pos.z },
         { rot.x, rot.y, rot.z, rot.w },
         { vel.x, vel.y, vel.z },
-        veh:getSimTime(),
+        0,
         inputs
       )
       connection.sendUdp(data)
@@ -125,6 +118,7 @@ M.tick = function(dt)
     _electricsTimer = 0
     for gameVid, serverVid in pairs(M.localVehicles) do
       M._pollElectrics(gameVid, serverVid)
+      M._pollInputs(gameVid)
     end
   end
 end
@@ -256,6 +250,32 @@ M.onElectricsReport = function(gameVid, electricsJson)
   })
 end
 
+-- ── Input polling (for input-augmented extrapolation) ───────────────
+-- Fetches steering/throttle/brake from vlua electrics and caches in GE.
+M._pollInputs = function(gameVid)
+  local veh = scenetree.findObjectById(gameVid)
+  if not veh then return end
+
+  pcall(function()
+    veh:queueLuaCommand(
+      'local e = electrics.values '
+      .. 'local st = e.steering_input or e.steering or 0 '
+      .. 'local th = e.throttle_input or e.throttle or 0 '
+      .. 'local br = e.brake_input or e.brake or 0 '
+      .. 'obj:queueGameEngineLua("extensions.highbeam.onInputsReport(' .. gameVid .. '," .. st .. "," .. th .. "," .. br .. ")")'
+    )
+  end)
+end
+
+-- Called back from vehicle-side Lua with input values
+M.onInputsReport = function(gameVid, steer, throttle, brake)
+  M._cachedInputs[gameVid] = {
+    steer = steer or 0,
+    throttle = throttle or 0,
+    brake = brake or 0,
+  }
+end
+
 M.onWorldState = function(players)
   log('I', logTag, 'Received world state with ' .. tostring(#players) .. ' players')
 end
@@ -341,6 +361,7 @@ M.onDisconnect = function()
   _lastConfigs = {}
   _electricsTimer = 0
   _lastElectrics = {}
+  M._cachedInputs = {}
 end
 
 return M
