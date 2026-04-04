@@ -16,6 +16,7 @@ local _lastDamageHashes = {}  -- [gameVehicleId] = hash string of last sent dama
 local _configPollTimer = 0  -- timer for mid-session config change detection
 local _lastConfigs = {}  -- [gameVehicleId] = last known partConfig string
 local _electricsTimer = 0  -- timer for electrics polling
+local _inputsTimer = 0     -- timer for input polling (decoupled from electrics)
 local _lastElectrics = {}  -- [gameVehicleId] = last sent electrics state string
 M._cachedInputs = {}  -- [gameVehicleId] = {steer, throttle, brake} from vlua callback
 local _lastUdpErrorLogAt = -math.huge
@@ -66,7 +67,7 @@ M.captureVehicleConfig = function(veh)
   if ok and pc and pc ~= '' then partConfig = pc end
 
   local pos = veh:getPosition()
-  local rot = quatFromDir(veh:getDirectionVector(), veh:getDirectionVectorUp())
+  local rot = veh:getRotation()
 
   -- Build JSON manually to avoid dependency on a JSON encoder
   local json = '{"model":' .. M._jsonStr(model)
@@ -130,7 +131,7 @@ M.tick = function(dt)
     local veh = scenetree.findObjectById(gameVid)
     if veh then
       local pos = veh:getPosition()
-      local rot = quatFromDir(veh:getDirectionVector(), veh:getDirectionVectorUp())
+      local rot = veh:getRotation()
       local vel = veh:getVelocity()
 
       -- Capture input state for input-augmented extrapolation
@@ -182,9 +183,9 @@ M.tick = function(dt)
     _udpSendErrorCount = 0
   end
 
-  -- ── Damage polling (every 200ms) ──────────────────────────────────
+  -- ── Damage polling (every 1000ms) ─────────────────────────────────
   _damageTimer = _damageTimer + dt
-  if _damageTimer >= 0.2 then
+  if _damageTimer >= 1.0 then
     _damageTimer = 0
     for gameVid, serverVid in pairs(M.localVehicles) do
       M._pollDamage(gameVid)
@@ -200,12 +201,20 @@ M.tick = function(dt)
     end
   end
 
-  -- ── Electrics polling (every 100ms) ───────────────────────────────
+  -- ── Electrics polling (every 500ms) ───────────────────────────────
   _electricsTimer = _electricsTimer + dt
-  if _electricsTimer >= 0.1 then
+  if _electricsTimer >= 0.5 then
     _electricsTimer = 0
     for gameVid, serverVid in pairs(M.localVehicles) do
       M._pollElectrics(gameVid, serverVid)
+    end
+  end
+
+  -- ── Input polling (every 100ms) ───────────────────────────────────
+  _inputsTimer = _inputsTimer + dt
+  if _inputsTimer >= 0.1 then
+    _inputsTimer = 0
+    for gameVid, _ in pairs(M.localVehicles) do
       M._pollInputs(gameVid)
     end
   end

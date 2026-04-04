@@ -13,8 +13,34 @@ local _staleDropCount = 0
 local _spawnRetryDropCount = 0
 local _spawnRetryAttemptCount = 0
 local _spawnRetrySuccessCount = 0
-local SPAWN_RETRY_MAX_ATTEMPTS = 5
+local SPAWN_RETRY_MAX_ATTEMPTS = 15
 local SPAWN_RETRY_BASE_DELAY = 0.75
+
+-- Thresholds for skipping setPositionRotation when delta is negligible
+local POS_DELTA_SQ_THRESHOLD = 0.000025  -- 0.005m squared
+local ROT_DELTA_SQ_THRESHOLD = 0.000001  -- ~0.001 quat component
+
+local function _shouldApplyPosRot(rv, pos, rot)
+  if not rv._lastAppliedPos then return true end
+  local lp = rv._lastAppliedPos
+  local lr = rv._lastAppliedRot
+  local dx = pos[1] - lp[1]
+  local dy = pos[2] - lp[2]
+  local dz = pos[3] - lp[3]
+  if (dx*dx + dy*dy + dz*dz) > POS_DELTA_SQ_THRESHOLD then return true end
+  local drx = rot[1] - lr[1]
+  local dry = rot[2] - lr[2]
+  local drz = rot[3] - lr[3]
+  local drw = rot[4] - lr[4]
+  if (drx*drx + dry*dry + drz*drz + drw*drw) > ROT_DELTA_SQ_THRESHOLD then return true end
+  return false
+end
+
+local function _applyPosRot(rv, pos, rot)
+  rv.gameVehicle:setPositionRotation(pos[1], pos[2], pos[3], rot[1], rot[2], rot[3], rot[4])
+  rv._lastAppliedPos = pos
+  rv._lastAppliedRot = rot
+end
 
 local function _countPendingSpawnRetries()
   local count = 0
@@ -193,10 +219,16 @@ M.spawnRemoteFromSnapshot = function(vehicle)
   })
 end
 
+local _updateRemoteDropLog = 0
 M.updateRemote = function(decoded)
   local key = makeKey(decoded.playerId, decoded.vehicleId)
   local rv = M.remoteVehicles[key]
   if not rv then
+    _updateRemoteDropLog = _updateRemoteDropLog + 1
+    if _updateRemoteDropLog <= 5 or _updateRemoteDropLog % 50 == 0 then
+      log('W', logTag, 'updateRemote: no remote vehicle for key=' .. key
+        .. ' (drops=' .. tostring(_updateRemoteDropLog) .. ')')
+    end
     return
   end
 
@@ -307,18 +339,21 @@ M.applyDamage = function(playerId, vehicleId, damageData)
     end)
   end
 
-  -- Apply node deformation if provided as beam breaks / deform data
-  if dmg.beamBreaks then
+  -- Apply beam breaks (sender field name is 'broken')
+  if dmg.broken then
     pcall(function()
-      for _, beamId in ipairs(dmg.beamBreaks) do
+      for _, beamId in ipairs(dmg.broken) do
         veh:queueLuaCommand('obj:breakBeam(' .. tostring(beamId) .. ')')
       end
     end)
   end
 
-  if dmg.deformData then
+  -- Apply beam deformation (sender field name is 'deform')
+  if dmg.deform then
     pcall(function()
-      veh:queueLuaCommand('obj:applyDeformGroup(' .. M._escapeForLuaCmd(dmg.deformData) .. ')')
+      for beamIdStr, deformVal in pairs(dmg.deform) do
+        veh:queueLuaCommand('obj:setBeamDeformation(' .. tostring(beamIdStr) .. ', ' .. tostring(deformVal) .. ')')
+      end
     end)
   end
 end
@@ -538,52 +573,42 @@ M.tick = function(dt)
         local vz = s2.vel[3] or 0
 
         -- If we have input data, use steering for curved extrapolation
-        if s2.inputs and s2.inputs.steer and math.abs(s2.inputs.steer) > 0.01 then
-          local speed = math.sqrt(vx * vx + vy * vy)
-          if speed > 1.0 then
-            -- Approximate turn rate from steering input and speed
-            -- Wheelbase ~2.5m, max steering angle ~35deg
-            local turnRate = s2.inputs.steer * 0.6 / (speed * 0.1 + 1)
-            local angle = turnRate * extraT
-            local cosA = math.cos(angle)
-            local sinA = math.sin(angle)
-            -- Rotate the velocity vector
-            local rvx = vx * cosA - vy * sinA
-            local rvy = vx * sinA + vy * cosA
-            pos = {
-              s2.pos[1] + rvx * extraT,
-              s2.pos[2] + rvy * extraT,
-              s2.pos[3] + vz * extraT,
-            }
-          else
-            pos = {
-              s2.pos[1] + vx * extraT,
-              s2.pos[2] + vy * extraT,
-              s2.pos[3] + vz * extraT,
-            }
-          end
-        else
-          pos = {
-            s2.pos[1] + vx * extraT,
-            s2.pos[2] + vy * extraT,
-            s2.pos[3] + vz * extraT,
-          }
-        end
+        -- NOTE: Curved extrapolation disabled until coordinate-system
+        -- assumptions are validated (BeamNG uses Y-forward).
+        -- Straight-line extrapolation is used in all cases for now.
+        pos = {
+          s2.pos[1] + vx * extraT,
+          s2.pos[2] + vy * extraT,
+          s2.pos[3] + vz * extraT,
+        }
         rot = s2.rot
       end
 
-      rv.gameVehicle:setPositionRotation(pos[1], pos[2], pos[3], rot[1], rot[2], rot[3], rot[4])
+      if _shouldApplyPosRot(rv, pos, rot) then
+        _applyPosRot(rv, pos, rot)
+      end
     elseif rv.gameVehicle and #rv.snapshots >= 1 then
       local latest = rv.snapshots[#rv.snapshots]
-      rv.gameVehicle:setPositionRotation(
-        latest.pos[1],
-        latest.pos[2],
-        latest.pos[3],
-        latest.rot[1],
-        latest.rot[2],
-        latest.rot[3],
-        latest.rot[4]
-      )
+      local latestPos = latest.pos
+      local latestRot = latest.rot
+      if _shouldApplyPosRot(rv, latestPos, latestRot) then
+        _applyPosRot(rv, latestPos, latestRot)
+      end
+    end
+
+    -- Apply steering input to remote vehicle visuals (rate-limited to ~10Hz)
+    if rv.gameVehicle and rv.snapshots and #rv.snapshots >= 1 then
+      local latestSnap = rv.snapshots[#rv.snapshots]
+      if latestSnap.inputs and latestSnap.inputs.steer then
+        local lastSteer = rv._lastAppliedSteer
+        local newSteer = latestSnap.inputs.steer
+        if not lastSteer or math.abs(newSteer - lastSteer) > 0.01 then
+          rv._lastAppliedSteer = newSteer
+          pcall(function()
+            rv.gameVehicle:queueLuaCommand('electrics.values.steering_input = ' .. tostring(newSteer))
+          end)
+        end
+      end
     end
   end
 
