@@ -247,6 +247,13 @@ M.onElectricsReport = function(gameVid, electricsJson)
   end
 end
 
+-- Called from vehicle-side queueGameEngineLua with input values
+M.onInputsReport = function(gameVid, steer, throttle, brake)
+  if state and state.onInputsReport then
+    state.onInputsReport(gameVid, steer, throttle, brake)
+  end
+end
+
 -- ─────────────── Coupling/trailer hooks ─────────────────────────────────────
 
 M.onCouplerAttached = function(objId1, objId2, nodeId, obj2nodeId)
