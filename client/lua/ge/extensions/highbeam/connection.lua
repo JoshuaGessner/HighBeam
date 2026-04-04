@@ -158,6 +158,35 @@ local function _spawnWorldVehicles(vehiclesList)
   end
 end
 
+-- After reconnect to the same map, re-register existing local vehicles
+-- with the server. On first connect these are picked up by onVehicleSpawned,
+-- but on reconnect the game vehicles already exist and that hook doesn't fire.
+local function _reRegisterLocalVehicles()
+  if not state or not be then return end
+  local count = be:getObjectCount()
+  if count == 0 then return end
+  local registered = 0
+  for i = 0, count - 1 do
+    local veh = be:getObject(i)
+    if veh then
+      local gameVid = veh:getID()
+      -- Skip remote vehicles (already tracked from WorldState)
+      if not (vehicles and vehicles.isRemote(gameVid)) then
+        -- Skip if already registered
+        if not state.localVehicles[gameVid] then
+          local configData = state.captureVehicleConfig(veh)
+          log('I', logTag, 'Re-registering local vehicle after reconnect: gameVid=' .. tostring(gameVid))
+          state.requestSpawn(gameVid, configData)
+          registered = registered + 1
+        end
+      end
+    end
+  end
+  if registered > 0 then
+    log('I', logTag, 'Re-registered ' .. tostring(registered) .. ' local vehicle(s) after reconnect')
+  end
+end
+
 M._flushPendingWorldVehicles = function(reason)
   if not M._pendingWorldVehicles then return end
   local pending = M._pendingWorldVehicles
@@ -167,6 +196,7 @@ M._flushPendingWorldVehicles = function(reason)
   log('I', logTag, 'Spawning deferred world vehicles count=' .. tostring(#pending)
     .. ' reason=' .. tostring(reason))
   _spawnWorldVehicles(pending)
+  _reRegisterLocalVehicles()
 end
 
 M.getPlayers = function()
@@ -726,7 +756,11 @@ M._handlePacket = function(jsonStr)
         log('I', logTag, 'Deferring world vehicle spawn until map is ready count=' .. tostring(#packet.vehicles))
       else
         _spawnWorldVehicles(packet.vehicles)
+        _reRegisterLocalVehicles()
       end
+    else
+      -- No vehicles in WorldState but still need to re-register locals on reconnect
+      _reRegisterLocalVehicles()
     end
     if state and packet.players then
       state.onWorldState(packet.players)

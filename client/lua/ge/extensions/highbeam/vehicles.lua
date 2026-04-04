@@ -50,6 +50,26 @@ local function makeKey(playerId, vehicleId)
   return tostring(playerId) .. "_" .. tostring(vehicleId)
 end
 
+-- Decode JSON config using available decoders
+local function _decodeJson(str)
+  if not str or str == '' then return nil end
+  local decoded
+  if jsonDecode then
+    local ok, t = pcall(jsonDecode, str)
+    if ok then return t end
+  end
+  if Engine and Engine.JSONDecode then
+    local ok, t = pcall(Engine.JSONDecode, str)
+    if ok then return t end
+  end
+  local ok, jsonLib = pcall(require, "json")
+  if ok and jsonLib then
+    local ok2, t = pcall(jsonLib.decode, str)
+    if ok2 then return t end
+  end
+  return nil
+end
+
 local function _buildSpawnSpec(configData, snapshot)
   local cfg = _decodeJson(configData) or {}
   return {
@@ -92,26 +112,6 @@ end
 -- Check if a game vehicle ID belongs to a remote player
 M.isRemote = function(gameVehicleId)
   return M._remoteGameIds[gameVehicleId] == true
-end
-
--- Decode JSON config using available decoders
-local function _decodeJson(str)
-  if not str or str == '' then return nil end
-  local decoded
-  if jsonDecode then
-    local ok, t = pcall(jsonDecode, str)
-    if ok then return t end
-  end
-  if Engine and Engine.JSONDecode then
-    local ok, t = pcall(Engine.JSONDecode, str)
-    if ok then return t end
-  end
-  local ok, jsonLib = pcall(require, "json")
-  if ok and jsonLib then
-    local ok2, t = pcall(jsonLib.decode, str)
-    if ok2 then return t end
-  end
-  return nil
 end
 
 M.spawnRemote = function(playerId, vehicleId, configData, snapshot)
