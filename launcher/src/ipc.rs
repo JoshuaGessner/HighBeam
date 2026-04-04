@@ -24,6 +24,7 @@ use crate::config::LauncherConfig;
 use crate::installer;
 use crate::mod_cache::{self, CacheIndex};
 use crate::mod_sync;
+use crate::proxy;
 
 /// Filename written to the BeamNG user-data folder while the IPC server is up.
 const IPC_STATE_FILE: &str = "highbeam-launcher.json";
@@ -39,6 +40,12 @@ struct IpcStateFile {
     port: u16,
     pid: u32,
     version: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    proxy_tcp_port: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    proxy_udp_port: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    proxy_server: Option<String>,
 }
 
 /// Returns the path of the IPC state file inside the BeamNG user-data
@@ -60,10 +67,24 @@ pub fn ipc_state_file_path(mods_dir: &Path) -> PathBuf {
 }
 
 /// Write the IPC state file so the in-game client can discover the port.
+#[allow(dead_code)]
 pub fn write_state_file(path: &Path, port: u16) -> Result<()> {
+    write_state_file_full(path, port, None, None, None)
+}
+
+/// Write the IPC state file with optional proxy port information.
+pub fn write_state_file_full(
+    path: &Path,
+    port: u16,
+    proxy_tcp_port: Option<u16>,
+    proxy_udp_port: Option<u16>,
+    proxy_server: Option<String>,
+) -> Result<()> {
     tracing::info!(
         path = %path.display(),
         port,
+        ?proxy_tcp_port,
+        ?proxy_udp_port,
         pid = std::process::id(),
         "Writing IPC state file"
     );
@@ -71,6 +92,9 @@ pub fn write_state_file(path: &Path, port: u16) -> Result<()> {
         port,
         pid: std::process::id(),
         version: env!("CARGO_PKG_VERSION"),
+        proxy_tcp_port,
+        proxy_udp_port,
+        proxy_server,
     };
     let content = serde_json::to_string_pretty(&state).context("IPC state serialise")?;
     std::fs::write(path, &content)
@@ -101,6 +125,7 @@ pub fn run_ipc_loop(
     listener: &TcpListener,
     cfg: &LauncherConfig,
     cache_dir: &Path,
+    active_proxy: &mut Option<proxy::ProxyHandle>,
 ) -> Result<()> {
     listener
         .set_nonblocking(true)
@@ -133,7 +158,7 @@ pub fn run_ipc_loop(
         match listener.accept() {
             Ok((stream, addr)) => {
                 tracing::info!(%addr, "Accepted launcher IPC connection");
-                if let Err(e) = handle_ipc_connection(stream, cfg, cache_dir) {
+                if let Err(e) = handle_ipc_connection(stream, cfg, cache_dir, active_proxy) {
                     tracing::warn!(error = %e, "IPC connection error");
                 }
             }
@@ -156,6 +181,7 @@ fn handle_ipc_connection(
     mut stream: std::net::TcpStream,
     cfg: &LauncherConfig,
     cache_dir: &Path,
+    active_proxy: &mut Option<proxy::ProxyHandle>,
 ) -> Result<()> {
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
@@ -178,7 +204,7 @@ fn handle_ipc_connection(
 
     let req_type = value["type"].as_str().unwrap_or("");
     match req_type {
-        "join_request" => handle_join_request(&mut stream, &value, cfg, cache_dir),
+        "join_request" => handle_join_request(&mut stream, &value, cfg, cache_dir, active_proxy),
         other => {
             tracing::warn!(req_type = %other, "Unknown IPC request type; ignoring");
             Ok(())
@@ -191,6 +217,7 @@ fn handle_join_request(
     value: &serde_json::Value,
     cfg: &LauncherConfig,
     cache_dir: &Path,
+    active_proxy: &mut Option<proxy::ProxyHandle>,
 ) -> Result<()> {
     let server = value["server"].as_str().unwrap_or("").to_string();
     if server.is_empty() {
@@ -322,14 +349,55 @@ fn handle_join_request(
 
         send_response(
             stream,
-            serde_json::json!({ "type": "sync_complete", "server": &server }),
+            start_proxy_and_build_response(active_proxy, &server),
         )
     } else {
         // Mod sync was skipped (server has it disabled); still report success to client
         send_response(
             stream,
-            serde_json::json!({ "type": "sync_complete", "server": &server }),
+            start_proxy_and_build_response(active_proxy, &server),
         )
+    }
+}
+
+/// Shut down any existing proxy, start a new one for `server`, and build the
+/// `sync_complete` JSON response including proxy port information.
+fn start_proxy_and_build_response(
+    active_proxy: &mut Option<proxy::ProxyHandle>,
+    server: &str,
+) -> serde_json::Value {
+    // Tear down previous proxy if any.
+    if let Some(old) = active_proxy.take() {
+        tracing::info!("Shutting down previous proxy before starting new one");
+        old.shutdown();
+    }
+
+    match proxy::start(server) {
+        Ok(handle) => {
+            let tcp_port = handle.tcp_port;
+            let udp_port = handle.udp_port;
+            tracing::info!(
+                tcp_port,
+                udp_port,
+                server,
+                "Proxy started for IPC join"
+            );
+            *active_proxy = Some(handle);
+            serde_json::json!({
+                "type": "sync_complete",
+                "server": server,
+                "proxy_tcp_port": tcp_port,
+                "proxy_udp_port": udp_port,
+            })
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, server, "Failed to start proxy; sync_complete without proxy");
+            serde_json::json!({
+                "type": "sync_complete",
+                "server": server,
+                "error": format!("Proxy failed: {e}"),
+            })
+        }
     }
 }
 

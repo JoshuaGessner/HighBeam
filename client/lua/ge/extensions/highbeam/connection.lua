@@ -189,11 +189,12 @@ M._setState = function(newState, context)
   return true
 end
 
-M.connect = function(host, port, username, password)
-  log('I', logTag, 'Connect requested: ' .. host .. ':' .. tostring(port))
+M.connect = function(host, port, username, password, udpPort)
+  log('I', logTag, 'Connect requested: ' .. host .. ':' .. tostring(port)
+    .. (udpPort and (' udpPort=' .. tostring(udpPort)) or ''))
 
   -- Store credentials for reconnection
-  M._reconnectCredentials = { host = host, port = port, username = username, password = password }
+  M._reconnectCredentials = { host = host, port = port, username = username, password = password, udpPort = udpPort }
   M._reconnectAttempt = 0
   M._autoReconnect = true
 
@@ -232,7 +233,7 @@ M.connect = function(host, port, username, password)
   -- Must check with socket.select() on subsequent ticks
   if result or err == "timeout" then
     -- Connection in progress
-    M._pendingAuth = { username = username, password = password, host = host, port = port }
+    M._pendingAuth = { username = username, password = password, host = host, port = port, udpPort = udpPort }
     M._connectStartTime = os.clock()  -- Track start time for timeout (Phase 2.1)
     return true
   else
@@ -319,7 +320,7 @@ M.tick = function(dt)
       -- Temporarily disable autoReconnect to avoid recursion through connect()
       local savedAutoReconnect = M._autoReconnect
       M._autoReconnect = false
-      M.connect(creds.host, creds.port, creds.username, creds.password)
+      M.connect(creds.host, creds.port, creds.username, creds.password, creds.udpPort)
       M._autoReconnect = savedAutoReconnect
     end
     return
@@ -540,9 +541,12 @@ M._handlePacket = function(jsonStr)
       M._lastPingTime = os.clock()  -- Initialize ping tracking (Phase 2.2)
       -- Bind UDP after successful auth
       if M._pendingAuth then
+        -- Use proxy UDP port if provided, otherwise same as TCP port
+        local udpHost = M._pendingAuth.host
+        local udpPort = M._pendingAuth.udpPort or M._pendingAuth.port
         -- Wrap UDP binding in pcall - UDP is optional (Phase 2.4)
         local ok, err = pcall(function()
-          M._bindUdp(M._pendingAuth.host, M._pendingAuth.port, M._sessionToken)
+          M._bindUdp(udpHost, udpPort, M._sessionToken)
         end)
         if not ok then
           log('W', logTag, 'UDP binding failed: ' .. tostring(err))
