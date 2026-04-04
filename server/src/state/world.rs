@@ -42,8 +42,11 @@ impl WorldState {
             );
         }
 
-        self.next_vehicle_id
-            .store(max_vehicle_id.saturating_add(1), Ordering::Relaxed);
+        // Advance counter past the highest restored ID.
+        // wrapping_add handles u16::MAX; skip 0 since the client treats it as "unassigned".
+        let next = max_vehicle_id.wrapping_add(1);
+        let next = if next == 0 { 1 } else { next };
+        self.next_vehicle_id.store(next, Ordering::Relaxed);
     }
 
     /// Spawn a new vehicle for the given player. Returns the assigned vehicle_id.
