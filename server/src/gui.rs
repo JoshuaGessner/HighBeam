@@ -7,7 +7,7 @@ use crate::control::{ControlPlane, MapEntry, ServerSnapshot};
 use crate::session::manager::PlayerAdminSnapshot;
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]
-use std::sync::mpsc::{self, Receiver};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 use std::sync::Mutex;
@@ -18,19 +18,13 @@ use tray_icon::{
     MouseButton as TrayMouseButton, TrayIconBuilder, TrayIconEvent,
 };
 
-#[derive(Clone, Copy)]
-enum TrayCommand {
-    Show,
-    Toggle,
-    Quit,
-}
-
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 struct TrayBridge {
-    rx: Receiver<TrayCommand>,
     /// Shared egui context so tray event handlers can wake the eframe event loop
     /// even when the window is hidden.
     ctx_holder: Arc<Mutex<Option<egui::Context>>>,
+    hidden_state: Arc<AtomicBool>,
+    close_requested: Arc<AtomicBool>,
     available: bool,
 }
 
@@ -41,8 +35,9 @@ struct TrayBridge {
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 fn setup_system_tray_bridge() -> TrayBridge {
-    let (tx, rx) = mpsc::channel::<TrayCommand>();
     let ctx_holder: Arc<Mutex<Option<egui::Context>>> = Arc::new(Mutex::new(None));
+    let hidden_state = Arc::new(AtomicBool::new(false));
+    let close_requested = Arc::new(AtomicBool::new(false));
 
     // Build context menu with Show/Hide + Quit items.
     let show_hide_item = MenuItem::new("Show/Hide", true, None);
@@ -66,8 +61,9 @@ fn setup_system_tray_bridge() -> TrayBridge {
         Err(e) => {
             tracing::warn!(error = %e, "Failed to create tray icon from embedded PNG");
             return TrayBridge {
-                rx,
                 ctx_holder,
+                hidden_state,
+                close_requested,
                 available: false,
             };
         }
@@ -84,8 +80,9 @@ fn setup_system_tray_bridge() -> TrayBridge {
         Err(e) => {
             tracing::warn!(error = %e, "System tray unavailable; running without tray integration");
             return TrayBridge {
-                rx,
                 ctx_holder,
+                hidden_state,
+                close_requested,
                 available: false,
             };
         }
@@ -97,27 +94,36 @@ fn setup_system_tray_bridge() -> TrayBridge {
     // Wire up menu events → TrayCommand channel + wake eframe.
     let show_hide_id = show_hide_item.id().clone();
     let quit_id = quit_item.id().clone();
-    let tx_menu = tx.clone();
     let ctx_menu = ctx_holder.clone();
+    let hidden_for_menu = hidden_state.clone();
+    let close_for_menu = close_requested.clone();
     MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
-        let cmd = if event.id == show_hide_id {
-            TrayCommand::Toggle
-        } else if event.id == quit_id {
-            TrayCommand::Quit
-        } else {
-            return;
-        };
-        let _ = tx_menu.send(cmd);
         if let Ok(guard) = ctx_menu.lock() {
             if let Some(ctx) = guard.as_ref() {
+                if event.id == show_hide_id {
+                    if hidden_for_menu.load(Ordering::SeqCst) {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                        hidden_for_menu.store(false, Ordering::SeqCst);
+                    } else {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                        hidden_for_menu.store(true, Ordering::SeqCst);
+                    }
+                } else if event.id == quit_id {
+                    close_for_menu.store(true, Ordering::SeqCst);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                } else {
+                    return;
+                }
                 ctx.request_repaint();
             }
         }
     }));
 
     // Wire up tray icon events (double-click to show, Windows only).
-    let tx_icon = tx.clone();
     let ctx_icon = ctx_holder.clone();
+    let hidden_for_icon = hidden_state.clone();
     TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
         #[allow(clippy::single_match)]
         match event {
@@ -125,9 +131,12 @@ fn setup_system_tray_bridge() -> TrayBridge {
                 button: TrayMouseButton::Left,
                 ..
             } => {
-                let _ = tx_icon.send(TrayCommand::Show);
                 if let Ok(guard) = ctx_icon.lock() {
                     if let Some(ctx) = guard.as_ref() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                        hidden_for_icon.store(false, Ordering::SeqCst);
                         ctx.request_repaint();
                     }
                 }
@@ -138,8 +147,9 @@ fn setup_system_tray_bridge() -> TrayBridge {
 
     tracing::info!("System tray integration enabled");
     TrayBridge {
-        rx,
         ctx_holder,
+        hidden_state,
+        close_requested,
         available: true,
     }
 }
@@ -311,36 +321,10 @@ impl ServerGuiApp {
     fn handle_tray_commands(&mut self, _ctx: &egui::Context) {
         #[cfg(any(target_os = "windows", target_os = "linux"))]
         {
-            loop {
-                let Ok(cmd) = self.tray_bridge.rx.try_recv() else {
-                    break;
-                };
-
-                match cmd {
-                    TrayCommand::Show => {
-                        if self.tray_hidden {
-                            _ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                            _ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                            _ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                            self.tray_hidden = false;
-                        }
-                    }
-                    TrayCommand::Toggle => {
-                        if self.tray_hidden {
-                            _ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                            _ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                            _ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                            self.tray_hidden = false;
-                        } else {
-                            _ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-                            self.tray_hidden = true;
-                        }
-                    }
-                    TrayCommand::Quit => {
-                        self.allow_window_close = true;
-                        _ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
-                }
+            let _ = _ctx;
+            self.tray_hidden = self.tray_bridge.hidden_state.load(Ordering::SeqCst);
+            if self.tray_bridge.close_requested.load(Ordering::SeqCst) {
+                self.allow_window_close = true;
             }
         }
 
@@ -354,6 +338,8 @@ impl ServerGuiApp {
         if self.tray_bridge.available {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             self.tray_hidden = true;
+            #[cfg(any(target_os = "windows", target_os = "linux"))]
+            self.tray_bridge.hidden_state.store(true, Ordering::SeqCst);
         }
     }
 
@@ -589,6 +575,11 @@ impl ServerGuiApp {
                 ui.checkbox(&mut self.advanced_console, "Advanced");
             });
         });
+        ui.label(if self.advanced_console {
+            "Advanced mode: retains up to 5000 lines and uses full-height monospace output."
+        } else {
+            "Standard mode: retains up to 100 lines in a compact output window."
+        });
         ui.separator();
 
         ui.horizontal(|ui| {
@@ -620,13 +611,17 @@ impl ServerGuiApp {
         }
 
         let scroll = if self.advanced_console {
-            egui::ScrollArea::vertical()
+            egui::ScrollArea::vertical().auto_shrink([false, false])
         } else {
-            egui::ScrollArea::vertical().max_height(420.0)
+            egui::ScrollArea::vertical().max_height(220.0)
         };
         scroll.stick_to_bottom(true).show(ui, |ui| {
             for line in &self.console_output {
-                ui.label(line);
+                if self.advanced_console {
+                    ui.monospace(line);
+                } else {
+                    ui.label(line);
+                }
             }
         });
     }

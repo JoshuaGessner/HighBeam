@@ -28,6 +28,12 @@ pub struct InstallReport {
     pub mods_dir: PathBuf,
 }
 
+pub struct ClientModDisableReport {
+    pub removed_zip: bool,
+    pub removed_temp_zip: bool,
+    pub mods_dir: PathBuf,
+}
+
 pub fn install_all(
     beamng_userfolder: Option<&str>,
     cache_dir: &Path,
@@ -103,6 +109,42 @@ pub fn install_client_mod(beamng_userfolder: Option<&str>, payload_zip: &Path) -
     std::fs::create_dir_all(&mods_dir)
         .with_context(|| format!("Failed to create BeamNG mods dir: {}", mods_dir.display()))?;
     install_highbeam_client_mod(payload_zip, &mods_dir)
+}
+
+/// Disable the HighBeam client mod by removing only the payload zip files.
+/// This intentionally preserves user preferences stored in userdata/highbeam.
+pub fn disable_client_mod(beamng_userfolder: Option<&str>) -> Result<ClientModDisableReport> {
+    let mods_dir = resolve_mods_dir(beamng_userfolder)?;
+    let client_zip = mods_dir.join("highbeam.zip");
+    let temp_zip = mods_dir.join("highbeam.zip.tmp");
+
+    let mut report = ClientModDisableReport {
+        removed_zip: false,
+        removed_temp_zip: false,
+        mods_dir: mods_dir.clone(),
+    };
+
+    if client_zip.exists() {
+        std::fs::remove_file(&client_zip).with_context(|| {
+            format!(
+                "Failed to remove HighBeam client mod zip: {}",
+                client_zip.display()
+            )
+        })?;
+        report.removed_zip = true;
+    }
+
+    if temp_zip.exists() {
+        std::fs::remove_file(&temp_zip).with_context(|| {
+            format!(
+                "Failed to remove temporary HighBeam client mod zip: {}",
+                temp_zip.display()
+            )
+        })?;
+        report.removed_temp_zip = true;
+    }
+
+    Ok(report)
 }
 
 pub fn cleanup_staged_server_mods(beamng_userfolder: Option<&str>) -> Result<CleanupReport> {
