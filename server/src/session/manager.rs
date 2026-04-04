@@ -165,6 +165,11 @@ impl SessionManager {
         self.players.len()
     }
 
+    /// Count of players with a registered UDP address (for diagnostics).
+    pub fn udp_bound_count(&self) -> usize {
+        self.players.iter().filter(|e| e.value().udp_addr.is_some()).count()
+    }
+
     /// Get a snapshot of all connected players (for WorldState).
     pub fn get_player_snapshot(&self) -> Vec<PlayerInfo> {
         self.players

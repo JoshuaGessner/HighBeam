@@ -259,6 +259,7 @@ pub async fn start_udp(
         }
 
         if diag_last.elapsed() >= diag_interval {
+            let udp_bound_count = sessions.udp_bound_count();
             tracing::info!(
                 discovery_rx = diag_discovery_rx,
                 drop_short = diag_drop_short,
@@ -272,6 +273,7 @@ pub async fn start_udp(
                 pos_throttled = diag_pos_throttled,
                 unknown_type = diag_unknown_type,
                 players = sessions.player_count(),
+                udp_bound = udp_bound_count,
                 "UDP relay diagnostics"
             );
             diag_last = Instant::now();

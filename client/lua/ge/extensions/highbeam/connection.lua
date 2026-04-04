@@ -56,6 +56,8 @@ M._udpRxCount = 0
 M._udpPositionRxCount = 0
 M._udpDecodeErrorCount = 0
 M._udpUnexpectedCount = 0
+M._udpLastRecvErr = 'none'  -- last error from udp:receive()
+M._udpRecvPollCount = 0     -- how many times _tickUdp polled receive()
 M._tcpRxTypeCounts = {}
 M._tcpTxTypeCounts = {}
 M._diagTimer = 0
@@ -522,12 +524,25 @@ M.tick = function(dt)
       local deferredCount = M._pendingWorldVehicles and #M._pendingWorldVehicles or 0
       local tcpSince = M._lastServerPacketTime and (os.clock() - M._lastServerPacketTime) or -1
       local reconnectHost = M._reconnectCredentials and M._reconnectCredentials.host or 'none'
+      -- UDP socket status for diagnostics
+      local udpStatus = 'nil'
+      if udp then
+        local pIp, pPort = udp:getpeername()
+        if pIp then
+          udpStatus = tostring(pIp) .. ':' .. tostring(pPort)
+        else
+          udpStatus = 'unconnected'
+        end
+      end
       log('I', logTag, 'Sync diag state=' .. tostring(STATE_NAMES[M.state])
         .. ' tcpIdle=' .. string.format('%.2f', tcpSince)
         .. ' udpRx=' .. tostring(M._udpRxCount)
         .. ' udpPos=' .. tostring(M._udpPositionRxCount)
         .. ' udpDecodeErr=' .. tostring(M._udpDecodeErrorCount)
         .. ' udpUnexpected=' .. tostring(M._udpUnexpectedCount)
+        .. ' udpSock=' .. udpStatus
+        .. ' udpRecvErr=' .. tostring(M._udpLastRecvErr)
+        .. ' udpPolls=' .. tostring(M._udpRecvPollCount)
         .. ' deferredWorldVehicles=' .. tostring(deferredCount))
       log('I', logTag, 'Sync diag tcpRxTypes=' .. _formatCounterMap(M._tcpRxTypeCounts)
         .. ' tcpTxTypes=' .. _formatCounterMap(M._tcpTxTypeCounts)
@@ -537,6 +552,7 @@ M.tick = function(dt)
       M._udpPositionRxCount = 0
       M._udpDecodeErrorCount = 0
       M._udpUnexpectedCount = 0
+      M._udpRecvPollCount = 0
       M._tcpRxTypeCounts = {}
       M._tcpTxTypeCounts = {}
     end
@@ -934,7 +950,15 @@ M._bindUdp = function(host, port, sessionToken)
 
   -- Send UdpBind packet: hash + type 0x01
   udp:send(M._sessionHash .. string.char(0x01))
-  log('I', logTag, 'UDP bound to ' .. host .. ':' .. tostring(port))
+  -- Log peer info and hash hex for diagnostics
+  local peerIp, peerPort = udp:getpeername()
+  local hashHex = ''
+  for i = 1, #M._sessionHash do
+    hashHex = hashHex .. string.format('%02x', M._sessionHash:byte(i))
+  end
+  log('I', logTag, 'UDP bound to ' .. host .. ':' .. tostring(port)
+    .. ' peer=' .. tostring(peerIp) .. ':' .. tostring(peerPort)
+    .. ' hashHex=' .. hashHex .. ' hashLen=' .. tostring(#M._sessionHash))
 end
 
 M.sendUdp = function(data)
@@ -966,10 +990,14 @@ M._tickUdp = function()
     M._reportError('W', 'udp_protocol', 'Protocol module unavailable: ' .. tostring(protocol))
     return
   end
+  M._udpRecvPollCount = M._udpRecvPollCount + 1
   -- Read all available UDP packets (non-blocking)
   while true do
-    local data = udp:receive()
-    if not data then break end
+    local data, err = udp:receive()
+    if not data then
+      M._udpLastRecvErr = err or 'nil'
+      break
+    end
     M._udpRxCount = M._udpRxCount + 1
     if #data >= 65 and (data:byte(17) == 0x10 or data:byte(17) == 0x11) then
       -- Binary position update (0x10 legacy / 0x11 extended) — decode and dispatch

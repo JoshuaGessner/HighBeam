@@ -347,19 +347,34 @@ fn relay_udp_c2s(
     let mut buf = vec![0u8; RELAY_BUF];
     // We don't know the client's local ephemeral addr until the first packet.
     let mut client_addr: Option<SocketAddr> = None;
+    let mut last_diag = std::time::Instant::now();
+    let diag_interval = Duration::from_secs(10);
+    let mut diag_packets: u64 = 0;
 
     loop {
         if shutdown.load(Ordering::SeqCst) {
             break;
         }
+        // Periodic diagnostics
+        let now_diag = std::time::Instant::now();
+        if now_diag.duration_since(last_diag) >= diag_interval {
+            tracing::info!(
+                packets = diag_packets,
+                client_addr = ?client_addr,
+                "Proxy UDP c2s diag"
+            );
+            diag_packets = 0;
+            last_diag = now_diag;
+        }
         match local.recv_from(&mut buf) {
             Ok((n, addr)) => {
                 if client_addr.is_none() {
-                    tracing::debug!(%addr, "Proxy UDP: learned client address");
+                    tracing::info!(%addr, bytes = n, "Proxy UDP c2s: learned client address");
                 }
                 client_addr = Some(addr);
                 packet_counter.fetch_add(1, Ordering::Relaxed);
                 byte_counter.fetch_add(n as u64, Ordering::Relaxed);
+                diag_packets += 1;
                 let _ = server.send(&buf[..n]);
             }
             Err(ref e)
@@ -409,21 +424,54 @@ fn relay_udp_s2c(
         }
     };
 
-    tracing::debug!(%client_addr, "Proxy UDP s2c: learned client address");
+    tracing::info!(%client_addr, "Proxy UDP s2c: learned client address, waiting for server packets");
+
+    let server_local_addr = server.local_addr().ok();
+    let server_peer_addr = server.peer_addr().ok();
+    tracing::info!(
+        local_addr = ?server_local_addr,
+        peer_addr = ?server_peer_addr,
+        "Proxy UDP s2c: server socket info"
+    );
+
+    let mut last_diag = std::time::Instant::now();
+    let diag_interval = Duration::from_secs(10);
+    let mut diag_packets: u64 = 0;
+    let mut diag_timeouts: u64 = 0;
+    let mut first_packet_logged = false;
 
     loop {
         if shutdown.load(Ordering::SeqCst) {
             break;
         }
+        // Periodic diagnostics
+        let now_diag = std::time::Instant::now();
+        if now_diag.duration_since(last_diag) >= diag_interval {
+            tracing::info!(
+                packets = diag_packets,
+                timeouts = diag_timeouts,
+                %client_addr,
+                "Proxy UDP s2c diag"
+            );
+            diag_packets = 0;
+            diag_timeouts = 0;
+            last_diag = now_diag;
+        }
         match server.recv(&mut buf) {
             Ok(n) => {
+                if !first_packet_logged {
+                    tracing::info!(bytes = n, "Proxy UDP s2c: first packet from server");
+                    first_packet_logged = true;
+                }
                 packet_counter.fetch_add(1, Ordering::Relaxed);
                 byte_counter.fetch_add(n as u64, Ordering::Relaxed);
+                diag_packets += 1;
                 let _ = local.send_to(&buf[..n], client_addr);
             }
             Err(ref e)
                 if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
             {
+                diag_timeouts += 1;
                 continue;
             }
             Err(_) => break,
