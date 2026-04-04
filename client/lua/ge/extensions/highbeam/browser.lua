@@ -215,12 +215,26 @@ local function _bridgeDirectConnect()
     return
   end
   M._bridge.pending = nil
-  local ok, err = pcall(_connection.connect, p.host, p.port, p.username,
+  local ok, started, err = pcall(_connection.connect, p.host, p.port, p.username,
     (p.password and p.password ~= "" and p.password or nil))
   if not ok then
     M._bridge.state = "failed"
     M._bridge.error = "Connect failed: " .. tostring(err)
     M._connectError = M._bridge.error
+    return
+  end
+
+  if started == false then
+    M._bridge.state = "failed"
+    M._bridge.error = tostring(err or "Connection failed")
+    M._connectError = M._bridge.error
+    return
+  end
+
+  -- We already fell back to direct connect, so keep launcher availability as
+  -- informational only and avoid presenting it as the active failure state.
+  if M._bridge.state == "unavailable" then
+    M._bridge.state = "idle"
   end
 end
 
@@ -765,6 +779,12 @@ M.onConnectionStatus = function(status, detail)
     if M._bridge.state == "syncing" then
       M._bridge.state = "failed"
       M._bridge.error = detail or "Kicked"
+    end
+  elseif status == "connect_failed" then
+    M._connectError = detail or "Connection failed"
+    if M._bridge.state == "syncing" then
+      M._bridge.state = "failed"
+      M._bridge.error = M._connectError
     end
   elseif status == "disconnected" or status == "reconnect_failed" then
     if M._bridge.state == "syncing" then

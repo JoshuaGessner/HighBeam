@@ -200,13 +200,18 @@ M.connect = function(host, port, username, password)
   -- Load LuaSocket
   local ok, sock = pcall(require, "socket")
   if not ok then
-    log('E', logTag, 'LuaSocket not available: ' .. tostring(sock))
-    return
+    local reason = 'LuaSocket not available: ' .. tostring(sock)
+    log('E', logTag, reason)
+    M._notifyStatus("connect_failed", reason)
+    return false, reason
   end
   socket = sock
 
   if not M._setState(M.STATE_CONNECTING, "connect") then
-    return
+    local reason = "Connect rejected: invalid connection state"
+    log('W', logTag, reason)
+    M._notifyStatus("connect_failed", reason)
+    return false, reason
   end
   M._notifyStatus("connecting", host .. ":" .. tostring(port))
   tcp = socket.tcp()
@@ -215,7 +220,12 @@ M.connect = function(host, port, username, password)
   -- Resolve hostname to IP (LuaSocket tcp:connect does not do DNS)
   local resolved = host
   local ip = socket.dns.toip(host)
-  if ip then resolved = ip end
+  if ip then
+    resolved = ip
+    if resolved ~= host then
+      log('I', logTag, 'Resolved host ' .. tostring(host) .. ' -> ' .. tostring(resolved))
+    end
+  end
 
   local result, err = tcp:connect(resolved, port)
   -- Non-blocking connect returns nil, "timeout" immediately
@@ -224,10 +234,14 @@ M.connect = function(host, port, username, password)
     -- Connection in progress
     M._pendingAuth = { username = username, password = password, host = host, port = port }
     M._connectStartTime = os.clock()  -- Track start time for timeout (Phase 2.1)
+    return true
   else
-    log('E', logTag, 'Connect failed: ' .. tostring(err))
+    local reason = 'TCP connect failed: ' .. tostring(err)
+    log('E', logTag, reason)
     M._setState(M.STATE_DISCONNECTED, "connect_failed")
     tcp = nil
+    M._notifyStatus("connect_failed", reason)
+    return false, reason
   end
 end
 
@@ -831,10 +845,12 @@ end
 
 M._onConnectFailedTimeout = function(host)
   -- Handle connection timeout (Phase 2.1)
+  local reason = "Connection timeout to " .. tostring(host)
   if M._onConnectFailedCallback then
     pcall(M._onConnectFailedCallback, "timeout", host)
   end
-  M.disconnect()
+  M._notifyStatus("connect_failed", reason)
+  M._onDisconnect(reason)
 end
 
 return M
