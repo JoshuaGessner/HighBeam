@@ -2,8 +2,8 @@
 
 > **Last updated:** 2026-04-04
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.1-dev.21 (protocol v2)
-> **Status:** v0.8.0 released | v0.8.1 in development
+> **Current version:** v0.8.1 (protocol v2)
+> **Status:** v0.8.1 released | v0.8.2 in development
 
 ---
 
@@ -822,6 +822,41 @@ Every community node:
 
 ---
 
+### v0.8.1 — Sync Correctness & Performance (Patch)
+
+**Status:** Complete — v0.8.1 released 2026-04-04
+**Goal:** Fix all vehicle synchronization bugs discovered during two-player testing, improve performance for heavy mods, and add observability for sync diagnostics.
+
+**Bug fixes (correctness):**
+- [x] Fix backwards remote vehicle movement: `veh:getRotation()` replaces `quatFromDir(getDirectionVector(), getDirectionVectorUp())` — the reconstructed quaternion had different conventions than `setPositionRotation` expects
+- [x] Fix damage sync field name mismatch: sender uses `broken`/`deform` but receiver was checking `beamBreaks`/`deformData` — damage was silently never applied
+- [x] Apply per-beam deformation via `setBeamDeformation()` per beam instead of the non-functional `applyDeformGroup()` path
+- [x] Increase spawn retry limit from 5 to 15 attempts with extended backoff — heavy mods (130MB+) were failing to spawn while jbeam files were still indexing
+- [x] Disable curved steering extrapolation (wrong coordinate system: assumed X-forward, BeamNG uses Y-forward)
+
+**Performance optimizations:**
+- [x] Delta-gated `setPositionRotation`: skip physics recalculation when position delta < 0.005m and rotation delta < 0.001
+- [x] Reduce damage polling from 200ms to 1000ms (iterating all beams per vehicle is expensive on heavy mods)
+- [x] Decouple electrics polling (500ms) from input polling (100ms) — were both at 100ms
+- [x] Reduce server PlayerMetrics broadcast from 1s to 5s — was sending JSON metrics to every player every second
+
+**Visual polish:**
+- [x] Apply `steering_input` to remote vehicle electrics so steering wheels visually turn on remote vehicles
+
+**Observability:**
+- [x] Per-player inbound UDP packet counters in connection diagnostic logs (`udpPerPlayer=1=N,2=M,...`)
+- [x] Rate-limited logging when `updateRemote` drops packets for unknown vehicle keys (diagnoses spawn race conditions)
+
+**Acceptance Criteria:**
+- [x] Remote vehicles move in the correct direction (not backwards)
+- [x] Damage visible on remote vehicles in both directions
+- [x] Steering wheels turn on remote vehicles
+- [x] Heavy mods spawn successfully with extended retry window
+- [x] P1 frame rate remains playable when P2 joins with heavy mods
+- [x] Diagnostic logs show per-player UDP traffic for asymmetry diagnosis
+
+---
+
 ### v0.9.0 — Mod Sandbox & Code Integrity (Beta)
 
 **Status:** Planned
@@ -1167,6 +1202,29 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.1 — 2026-04-04 (public release)
+First patch release for v0.8.x. Fixes all vehicle synchronization bugs discovered during multi-player testing and improves performance for servers running heavy mods.
+
+**Bug fixes:**
+- Fix backwards remote vehicle movement — rotation capture now uses `getRotation()` instead of `quatFromDir()` which had different quaternion conventions
+- Fix damage sync — field name mismatch between sender (`broken`/`deform`) and receiver (`beamBreaks`/`deformData`) caused damage to silently never apply
+- Fix per-beam deformation application — uses `setBeamDeformation()` per beam instead of non-functional `applyDeformGroup()` path
+- Increase spawn retry limit from 5 to 15 with extended backoff — heavy mods (130MB+) need longer to index jbeam files
+- Disable curved steering extrapolation (incorrect coordinate system assumptions)
+
+**Performance:**
+- Delta-gated `setPositionRotation` — skip redundant physics recalculation when position/rotation changes are below threshold
+- Damage polling interval: 200ms → 1000ms (all-beam iteration is expensive on heavy mods)
+- Electrics polling decoupled from inputs: electrics at 500ms, inputs at 100ms (were both 100ms)
+- Server PlayerMetrics broadcast: 1s → 5s
+
+**Visual:**
+- Remote vehicle steering wheels now visually turn via `steering_input` electrics sync
+
+**Diagnostics:**
+- Per-player inbound UDP counters in connection diagnostic logs
+- Rate-limited logging for unknown vehicle key drops in updateRemote
 
 ### v0.8.1-dev.19 — 2026-04-04 (draft)
 - **UDP relay fix (launcher):** removed connected-socket source filtering in the UDP proxy server→client path and switched to `send_to/recv_from`, preventing valid relay packets from being silently dropped.
