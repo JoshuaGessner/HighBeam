@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-04-04
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.1-dev.18 (protocol v2)
+> **Current version:** v0.8.1-dev.19 (protocol v2)
 > **Status:** v0.8.0 released | v0.8.1 in development
 
 ---
@@ -1167,6 +1167,11 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.1-dev.19 — 2026-04-04 (draft)
+- **UDP relay fix (launcher):** removed connected-socket source filtering in the UDP proxy server→client path and switched to `send_to/recv_from`, preventing valid relay packets from being silently dropped.
+- **Proxy addressing robustness:** server→client relay now consumes the client endpoint learned by the client→server thread, eliminating the s2c address-learning race.
+- **Sync recovery outcome:** server-side diagnostics now align with client behavior for bind/retry flows and correctly support two-way UDP sync once packets traverse the local proxy.
 
 ### v0.8.1-dev.18 — 2026-04-04 (draft)
 - **UDP bind reliability:** client now retries `UdpBind` every 2 seconds until first inbound UDP packet is seen, fixing sessions where the initial one-shot bind was lost during NAT/firewall warm-up.
