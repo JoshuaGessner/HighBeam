@@ -164,7 +164,10 @@ impl SessionManager {
 
     /// Count of players with a registered UDP address (for diagnostics).
     pub fn udp_bound_count(&self) -> usize {
-        self.players.iter().filter(|e| e.value().udp_addr.is_some()).count()
+        self.players
+            .iter()
+            .filter(|e| e.value().udp_addr.is_some())
+            .count()
     }
 
     /// Get a snapshot of all connected players (for WorldState).
