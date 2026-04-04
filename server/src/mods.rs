@@ -1,13 +1,26 @@
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::net::packet::ModDescriptor;
 
+const HASH_CACHE_FILE: &str = "manifest_cache.json";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedHash {
+    hash: String,
+    size: u64,
+    mtime_secs: u64,
+}
+
 /// Build a deterministic manifest of server mods from `Resources/Client/*.zip`.
+/// Uses a file-system–level hash cache keyed by (filename, size, mtime) to avoid
+/// rehashing unchanged files on every startup.
 pub fn build_manifest(resource_folder: &str) -> Result<Vec<ModDescriptor>> {
     let client_dir = Path::new(resource_folder).join("Client");
     tracing::info!(
@@ -22,6 +35,10 @@ pub fn build_manifest(resource_folder: &str) -> Result<Vec<ModDescriptor>> {
         );
         return Ok(Vec::new());
     }
+
+    let cache_path = Path::new(resource_folder).join(HASH_CACHE_FILE);
+    let mut hash_cache = load_hash_cache(&cache_path);
+    let mut new_cache: HashMap<String, CachedHash> = HashMap::new();
 
     let mut mods = Vec::new();
 
@@ -50,16 +67,42 @@ pub fn build_manifest(resource_folder: &str) -> Result<Vec<ModDescriptor>> {
 
         let metadata = std::fs::metadata(&path)
             .with_context(|| format!("Failed to stat mod file: {}", path.display()))?;
-        let hash = sha256_file_hex(&path)?;
+        let size = metadata.len();
+        let mtime_secs = metadata
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
 
-        mods.push(ModDescriptor {
-            name,
-            size: metadata.len(),
-            hash,
-        });
+        let hash = if let Some(cached) = hash_cache.remove(&name) {
+            if cached.size == size && cached.mtime_secs == mtime_secs {
+                tracing::debug!(name = %name, "Using cached hash");
+                cached.hash.clone()
+            } else {
+                sha256_file_hex(&path)?
+            }
+        } else {
+            sha256_file_hex(&path)?
+        };
+
+        new_cache.insert(
+            name.clone(),
+            CachedHash {
+                hash: hash.clone(),
+                size,
+                mtime_secs,
+            },
+        );
+
+        mods.push(ModDescriptor { name, size, hash });
     }
 
     mods.sort_by(|a, b| a.name.cmp(&b.name));
+
+    if let Err(e) = save_hash_cache(&cache_path, &new_cache) {
+        tracing::warn!(error = %e, "Failed to save hash cache");
+    }
 
     if mods.is_empty() {
         tracing::info!(
@@ -79,6 +122,21 @@ pub fn build_manifest(resource_folder: &str) -> Result<Vec<ModDescriptor>> {
     }
 
     Ok(mods)
+}
+
+fn load_hash_cache(path: &Path) -> HashMap<String, CachedHash> {
+    let data = match std::fs::read_to_string(path) {
+        Ok(d) => d,
+        Err(_) => return HashMap::new(),
+    };
+    serde_json::from_str(&data).unwrap_or_default()
+}
+
+fn save_hash_cache(path: &Path, cache: &HashMap<String, CachedHash>) -> Result<()> {
+    let data = serde_json::to_string(cache)?;
+    std::fs::write(path, data)
+        .with_context(|| format!("Failed to write hash cache: {}", path.display()))?;
+    Ok(())
 }
 
 fn sha256_file_hex(path: &Path) -> Result<String> {

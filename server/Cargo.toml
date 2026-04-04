@@ -19,6 +19,7 @@ anyhow = "1"
 rand = { version = "0.8", features = ["std"] }
 sha2 = "0.10"
 dashmap = "6"
+parking_lot = "0.12"
 socket2 = "0.5"
 argon2 = "0.5"
 constant_time_eq = "0.3"

@@ -1247,6 +1247,7 @@ dependencies = [
  "flate2",
  "image",
  "mlua",
+ "parking_lot",
  "rand",
  "reqwest",
  "rustls 0.23.37",

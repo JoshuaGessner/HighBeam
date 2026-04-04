@@ -108,6 +108,9 @@ pub fn sync_mods(
 
     let mut downloaded = 0usize;
     for _ in 0..missing.len() {
+        // Reset read timeout before each file download to prevent slow-but-steady
+        // transfers from hitting a cumulative timeout across all files.
+        stream.set_read_timeout(Some(Duration::from_secs(connect_timeout_sec)))?;
         let (name, path, size) = receive_file_frame(&mut stream, cache_dir, &expected_by_name)?;
         let expected = expected_by_name
             .get(&name)

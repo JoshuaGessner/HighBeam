@@ -60,7 +60,7 @@ pub fn load_index(cache_dir: &Path) -> Result<CacheIndex> {
 
 pub fn save_index(cache_dir: &Path, index: &CacheIndex) -> Result<()> {
     let index_path = cache_dir.join(INDEX_FILE);
-    let data = serde_json::to_string_pretty(index)?;
+    let data = serde_json::to_string(index)?;
     std::fs::write(&index_path, data)
         .with_context(|| format!("Failed to write cache index: {}", index_path.display()))?;
     Ok(())
@@ -74,4 +74,36 @@ pub fn clear_cache(cache_dir: &Path) -> Result<()> {
     std::fs::create_dir_all(cache_dir)
         .with_context(|| format!("Failed to recreate cache dir: {}", cache_dir.display()))?;
     Ok(())
+}
+
+/// Evict oldest cached mods until total size is under `max_size_bytes`.
+/// Entries with no `downloaded_at` timestamp are evicted first.
+pub fn evict_to_size(cache_dir: &Path, index: &mut CacheIndex, max_size_bytes: u64) {
+    let total: u64 = index.entries.values().map(|e| e.size).sum();
+    if total <= max_size_bytes {
+        return;
+    }
+
+    let mut entries: Vec<(String, u64, u64)> = index
+        .entries
+        .iter()
+        .map(|(k, v)| (k.clone(), v.size, v.downloaded_at.unwrap_or(0)))
+        .collect();
+    // Sort oldest first (smallest timestamp first)
+    entries.sort_by_key(|(_, _, ts)| *ts);
+
+    let mut running = total;
+    for (hash, size, _) in entries {
+        if running <= max_size_bytes {
+            break;
+        }
+        // Remove from disk
+        let file_path = cache_dir.join(format!("{hash}.zip"));
+        if let Err(e) = std::fs::remove_file(&file_path) {
+            tracing::warn!(path = %file_path.display(), error = %e, "Failed to remove evicted cache file");
+        }
+        index.entries.remove(&hash);
+        running = running.saturating_sub(size);
+        tracing::info!(hash = %hash, freed = size, remaining = running, "Evicted cached mod");
+    }
 }

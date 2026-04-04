@@ -18,6 +18,8 @@ pub struct LauncherConfig {
     #[serde(default = "default_query_timeout_ms")]
     pub query_timeout_ms: u64,
     pub connect_timeout_sec: u64,
+    #[serde(default = "default_max_cache_size_mb")]
+    pub max_cache_size_mb: u64,
 }
 
 impl LauncherConfig {
@@ -96,12 +98,17 @@ impl Default for LauncherConfig {
             recent_servers: Vec::new(),
             query_timeout_ms: default_query_timeout_ms(),
             connect_timeout_sec: 10,
+            max_cache_size_mb: default_max_cache_size_mb(),
         }
     }
 }
 
 fn default_query_timeout_ms() -> u64 {
     1500
+}
+
+fn default_max_cache_size_mb() -> u64 {
+    2048
 }
 
 #[cfg(test)]

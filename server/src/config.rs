@@ -68,6 +68,26 @@ pub struct NetworkConfig {
     pub enable_mod_sync: bool,
     #[serde(rename = "ModSyncPort")]
     pub mod_sync_port: Option<u16>,
+    #[serde(
+        rename = "MaxModSyncConnections",
+        default = "default_max_mod_sync_connections"
+    )]
+    pub max_mod_sync_connections: usize,
+    #[serde(
+        rename = "ModSyncConnectionTimeoutSec",
+        default = "default_mod_sync_connection_timeout_sec"
+    )]
+    pub mod_sync_connection_timeout_sec: u64,
+    #[serde(
+        rename = "AutosaveIntervalSec",
+        default = "default_autosave_interval_sec"
+    )]
+    pub autosave_interval_sec: u64,
+    #[serde(
+        rename = "PluginReloadIntervalSec",
+        default = "default_plugin_reload_interval_sec"
+    )]
+    pub plugin_reload_interval_sec: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -182,6 +202,18 @@ fn default_tcp_keepalive() -> u64 {
 fn default_enable_mod_sync() -> bool {
     true
 }
+fn default_max_mod_sync_connections() -> usize {
+    10
+}
+fn default_mod_sync_connection_timeout_sec() -> u64 {
+    300
+}
+fn default_autosave_interval_sec() -> u64 {
+    30
+}
+fn default_plugin_reload_interval_sec() -> u64 {
+    2
+}
 fn default_log_level() -> String {
     "info".into()
 }
@@ -265,6 +297,10 @@ impl Default for ServerConfig {
                 tcp_keepalive_sec: 15,
                 enable_mod_sync: false,
                 mod_sync_port: None,
+                max_mod_sync_connections: default_max_mod_sync_connections(),
+                mod_sync_connection_timeout_sec: default_mod_sync_connection_timeout_sec(),
+                autosave_interval_sec: default_autosave_interval_sec(),
+                plugin_reload_interval_sec: default_plugin_reload_interval_sec(),
             },
             logging: LoggingConfig {
                 level: "info".into(),
