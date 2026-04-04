@@ -11,7 +11,7 @@
 //! negligible latency (one extra memcpy over the loopback interface).
 
 use std::io::{self, Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream, UdpSocket};
+use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -65,8 +65,10 @@ impl Drop for ProxyHandle {
 /// is dropped / `shutdown()` is called.
 pub fn start(remote_addr: &str) -> anyhow::Result<ProxyHandle> {
     let remote: SocketAddr = remote_addr
-        .parse()
-        .map_err(|e| anyhow::anyhow!("Invalid remote address '{}': {}", remote_addr, e))?;
+        .to_socket_addrs()
+        .map_err(|e| anyhow::anyhow!("Failed to resolve '{}': {}", remote_addr, e))?
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("No addresses found for '{}'", remote_addr))?;
 
     let shutdown = Arc::new(AtomicBool::new(false));
     let mut threads = Vec::new();

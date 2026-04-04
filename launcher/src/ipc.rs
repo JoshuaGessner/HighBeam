@@ -48,16 +48,20 @@ struct IpcStateFile {
     proxy_server: Option<String>,
 }
 
-/// Returns the path of the IPC state file inside the BeamNG user-data
-/// `userdata/` subdirectory, matching the path the in-game client mod reads.
-/// Falls back to `{mods_dir}/../highbeam-launcher.json` if `userfolder` is
-/// not available.
-pub fn ipc_state_file_path_from_userfolder(userfolder: &Path) -> PathBuf {
-    userfolder.join("userdata").join(IPC_STATE_FILE)
+/// Returns the path of the IPC state file inside the **version-specific**
+/// BeamNG user-data directory.  BeamNG's VFS resolves `userdata/` relative
+/// to the versioned folder (e.g. `0.38/userdata/`), NOT the userfolder root.
+/// We derive it from `mods_dir` whose parent is the versioned directory.
+pub fn ipc_state_file_path_from_mods_dir(mods_dir: &Path) -> PathBuf {
+    mods_dir
+        .parent()
+        .unwrap_or(mods_dir)
+        .join("userdata")
+        .join(IPC_STATE_FILE)
 }
 
 /// Legacy helper: derive the IPC state file path from the resolved mods_dir.
-/// Prefer `ipc_state_file_path_from_userfolder` when the userfolder root is known.
+/// Prefer `ipc_state_file_path_from_mods_dir` when the mods directory is known.
 #[allow(dead_code)]
 pub fn ipc_state_file_path(mods_dir: &Path) -> PathBuf {
     mods_dir

@@ -317,11 +317,13 @@ M.tick = function(dt)
       log('I', logTag, 'Reconnection attempt ' .. M._reconnectAttempt .. '/' .. RECONNECT_MAX_ATTEMPTS)
       M._notifyStatus("reconnecting", "attempt " .. M._reconnectAttempt .. "/" .. RECONNECT_MAX_ATTEMPTS)
       local creds = M._reconnectCredentials
-      -- Temporarily disable autoReconnect to avoid recursion through connect()
+      -- Save state that connect() would reset, then restore after
       local savedAutoReconnect = M._autoReconnect
+      local savedAttempt = M._reconnectAttempt
       M._autoReconnect = false
       M.connect(creds.host, creds.port, creds.username, creds.password, creds.udpPort)
       M._autoReconnect = savedAutoReconnect
+      M._reconnectAttempt = savedAttempt
     end
     return
   end
