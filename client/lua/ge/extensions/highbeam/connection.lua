@@ -58,6 +58,9 @@ M._udpDecodeErrorCount = 0
 M._udpUnexpectedCount = 0
 M._udpLastRecvErr = 'none'  -- last error from udp:receive()
 M._udpRecvPollCount = 0     -- how many times _tickUdp polled receive()
+M._udpBindConfirmed = false  -- true once we receive the first inbound UDP packet
+M._udpBindRetryTimer = 0     -- timer for UdpBind retry
+M._udpBindRetrySent = 0      -- how many UdpBind retries sent
 M._tcpRxTypeCounts = {}
 M._tcpTxTypeCounts = {}
 M._diagTimer = 0
@@ -410,6 +413,9 @@ M.disconnect = function()
   M._udpPositionRxCount = 0
   M._udpDecodeErrorCount = 0
   M._udpUnexpectedCount = 0
+  M._udpBindConfirmed = false
+  M._udpBindRetryTimer = 0
+  M._udpBindRetrySent = 0
   M._tcpRxTypeCounts = {}
   M._tcpTxTypeCounts = {}
   M._diagTimer = 0
@@ -506,6 +512,18 @@ M.tick = function(dt)
       return
     end
     
+    -- Retry UdpBind if not yet confirmed (bind may be lost to NAT/firewall)
+    if udp and M._sessionHash and not M._udpBindConfirmed then
+      M._udpBindRetryTimer = M._udpBindRetryTimer + dt
+      if M._udpBindRetryTimer >= 2.0 then
+        M._udpBindRetryTimer = 0
+        M._udpBindRetrySent = M._udpBindRetrySent + 1
+        udp:send(M._sessionHash .. string.char(0x01))
+        log('I', logTag, 'UdpBind retry #' .. tostring(M._udpBindRetrySent)
+          .. ' (no inbound UDP yet)')
+      end
+    end
+
     -- Wrap UDP processing in pcall to prevent crashes (Phase 2.4)
     local ok, err = pcall(M._tickUdp)
     if not ok then
@@ -538,6 +556,8 @@ M.tick = function(dt)
         .. ' udpSock=' .. udpStatus
         .. ' udpRecvErr=' .. tostring(M._udpLastRecvErr)
         .. ' udpPolls=' .. tostring(M._udpRecvPollCount)
+        .. ' udpBound=' .. tostring(M._udpBindConfirmed)
+        .. ' udpBindRetries=' .. tostring(M._udpBindRetrySent)
         .. ' deferredWorldVehicles=' .. tostring(deferredCount))
       log('I', logTag, 'Sync diag tcpRxTypes=' .. _formatCounterMap(M._tcpRxTypeCounts)
         .. ' tcpTxTypes=' .. _formatCounterMap(M._tcpTxTypeCounts)
@@ -972,6 +992,11 @@ M._tickUdp = function()
       break
     end
     M._udpRxCount = M._udpRxCount + 1
+    if not M._udpBindConfirmed then
+      M._udpBindConfirmed = true
+      log('I', logTag, 'UDP bind confirmed — first inbound packet received'
+        .. ' (retries=' .. tostring(M._udpBindRetrySent) .. ')')
+    end
     if #data >= 65 and (data:byte(17) == 0x10 or data:byte(17) == 0x11) then
       -- Binary position update (0x10 legacy / 0x11 extended) — decode and dispatch
       local decoded = protocol.decodePositionUpdate(data)
