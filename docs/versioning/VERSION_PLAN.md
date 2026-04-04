@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-04-03
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.1-dev.3 (protocol v2)
+> **Current version:** v0.8.1-dev.5 (protocol v2)
 > **Status:** v0.8.0 released | v0.8.1 in development
 
 ---
@@ -1167,6 +1167,12 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.1-dev.5 — 2026-04-03 (draft)
+- **Current branch alignment:** Cut from merged `main` lineage including PR #14 (mod sync hardening) and PR #15 (tray icon rework).
+- **Release reliability:** Carries release workflow dependency updates for Linux tray-icon/GTK builds.
+- **Launcher lint hygiene:** Includes installer clippy cleanup (`is_none_or`) from merged tray branch.
+- Version bumped to `0.8.1-dev.5`.
 
 ### v0.8.1-dev.3 — 2026-04-03 (draft)
 - **Windows tray fix:** Use decoded PNG data (`IconSource::Data`) for tray icon instead of invalid `IconSource::Resource("network-workgroup")`. Fixes close-to-tray not working on Windows.
