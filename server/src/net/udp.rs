@@ -30,6 +30,7 @@ struct DiscoveryResponse {
 pub async fn start_udp(
     port: u16,
     tick_rate: u32,
+    udp_relay_distance_meters: f32,
     control: Arc<ControlPlane>,
     sessions: Arc<SessionManager>,
     world: Arc<WorldState>,
@@ -39,7 +40,18 @@ pub async fn start_udp(
         .await
         .with_context(|| format!("Failed to bind UDP socket on {addr}"))?;
 
-    tracing::info!(port, "UDP socket bound");
+    let relay_distance_sq = if udp_relay_distance_meters > 0.0 {
+        Some(udp_relay_distance_meters * udp_relay_distance_meters)
+    } else {
+        None
+    };
+
+    tracing::info!(
+        port,
+        relay_distance_meters = udp_relay_distance_meters,
+        full_range = relay_distance_sq.is_none(),
+        "UDP socket bound"
+    );
 
     let mut buf = vec![0u8; 65535];
     let relay_interval = Duration::from_secs_f64(1.0 / tick_rate.max(1) as f64);
@@ -193,15 +205,16 @@ pub async fn start_udp(
                     metrics.record_udp_tx(relay_targets);
                 }
 
-                // Use distance-based LOD: skip relaying to players > 1000m away
-                const LOD_DISTANCE: f32 = 1000.0;
-                let lod_distance_sq = LOD_DISTANCE * LOD_DISTANCE;
-                let world_ref = &world;
-                sessions
-                    .broadcast_udp_lod(&socket, &relay, player_id, pos, lod_distance_sq, |pid| {
-                        world_ref.player_centroid(pid)
-                    })
-                    .await;
+                if let Some(lod_distance_sq) = relay_distance_sq {
+                    let world_ref = &world;
+                    sessions
+                        .broadcast_udp_lod(&socket, &relay, player_id, pos, lod_distance_sq, |pid| {
+                            world_ref.player_centroid(pid)
+                        })
+                        .await;
+                } else {
+                    sessions.broadcast_udp(&socket, &relay, Some(player_id)).await;
+                }
             }
 
             _ => { /* Unknown type, ignore */ }

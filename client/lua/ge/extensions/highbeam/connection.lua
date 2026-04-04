@@ -48,6 +48,13 @@ M._errorCount = 0
 M._lastErrorTime = nil
 M._droppedMalformedPackets = 0
 M._lastServerPacketTime = nil
+M._pendingWorldVehicles = nil
+M._pendingWorldStateDeadline = nil
+M._pendingWorldStateLevel = nil
+M._udpFirstSeenVehicles = {}
+M._udpRxCount = 0
+M._diagTimer = 0
+M._diagIntervalSec = 5.0
 
 M.getErrorStats = function()
   return {
@@ -93,6 +100,38 @@ M._notifyStatus = function(status, detail)
   if M._statusCallback then
     pcall(M._statusCallback, status, detail)
   end
+end
+
+local function _normalizeLevelId(levelId)
+  if not levelId or levelId == '' then return nil end
+  return levelId:gsub('^/levels/', ''):gsub('/info%.json$', '')
+end
+
+local function _currentLevelNormalized()
+  if not getCurrentLevelIdentifier then return nil end
+  return _normalizeLevelId(getCurrentLevelIdentifier())
+end
+
+local function _spawnWorldVehicles(vehiclesList)
+  if not vehicles or not vehiclesList then return end
+  for _, v in ipairs(vehiclesList) do
+    if vehicles.spawnRemoteFromSnapshot then
+      vehicles.spawnRemoteFromSnapshot(v)
+    else
+      vehicles.spawnRemote(v.player_id, v.vehicle_id, v.data)
+    end
+  end
+end
+
+M._flushPendingWorldVehicles = function(reason)
+  if not M._pendingWorldVehicles then return end
+  local pending = M._pendingWorldVehicles
+  M._pendingWorldVehicles = nil
+  M._pendingWorldStateDeadline = nil
+  M._pendingWorldStateLevel = nil
+  log('I', logTag, 'Spawning deferred world vehicles count=' .. tostring(#pending)
+    .. ' reason=' .. tostring(reason))
+  _spawnWorldVehicles(pending)
 end
 
 M.getPlayers = function()
@@ -296,6 +335,12 @@ M.disconnect = function()
   M._connectStartTime = nil
   M._serverMap = nil
   M._players = {}
+  M._pendingWorldVehicles = nil
+  M._pendingWorldStateDeadline = nil
+  M._pendingWorldStateLevel = nil
+  M._udpFirstSeenVehicles = {}
+  M._udpRxCount = 0
+  M._diagTimer = 0
   M._setState(M.STATE_DISCONNECTED, "disconnect_complete")
   M._notifyStatus("disconnected")
 end
@@ -373,6 +418,15 @@ M.tick = function(dt)
 
   -- Tick UDP if connected
   if M.state == M.STATE_CONNECTED then
+    if M._pendingWorldVehicles then
+      local currentLevel = _currentLevelNormalized()
+      local expected = M._pendingWorldStateLevel
+      local deadline = M._pendingWorldStateDeadline or 0
+      if (currentLevel and expected and currentLevel == expected) or os.clock() >= deadline then
+        M._flushPendingWorldVehicles((currentLevel == expected) and "map_ready" or "timeout")
+      end
+    end
+
     -- Check for pong timeout (Phase 2.2)
     if M._lastPingTime and os.clock() - M._lastPingTime > PONG_TIMEOUT then
       log('W', logTag, 'Pong timeout - no heartbeat for ' .. PONG_TIMEOUT .. 's')
@@ -385,6 +439,15 @@ M.tick = function(dt)
     if not ok then
       log('E', logTag, 'Error in UDP processing: ' .. tostring(err))
       -- Continue running - UDP is not critical
+    end
+
+    M._diagTimer = M._diagTimer + dt
+    if M._diagTimer >= M._diagIntervalSec then
+      M._diagTimer = 0
+      local deferredCount = M._pendingWorldVehicles and #M._pendingWorldVehicles or 0
+      log('I', logTag, 'Sync diag udpRx=' .. tostring(M._udpRxCount)
+        .. ' deferredWorldVehicles=' .. tostring(deferredCount))
+      M._udpRxCount = 0
     end
   end
 end
@@ -562,19 +625,14 @@ M._handlePacket = function(jsonStr)
   elseif ptype == "world_state" then
     log('I', logTag, 'Received WorldState: ' .. tostring(#(packet.players or {})) .. ' players, ' .. tostring(#(packet.vehicles or {})) .. ' vehicles')
     -- Load the server's map if it differs from the current level
+    local needsLoad = false
+    local serverLevel = nil
     if M._serverMap then
-      local currentLevel = nil
-      if getCurrentLevelIdentifier then
-        currentLevel = getCurrentLevelIdentifier()
-      end
-      -- Normalise: strip /levels/ prefix and /info.json suffix for comparison
-      local serverLevel = M._serverMap:gsub('^/levels/', ''):gsub('/info%.json$', '')
-      local needsLoad = true
-      if currentLevel and currentLevel ~= '' then
-        local currentNorm = currentLevel:gsub('^/levels/', ''):gsub('/info%.json$', '')
-        if currentNorm == serverLevel then
-          needsLoad = false
-        end
+      local currentNorm = _currentLevelNormalized()
+      serverLevel = _normalizeLevelId(M._serverMap)
+      needsLoad = currentNorm ~= nil and serverLevel ~= nil and currentNorm ~= serverLevel
+      if currentNorm == nil and serverLevel and serverLevel ~= '' then
+        needsLoad = true
       end
       if needsLoad and serverLevel ~= '' then
         log('I', logTag, 'Loading server map: ' .. serverLevel)
@@ -602,9 +660,14 @@ M._handlePacket = function(jsonStr)
       log('I', logTag, 'Refreshing mod database before spawning vehicles')
       pcall(modMgr.initDB)
     end
-    if vehicles and packet.vehicles then
-      for _, v in ipairs(packet.vehicles) do
-        vehicles.spawnRemote(v.player_id, v.vehicle_id, v.data)
+    if packet.vehicles then
+      if needsLoad then
+        M._pendingWorldVehicles = packet.vehicles
+        M._pendingWorldStateDeadline = os.clock() + 8.0
+        M._pendingWorldStateLevel = serverLevel
+        log('I', logTag, 'Deferring world vehicle spawn until map is ready count=' .. tostring(#packet.vehicles))
+      else
+        _spawnWorldVehicles(packet.vehicles)
       end
     end
     if state and packet.players then
@@ -621,6 +684,10 @@ M._handlePacket = function(jsonStr)
       if vehicles then
         vehicles.spawnRemote(packet.player_id, packet.vehicle_id, packet.data)
       end
+    end
+  elseif ptype == "vehicle_spawn_rejected" then
+    if state and state.onLocalVehicleSpawnRejected then
+      state.onLocalVehicleSpawnRejected(packet.spawn_request_id, packet.reason)
     end
   elseif ptype == "vehicle_edit" then
     if vehicles and packet.player_id ~= M._playerId then
@@ -774,10 +841,16 @@ M._tickUdp = function()
   while true do
     local data = udp:receive()
     if not data then break end
+    M._udpRxCount = M._udpRxCount + 1
     if #data >= 65 and (data:byte(17) == 0x10 or data:byte(17) == 0x11) then
       -- Binary position update (0x10 legacy / 0x11 extended) — decode and dispatch
       local decoded = protocol.decodePositionUpdate(data)
       if decoded and vehicles then
+        local firstKey = tostring(decoded.playerId) .. '_' .. tostring(decoded.vehicleId)
+        if not M._udpFirstSeenVehicles[firstKey] then
+          M._udpFirstSeenVehicles[firstKey] = true
+          log('I', logTag, 'First UDP snapshot for remote vehicle ' .. firstKey)
+        end
         vehicles.updateRemote(decoded)
       end
     end

@@ -102,6 +102,14 @@ pub enum TcpPacket {
         spawn_request_id: Option<u32>,
     },
 
+    /// Spawn request was rejected by the server.
+    #[serde(rename = "vehicle_spawn_rejected")]
+    VehicleSpawnRejected {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        spawn_request_id: Option<u32>,
+        reason: String,
+    },
+
     /// A vehicle's config was edited.
     #[serde(rename = "vehicle_edit")]
     VehicleEdit {
@@ -200,6 +208,8 @@ pub struct VehicleInfo {
     pub position: [f32; 3],
     pub rotation: [f32; 4],
     pub velocity: [f32; 3],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_time_ms: Option<u64>,
 }
 
 /// Mod descriptor included in ModList.
@@ -442,6 +452,7 @@ mod tests {
                 position: [10.0, 20.0, 30.0],
                 rotation: [0.0, 0.0, 0.0, 1.0],
                 velocity: [1.0, 0.0, 0.0],
+                snapshot_time_ms: Some(1_700_000_000_000),
             }],
         });
     }

@@ -4,7 +4,7 @@ local logTag = "HighBeam.State"
 M.localVehicles = {}  -- [gameVehicleId] = serverVehicleId
 M.playerId = nil
 M.sessionToken = nil
-M._pendingSpawns = {}  -- [requestId] = gameVehicleId  (request-ID keyed map)
+M._pendingSpawns = {}  -- [requestId] = { gameVid = number, sentAt = number }
 M._nextSpawnRequestId = 1
 
 local sendTimer = 0
@@ -20,6 +20,28 @@ local _lastElectrics = {}  -- [gameVehicleId] = last sent electrics state string
 M._cachedInputs = {}  -- [gameVehicleId] = {steer, throttle, brake} from vlua callback
 local _lastUdpErrorLogAt = -math.huge
 local _udpErrorLogCooldown = 2.0
+local _pendingSpawnTimeoutSec = 8.0
+local _diagLogIntervalSec = 5.0
+local _diagLogTimer = 0
+local _udpSentCount = 0
+local _udpEncodeErrorCount = 0
+local _udpSendErrorCount = 0
+
+local function _countPendingSpawns()
+  local count = 0
+  for _, _ in pairs(M._pendingSpawns) do
+    count = count + 1
+  end
+  return count
+end
+
+local function _countLocalVehicles()
+  local count = 0
+  for _, _ in pairs(M.localVehicles) do
+    count = count + 1
+  end
+  return count
+end
 
 local function _logUdpErrorRateLimited(message)
   local now = os.clock()
@@ -70,6 +92,18 @@ end
 M.tick = function(dt)
   if not connection or connection.getState() ~= connection.STATE_CONNECTED then return end
 
+  local now = os.clock()
+
+  -- Clean up stale spawn requests so mapping cannot drift forever after dropped/rejected responses.
+  for requestId, pending in pairs(M._pendingSpawns) do
+    local sentAt = (type(pending) == "table" and pending.sentAt) or 0
+    if (now - sentAt) >= _pendingSpawnTimeoutSec then
+      log('W', logTag, 'Spawn request timed out reqId=' .. tostring(requestId)
+        .. ' gameVid=' .. tostring(type(pending) == "table" and pending.gameVid or pending))
+      M._pendingSpawns[requestId] = nil
+    end
+  end
+
   local updateRate = (config and config.get("updateRate")) or 20
   local updateInterval = 1.0 / updateRate
   sendTimer = sendTimer + dt
@@ -100,21 +134,41 @@ M.tick = function(dt)
         { pos.x, pos.y, pos.z },
         { rot.x, rot.y, rot.z, rot.w },
         { vel.x, vel.y, vel.z },
-        0,
+        now,
         inputs
       )
 
       if not okEncode then
+        _udpEncodeErrorCount = _udpEncodeErrorCount + 1
         _logUdpErrorRateLimited('UDP encode threw for vehicle ' .. tostring(serverVid) .. ': ' .. tostring(dataOrErr))
       elseif not dataOrErr or dataOrErr == '' then
+        _udpEncodeErrorCount = _udpEncodeErrorCount + 1
         _logUdpErrorRateLimited('UDP encode returned empty packet for vehicle ' .. tostring(serverVid))
       else
         local okSend, sendErr = pcall(connection.sendUdp, dataOrErr)
         if not okSend then
+          _udpSendErrorCount = _udpSendErrorCount + 1
           _logUdpErrorRateLimited('UDP send threw for vehicle ' .. tostring(serverVid) .. ': ' .. tostring(sendErr))
+        else
+          _udpSentCount = _udpSentCount + 1
         end
       end
     end
+  end
+
+  _diagLogTimer = _diagLogTimer + dt
+  if _diagLogTimer >= _diagLogIntervalSec then
+    _diagLogTimer = 0
+    log('I', logTag,
+      'Sync stats locals=' .. tostring(_countLocalVehicles())
+      .. ' pendingSpawns=' .. tostring(_countPendingSpawns())
+      .. ' udpSent=' .. tostring(_udpSentCount)
+      .. ' udpEncodeErr=' .. tostring(_udpEncodeErrorCount)
+      .. ' udpSendErr=' .. tostring(_udpSendErrorCount)
+    )
+    _udpSentCount = 0
+    _udpEncodeErrorCount = 0
+    _udpSendErrorCount = 0
   end
 
   -- ── Damage polling (every 200ms) ──────────────────────────────────
@@ -304,25 +358,37 @@ M.onWorldState = function(players)
 end
 
 M.onLocalVehicleSpawned = function(serverVehicleId, configData, spawnRequestId)
-  -- Use request ID to map if available (robust), fall back to first pending (legacy)
   local gameVid = nil
   if spawnRequestId and M._pendingSpawns[spawnRequestId] then
-    gameVid = M._pendingSpawns[spawnRequestId]
+    local pending = M._pendingSpawns[spawnRequestId]
+    gameVid = type(pending) == "table" and pending.gameVid or pending
     M._pendingSpawns[spawnRequestId] = nil
-  else
-    -- Legacy fallback: find any pending spawn
-    for rid, gvid in pairs(M._pendingSpawns) do
-      gameVid = gvid
-      M._pendingSpawns[rid] = nil
-      break
-    end
   end
 
   if gameVid then
     M.localVehicles[gameVid] = serverVehicleId
     log('I', logTag, 'Local vehicle mapped: game=' .. tostring(gameVid) .. ' server=' .. tostring(serverVehicleId) .. ' reqId=' .. tostring(spawnRequestId))
   else
-    log('W', logTag, 'Spawn confirmation but no pending spawn (server vid=' .. tostring(serverVehicleId) .. ')')
+    log('W', logTag, 'Spawn confirmation without matching pending request reqId=' .. tostring(spawnRequestId)
+      .. ' serverVid=' .. tostring(serverVehicleId))
+  end
+end
+
+M.onLocalVehicleSpawnRejected = function(spawnRequestId, reason)
+  if not spawnRequestId then
+    log('W', logTag, 'Spawn rejected without request id reason=' .. tostring(reason))
+    return
+  end
+
+  local pending = M._pendingSpawns[spawnRequestId]
+  if pending then
+    local gameVid = type(pending) == "table" and pending.gameVid or pending
+    M._pendingSpawns[spawnRequestId] = nil
+    log('W', logTag, 'Spawn rejected reqId=' .. tostring(spawnRequestId)
+      .. ' gameVid=' .. tostring(gameVid) .. ' reason=' .. tostring(reason))
+  else
+    log('W', logTag, 'Spawn rejected for unknown reqId=' .. tostring(spawnRequestId)
+      .. ' reason=' .. tostring(reason))
   end
 end
 
@@ -330,13 +396,21 @@ M.requestSpawn = function(gameVehicleId, configData)
   if not connection or connection.getState() ~= connection.STATE_CONNECTED then return end
   local requestId = M._nextSpawnRequestId
   M._nextSpawnRequestId = M._nextSpawnRequestId + 1
-  M._pendingSpawns[requestId] = gameVehicleId
-  connection._sendPacket({
+  M._pendingSpawns[requestId] = {
+    gameVid = gameVehicleId,
+    sentAt = os.clock(),
+  }
+  local sent = connection._sendPacket({
     type = "vehicle_spawn",
     vehicle_id = 0,  -- Server will assign
     data = configData,
     spawn_request_id = requestId,
   })
+  if not sent then
+    M._pendingSpawns[requestId] = nil
+    log('W', logTag, 'Failed to send spawn request reqId=' .. tostring(requestId)
+      .. ' gameVid=' .. tostring(gameVehicleId))
+  end
 end
 
 M.requestDelete = function(gameVehicleId)
@@ -386,6 +460,10 @@ M.onDisconnect = function()
   _lastElectrics = {}
   M._cachedInputs = {}
   _lastUdpErrorLogAt = -math.huge
+  _diagLogTimer = 0
+  _udpSentCount = 0
+  _udpEncodeErrorCount = 0
+  _udpSendErrorCount = 0
 end
 
 return M

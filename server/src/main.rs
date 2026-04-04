@@ -420,6 +420,7 @@ async fn run_server(
         if let Err(e) = net::udp::start_udp(
             udp_port,
             udp_config.network.tick_rate,
+            udp_config.network.udp_relay_distance_meters,
             udp_control,
             udp_sessions,
             udp_world,

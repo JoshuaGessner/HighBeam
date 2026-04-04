@@ -6,6 +6,9 @@ M._remoteGameIds = {} -- [gameVehicleId] = true  (quick lookup for isRemote)
 
 local interpolationMath = require("highbeam/math")
 local config = require("highbeam/config")
+local _diagTimer = 0
+local _diagIntervalSec = 5.0
+local _staleDropCount = 0
 
 local function _getConfigNumber(key, fallback)
   local value = config and config.get and config.get(key) or nil
@@ -57,7 +60,7 @@ local function _decodeJson(str)
   return nil
 end
 
-M.spawnRemote = function(playerId, vehicleId, configData)
+M.spawnRemote = function(playerId, vehicleId, configData, snapshot)
   local key = makeKey(playerId, vehicleId)
   if M.remoteVehicles[key] then
     log('W', logTag, 'Remote vehicle already exists: ' .. key)
@@ -68,8 +71,9 @@ M.spawnRemote = function(playerId, vehicleId, configData)
 
   local model = cfg.model or "pickup"
   local partCfg = cfg.partConfig or ""
-  local pos = cfg.pos or { 0, 0, 0 }
-  local rot = cfg.rot or { 0, 0, 0, 1 }
+  local pos = (snapshot and snapshot.position) or cfg.pos or { 0, 0, 0 }
+  local rot = (snapshot and snapshot.rotation) or cfg.rot or { 0, 0, 0, 1 }
+  local vel = (snapshot and snapshot.velocity) or { 0, 0, 0 }
 
   -- Validate model availability; fall back to pickup if not found
   local modelAvailable = true
@@ -108,11 +112,32 @@ M.spawnRemote = function(playerId, vehicleId, configData)
     lastSeqTime = -1,  -- For out-of-order rejection
   }
 
+  if snapshot then
+    table.insert(M.remoteVehicles[key].snapshots, {
+      pos = pos,
+      rot = rot,
+      vel = vel,
+      time = (snapshot.snapshotTimeMs or 0) / 1000.0,
+      received = os.clock(),
+      inputs = nil,
+    })
+  end
+
   if vid then
     M._remoteGameIds[vid] = true
   end
 
   log('I', logTag, 'Spawned remote vehicle: ' .. key .. ' gameVid=' .. tostring(vid))
+end
+
+M.spawnRemoteFromSnapshot = function(vehicle)
+  if not vehicle then return end
+  M.spawnRemote(vehicle.player_id, vehicle.vehicle_id, vehicle.data, {
+    position = vehicle.position,
+    rotation = vehicle.rotation,
+    velocity = vehicle.velocity,
+    snapshotTimeMs = vehicle.snapshot_time_ms,
+  })
 end
 
 M.updateRemote = function(decoded)
@@ -124,6 +149,7 @@ M.updateRemote = function(decoded)
 
   -- Out-of-order protection: reject packets older than newest received
   if decoded.time and rv.lastSeqTime and decoded.time < rv.lastSeqTime then
+    _staleDropCount = _staleDropCount + 1
     return  -- Stale packet, discard
   end
   if decoded.time then
@@ -469,6 +495,15 @@ M.tick = function(dt)
         latest.rot[3],
         latest.rot[4]
       )
+    end
+  end
+
+  _diagTimer = _diagTimer + dt
+  if _diagTimer >= _diagIntervalSec then
+    _diagTimer = 0
+    if _staleDropCount > 0 then
+      log('I', logTag, 'Dropped stale remote snapshots=' .. tostring(_staleDropCount))
+      _staleDropCount = 0
     end
   end
 end
