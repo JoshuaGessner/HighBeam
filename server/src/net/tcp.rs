@@ -412,7 +412,7 @@ where
     let ping_sessions = sessions.clone();
     let ping_task = tokio::spawn(async move {
         let ping_interval = Duration::from_secs(5);
-        let metrics_interval = Duration::from_secs(1);
+        let metrics_interval = Duration::from_secs(5);
         let pong_timeout = Duration::from_secs(30);
         let mut seq = 0u32;
         let mut ping_tick = tokio::time::interval(ping_interval);

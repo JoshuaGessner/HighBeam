@@ -61,6 +61,7 @@ M._udpRecvPollCount = 0     -- how many times _tickUdp polled receive()
 M._udpBindConfirmed = false  -- true once we receive the first inbound UDP packet
 M._udpBindRetryTimer = 0     -- timer for UdpBind retry
 M._udpBindRetrySent = 0      -- how many UdpBind retries sent
+M._udpPerPlayerRx = {}       -- [playerId] = count of inbound UDP packets
 M._tcpRxTypeCounts = {}
 M._tcpTxTypeCounts = {}
 M._diagTimer = 0
@@ -421,6 +422,7 @@ M.disconnect = function()
   M._udpBindConfirmed = false
   M._udpBindRetryTimer = 0
   M._udpBindRetrySent = 0
+  M._udpPerPlayerRx = {}
   M._tcpRxTypeCounts = {}
   M._tcpTxTypeCounts = {}
   M._diagTimer = 0
@@ -566,6 +568,7 @@ M.tick = function(dt)
         .. ' deferredWorldVehicles=' .. tostring(deferredCount))
       log('I', logTag, 'Sync diag tcpRxTypes=' .. _formatCounterMap(M._tcpRxTypeCounts)
         .. ' tcpTxTypes=' .. _formatCounterMap(M._tcpTxTypeCounts)
+        .. ' udpPerPlayer=' .. _formatCounterMap(M._udpPerPlayerRx)
         .. ' reconnectAttempt=' .. tostring(M._reconnectAttempt)
         .. ' reconnectHost=' .. tostring(reconnectHost))
       M._udpRxCount = 0
@@ -573,6 +576,7 @@ M.tick = function(dt)
       M._udpDecodeErrorCount = 0
       M._udpUnexpectedCount = 0
       M._udpRecvPollCount = 0
+      M._udpPerPlayerRx = {}
       M._tcpRxTypeCounts = {}
       M._tcpTxTypeCounts = {}
     end
@@ -1029,6 +1033,7 @@ M._tickUdp = function()
       local decoded = protocol.decodePositionUpdate(data)
       if decoded and vehicles then
         M._udpPositionRxCount = M._udpPositionRxCount + 1
+        _bumpCounter(M._udpPerPlayerRx, decoded.playerId)
         local firstKey = tostring(decoded.playerId) .. '_' .. tostring(decoded.vehicleId)
         if not M._udpFirstSeenVehicles[firstKey] then
           M._udpFirstSeenVehicles[firstKey] = true
