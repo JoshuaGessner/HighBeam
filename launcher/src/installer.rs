@@ -246,7 +246,7 @@ fn resolve_mods_subdir(root: &Path) -> PathBuf {
                     parts.next().and_then(|s| s.parse::<u64>().ok()),
                     parts.next().and_then(|s| s.parse::<u64>().ok()),
                 ) {
-                    if best.as_ref().map_or(true, |b| (b.0, b.1) < (major, minor)) {
+                    if best.as_ref().is_none_or(|b| (b.0, b.1) < (major, minor)) {
                         best = Some((major, minor, p));
                     }
                 }

@@ -10,10 +10,17 @@ use crate::session::manager::PlayerAdminSnapshot;
 use std::sync::mpsc::{self, Receiver};
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]
-use tray_item::{IconSource, TrayItem};
+use std::sync::Mutex;
+
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+use tray_icon::{
+    menu::{Menu, MenuEvent, MenuItem},
+    MouseButton as TrayMouseButton, TrayIconBuilder, TrayIconEvent,
+};
 
 #[derive(Clone, Copy)]
 enum TrayCommand {
+    Show,
     Toggle,
     Quit,
 }
@@ -21,6 +28,9 @@ enum TrayCommand {
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 struct TrayBridge {
     rx: Receiver<TrayCommand>,
+    /// Shared egui context so tray event handlers can wake the eframe event loop
+    /// even when the window is hidden.
+    ctx_holder: Arc<Mutex<Option<egui::Context>>>,
     available: bool,
 }
 
@@ -32,82 +42,104 @@ struct TrayBridge {
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 fn setup_system_tray_bridge() -> TrayBridge {
     let (tx, rx) = mpsc::channel::<TrayCommand>();
+    let ctx_holder: Arc<Mutex<Option<egui::Context>>> = Arc::new(Mutex::new(None));
 
-    // Decode the embedded PNG into raw pixel data for the tray icon.
-    // On Linux (ksni), IconSource::Data accepts ARGB pixels directly.
-    // On Windows, IconSource::Data does not exist; load the icon resource
-    // that was embedded by build.rs/winresource.
-    #[cfg(target_os = "linux")]
-    let icon = {
-        let bytes = include_bytes!("../assets/icon.png");
-        let img = image::load_from_memory(bytes)
-            .expect("embedded tray icon is valid PNG")
-            .to_rgba8();
-        let (w, h) = img.dimensions();
-        let argb: Vec<u8> = img
-            .pixels()
-            .flat_map(|p| [p[3], p[0], p[1], p[2]])
-            .collect();
-        IconSource::Data {
-            width: w as i32,
-            height: h as i32,
-            data: argb,
-        }
-    };
-    #[cfg(target_os = "windows")]
-    let icon = {
-        // Load the icon embedded by winresource (resource ID 1 = MAINICON).
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            LoadImageW, IMAGE_ICON, LR_DEFAULTSIZE, LR_SHARED,
-        };
-        let hicon = unsafe {
-            LoadImageW(
-                windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(std::ptr::null()),
-                1 as *const u16, // resource ID 1
-                IMAGE_ICON,
-                0,
-                0,
-                LR_DEFAULTSIZE | LR_SHARED,
-            )
-        };
-        if hicon != 0 {
-            IconSource::RawIcon(hicon as _)
-        } else {
-            tracing::warn!("Failed to load embedded icon resource; using fallback");
-            IconSource::Resource("application-default-icon")
-        }
-    };
+    // Build context menu with Show/Hide + Quit items.
+    let show_hide_item = MenuItem::new("Show/Hide", true, None);
+    let quit_item = MenuItem::new("Quit", true, None);
+    let menu = Menu::new();
+    if let Err(e) = menu.append(&show_hide_item) {
+        tracing::warn!(error = %e, "Failed to add Show/Hide tray menu item");
+    }
+    if let Err(e) = menu.append(&quit_item) {
+        tracing::warn!(error = %e, "Failed to add Quit tray menu item");
+    }
 
-    let mut tray = match TrayItem::new("HighBeam Server", icon) {
-        Ok(item) => item,
+    // Decode embedded PNG into RGBA for the tray icon.
+    let bytes = include_bytes!("../assets/icon.png");
+    let img = image::load_from_memory(bytes)
+        .expect("embedded tray icon is valid PNG")
+        .to_rgba8();
+    let (w, h) = img.dimensions();
+    let icon = match tray_icon::Icon::from_rgba(img.into_raw(), w, h) {
+        Ok(icon) => icon,
         Err(e) => {
-            tracing::warn!(error = %e, "System tray unavailable; running without tray integration");
+            tracing::warn!(error = %e, "Failed to create tray icon from embedded PNG");
             return TrayBridge {
                 rx,
+                ctx_holder,
                 available: false,
             };
         }
     };
 
-    let tx_toggle = tx.clone();
-    if let Err(e) = tray.add_menu_item("Show/Hide", move || {
-        let _ = tx_toggle.send(TrayCommand::Toggle);
-    }) {
-        tracing::warn!(error = %e, "Failed to add Show/Hide tray menu item");
-    }
+    // Build the tray icon with our menu.
+    let tray = match TrayIconBuilder::new()
+        .with_tooltip("HighBeam Server")
+        .with_icon(icon)
+        .with_menu(Box::new(menu))
+        .build()
+    {
+        Ok(tray) => tray,
+        Err(e) => {
+            tracing::warn!(error = %e, "System tray unavailable; running without tray integration");
+            return TrayBridge {
+                rx,
+                ctx_holder,
+                available: false,
+            };
+        }
+    };
 
-    let tx_quit = tx.clone();
-    if let Err(e) = tray.add_menu_item("Quit", move || {
-        let _ = tx_quit.send(TrayCommand::Quit);
-    }) {
-        tracing::warn!(error = %e, "Failed to add Quit tray menu item");
-    }
+    // Keep tray icon alive for the process lifetime (dropping it removes the icon).
+    Box::leak(Box::new(tray));
 
-    // Keep tray icon alive for the process lifetime.
-    let _leaked: &'static mut TrayItem = Box::leak(Box::new(tray));
+    // Wire up menu events → TrayCommand channel + wake eframe.
+    let show_hide_id = show_hide_item.id().clone();
+    let quit_id = quit_item.id().clone();
+    let tx_menu = tx.clone();
+    let ctx_menu = ctx_holder.clone();
+    MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
+        let cmd = if event.id == show_hide_id {
+            TrayCommand::Toggle
+        } else if event.id == quit_id {
+            TrayCommand::Quit
+        } else {
+            return;
+        };
+        let _ = tx_menu.send(cmd);
+        if let Ok(guard) = ctx_menu.lock() {
+            if let Some(ctx) = guard.as_ref() {
+                ctx.request_repaint();
+            }
+        }
+    }));
+
+    // Wire up tray icon events (double-click to show, Windows only).
+    let tx_icon = tx.clone();
+    let ctx_icon = ctx_holder.clone();
+    TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
+        #[allow(clippy::single_match)]
+        match event {
+            TrayIconEvent::DoubleClick {
+                button: TrayMouseButton::Left,
+                ..
+            } => {
+                let _ = tx_icon.send(TrayCommand::Show);
+                if let Ok(guard) = ctx_icon.lock() {
+                    if let Some(ctx) = guard.as_ref() {
+                        ctx.request_repaint();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }));
+
     tracing::info!("System tray integration enabled");
     TrayBridge {
         rx,
+        ctx_holder,
         available: true,
     }
 }
@@ -285,6 +317,14 @@ impl ServerGuiApp {
                 };
 
                 match cmd {
+                    TrayCommand::Show => {
+                        if self.tray_hidden {
+                            _ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                            _ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                            _ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                            self.tray_hidden = false;
+                        }
+                    }
                     TrayCommand::Toggle => {
                         if self.tray_hidden {
                             _ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
@@ -816,6 +856,15 @@ impl ServerGuiApp {
 
 impl eframe::App for ServerGuiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Store the egui context so tray event handlers can wake the event loop
+        // even when the window is hidden.
+        #[cfg(any(target_os = "windows", target_os = "linux"))]
+        {
+            if let Ok(mut guard) = self.tray_bridge.ctx_holder.lock() {
+                *guard = Some(ctx.clone());
+            }
+        }
+
         self.handle_tray_commands(ctx);
 
         #[cfg(any(target_os = "windows", target_os = "linux"))]
