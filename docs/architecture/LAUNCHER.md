@@ -8,7 +8,7 @@
 
 ## Overview
 
-The HighBeam Launcher is a lightweight Rust CLI that handles mod management and game launching. Unlike BeamMP's launcher, it is **not a network proxy** — it performs setup work, launches the game, and exits. It auto-detects BeamNG.drive installations from Steam and self-updates from GitHub Releases.
+The HighBeam Launcher is a lightweight Rust CLI that handles mod management and game launching. It is **not a network proxy** — it performs setup work, launches the game, and exits. It auto-detects BeamNG.drive installations from Steam and self-updates from GitHub Releases.
 
 ```
 ┌──────────────────────────────────────────────────┐
@@ -42,16 +42,16 @@ BeamNG's GE Lua runtime does not provide reliable filesystem write access. The i
 - Perform efficient binary TCP downloads without per-frame polling limitations
 - Provide download progress UI outside the game
 
-### How It Differs from BeamMP's Launcher
+### Design Rationale
 
-| Aspect | BeamMP Launcher | HighBeam Launcher |
-|--------|----------------|-------------------|
-| **Role** | Always-running network proxy between game and server | One-shot mod sync + game launch, then exits |
-| **Network proxy** | Yes — all game traffic routed through launcher | No — client mod connects directly to server |
-| **Authentication** | Handles Discord OAuth with centralized backend | No auth role — server-local auth handled by client mod |
-| **Mod injection** | Injects client mod into game at runtime | Writes client mod to mods directory (standard BeamNG mod loading) |
-| **Lifetime** | Runs for entire play session | Exits after launching the game |
-| **Language** | C++ | Rust (same toolchain as server) |
+| Aspect | HighBeam Launcher |
+|--------|-------------------|
+| **Role** | One-shot mod sync + game launch, then exits |
+| **Network proxy** | No — client mod connects directly to server via localhost relay |
+| **Authentication** | No auth role — server-local auth handled by client mod |
+| **Mod injection** | Writes client mod to mods directory (standard BeamNG mod loading) |
+| **Lifetime** | Stays running during session for IPC and proxy relay, cleans up on exit |
+| **Language** | Rust (same toolchain as server) |
 
 ---
 
@@ -217,16 +217,16 @@ OPTIONS:
 
 ---
 
-## Transfer Efficiency vs BeamMP
+## Transfer Efficiency
 
-| Metric | BeamMP | HighBeam |
-|--------|--------|----------|
-| **Encoding** | Binary through C++ launcher proxy | Raw binary TCP stream — zero encoding overhead |
-| **Download path** | Launcher proxy relays from server | Launcher connects directly to server's mod transfer port |
-| **Throughput** | Bottlenecked by proxy overhead | Limited only by network bandwidth |
-| **Large mods (500MB+)** | Works but slow through proxy | Direct TCP stream, writes to disk as it arrives |
-| **Caching** | Launcher caches in its own directory | SHA-256 cache with cross-server deduplication |
-| **Resume** | No resume support | Planned: byte-range resume for interrupted downloads |
+| Metric | HighBeam |
+|--------|----------|
+| **Encoding** | Raw binary TCP stream — zero encoding overhead |
+| **Download path** | Launcher connects directly to server's mod transfer port |
+| **Throughput** | Limited only by network bandwidth |
+| **Large mods (500MB+)** | Direct TCP stream, writes to disk as it arrives |
+| **Caching** | SHA-256 cache with cross-server deduplication |
+| **Resume** | Planned: byte-range resume for interrupted downloads |
 
 ---
 

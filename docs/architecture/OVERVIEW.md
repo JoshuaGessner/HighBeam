@@ -20,7 +20,7 @@ HighBeam is designed as a **decentralized alternative** to existing multiplayer 
 - **No centralized authentication** — Servers issue their own tokens. No auth keys from a central authority.
 - **No enforced server list** — Players connect via direct IP or optional community-run relay/discovery services.
 - **Self-contained servers** — A server binary runs independently with zero external service dependencies.
-- **Lightweight launcher** — Unlike BeamMP's always-running proxy, HighBeam's launcher only handles mod management and game launch — it exits once the game is running. Mods are synced only for the specific server being joined and cleaned up after the session ends.
+- **Lightweight launcher** — HighBeam's launcher only handles mod management and game launch — it exits once the game is running. Mods are synced only for the specific server being joined and cleaned up after the session ends.
 - **Extensible by default** — Both client and server expose plugin APIs for community customization.
 - **Protocol transparency** — The network protocol is fully documented and versioned.
 - **Cross-platform server** — The server binary runs on Windows, Linux, and macOS.
@@ -107,7 +107,7 @@ The server is designed to be hosted on **dedicated Linux servers** (headless mod
 
 ### Launcher (`launcher/`)
 
-The launcher is a lightweight Rust CLI that runs **before** BeamNG.drive launches. Unlike BeamMP’s launcher, it is **not a network proxy** and does **not stay running** during gameplay.
+The launcher is a lightweight Rust CLI that runs **before** BeamNG.drive launches. It is **not a network proxy** and does **not stay running** during gameplay.
 
 | Responsibility | Description |
 |---------------|-------------|
@@ -167,20 +167,20 @@ See [PROTOCOL.md](PROTOCOL.md) for the full protocol specification.
 
 ---
 
-## Key Architectural Differences from BeamMP
+## Key Architectural Design Decisions
 
-| Aspect | BeamMP | HighBeam |
-|--------|--------|----------|
-| **Authentication** | Centralized — requires auth key from BeamMP Keymaster (Discord login) | Decentralized — server issues its own tokens, optional password protection |
-| **Server list** | Centralized — servers must register with BeamMP backend to appear in list | Optional — community relay for discovery, or direct IP connect (see [RELAY.md](RELAY.md)) |
-| **Launcher** | Separate C++ launcher binary that bridges game ↔ server (always-running proxy) | Lightweight Rust CLI — syncs mods, launches game, then exits (not a proxy) |
-| **Server binary** | C++ with embedded Lua 5.3 | Rust with embedded Lua 5.4 |
-| **Server management** | Terminal-only (headless console) | Built-in desktop GUI (egui) with system tray, plus headless mode |
-| **Vehicle persistence** | Not supported natively | Admin-toggled per-player vehicle persistence (SQLite-backed) |
-| **Protocol** | Undocumented binary protocol through launcher proxy | Fully documented, versioned protocol with direct game connection |
-| **Plugin API** | Lua plugin system with MP.* functions | Compatible Lua plugin system with extended HB.* API namespace |
-| **Guest support** | Centralized guest system via BeamMP backend | Server-local guest policy (configurable per-server) |
-| **Mod sync** | Mods served from Resources/Client via launcher proxy | Launcher downloads mods via raw binary TCP before game launch; no in-game file I/O |
+| Aspect | HighBeam |
+|--------|----------|
+| **Authentication** | Decentralized — server issues its own tokens, optional password protection |
+| **Server discovery** | Community node mesh for discovery, or direct IP connect (see [RELAY.md](RELAY.md)) |
+| **Launcher** | Lightweight Rust CLI — syncs mods, launches game, then exits (not a proxy) |
+| **Server binary** | Rust with embedded Lua 5.4 |
+| **Server management** | Built-in desktop GUI (egui) with system tray, plus headless mode |
+| **Vehicle persistence** | Admin-toggled per-player vehicle persistence (SQLite-backed) |
+| **Protocol** | Fully documented, versioned protocol with direct game connection |
+| **Plugin API** | Lua plugin system with HB.* API namespace |
+| **Guest support** | Server-local guest policy (configurable per-server) |
+| **Mod sync** | Launcher downloads mods via raw binary TCP before game launch; no in-game file I/O |
 
 ---
 

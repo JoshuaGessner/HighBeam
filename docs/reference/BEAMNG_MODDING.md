@@ -1,7 +1,7 @@
 # BeamNG.drive Modding Reference
 
 > **Last verified:** 2026-03-29
-> **Sources:** BeamNG Wiki, docs.beammp.com/beamng/, community modding guides
+> **Sources:** BeamNG Wiki, community modding guides
 > **Purpose:** Reference for HighBeam client mod development within BeamNG.drive.
 
 ---
@@ -412,8 +412,5 @@ local currentMap = getMissionFilename()
 
 ## References
 
-- BeamNG Modding Docs: https://docs.beammp.com/beamng/
-- BeamNG Lua Mods Guide: https://docs.beammp.com/beamng/dev/modding/lua-mods/
-- BeamNG UI Apps Guide: https://docs.beammp.com/beamng/dev/modding/ui-apps/
-- BeamNG IMGUI Guide: https://docs.beammp.com/beamng/dev/modding/imgui-windows/
-- BeamNG Code Snippets: https://docs.beammp.com/beamng/snippets/
+- BeamNG Wiki: https://wiki.beamng.com/
+- BeamNG Modding Documentation: https://documentation.beamng.com/

@@ -21,7 +21,7 @@ pub fn detect_beamng_exe() -> Option<PathBuf> {
 ///
 /// Modern BeamNG (0.27+) stores user data under:
 ///   `%LOCALAPPDATA%\BeamNG\BeamNG.drive\`   (Windows)
-/// Legacy / BeamMP installs use:
+/// Legacy installs (pre-0.27) use:
 ///   `%LOCALAPPDATA%\BeamNG.drive\`           (Windows)
 pub fn detect_beamng_userfolder() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
@@ -33,7 +33,7 @@ pub fn detect_beamng_userfolder() -> Option<PathBuf> {
             if modern.is_dir() {
                 return Some(modern);
             }
-            // Legacy / BeamMP: %LOCALAPPDATA%\BeamNG.drive
+            // Legacy (pre-0.27): %LOCALAPPDATA%\BeamNG.drive
             let legacy = local.join("BeamNG.drive");
             if legacy.is_dir() {
                 return Some(legacy);

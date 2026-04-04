@@ -20,7 +20,7 @@
    - Server binary work → [SERVER.md](architecture/SERVER.md)
    - Network/protocol work → [PROTOCOL.md](architecture/PROTOCOL.md)
 3. **Before suggesting version bumps or release steps**, read [VERSION_PLAN.md](versioning/VERSION_PLAN.md).
-4. **For BeamMP/BeamNG compatibility context**, read [BEAMMP_RESEARCH.md](reference/BEAMMP_RESEARCH.md) and [BEAMNG_MODDING.md](reference/BEAMNG_MODDING.md).
+4. **For BeamNG modding context**, read [BEAMNG_MODDING.md](reference/BEAMNG_MODDING.md).
 5. **After completing work**, remind the developer to update [VERSION_PLAN.md](versioning/VERSION_PLAN.md).
 
 ---
@@ -55,7 +55,6 @@
 
 | Document | Purpose | Read When... |
 |----------|---------|-------------|
-| [BEAMMP_RESEARCH.md](reference/BEAMMP_RESEARCH.md) | Deep-dive research on BeamMP's architecture, protocol, APIs, and limitations | Understanding what we're improving upon, avoiding BeamMP's design pitfalls |
 | [BEAMNG_MODDING.md](reference/BEAMNG_MODDING.md) | BeamNG.drive modding reference: Lua scripting, extensions, UI apps | Writing client-side code that interfaces with BeamNG |
 
 ---
@@ -68,7 +67,7 @@
 | Client language | Lua (LuaJIT) | Required by BeamNG.drive's extension system | [CLIENT.md](architecture/CLIENT.md) |
 | Auth model | Decentralized (server-issued tokens) | No dependency on centralized auth servers | [OVERVIEW.md](architecture/OVERVIEW.md) |
 | Transport | TCP (reliable) + UDP (state sync) | TCP for events/config, UDP for high-frequency position updates | [PROTOCOL.md](architecture/PROTOCOL.md) |
-| Default port | 18860 (TCP + UDP) | Avoids BeamMP conflict; 1886 = birth of the automobile | [PROTOCOL.md](architecture/PROTOCOL.md) |
+| Default port | 18860 (TCP + UDP) | 1886 = birth of the automobile; unassigned in IANA | [PROTOCOL.md](architecture/PROTOCOL.md) |
 | Update rate | 20 Hz (configurable) | Balances visual quality with bandwidth | [BUILD_GUIDE.md](BUILD_GUIDE.md) |
 | Versioning | SemVer 2.0.0 | Industry standard, clear compatibility signals | [VERSION_PLAN.md](versioning/VERSION_PLAN.md) |
 | Server discovery | Direct connect + optional community relay | No enforced centralized server list | [OVERVIEW.md](architecture/OVERVIEW.md) |

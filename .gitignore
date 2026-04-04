@@ -34,6 +34,9 @@ server/Resources/Server/*
 # Copilot/agent instructions
 .copilot-instructions.md
 
+# Internal reference docs (local only)
+docs/reference/BEAMMP_RESEARCH.md
+
 # Workspace config
 *.code-workspace
 

@@ -191,7 +191,7 @@ server/
 - Event dispatch: iterates loaded plugins in order, supports cancellation
 
 #### API (`api.rs`)
-- Exposes `HB.*` namespace to Lua (analogous to BeamMP's `MP.*`)
+- Exposes `HB.*` namespace to Lua
 - API functions currently implemented:
 
 | Function | Description |

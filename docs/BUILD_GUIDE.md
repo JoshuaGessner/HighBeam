@@ -18,16 +18,11 @@
 
 ### Original Work Policy
 
-> **CRITICAL: HighBeam is 100% original code. Do NOT reference, translate, port, or adapt code from BeamMP.**
->
-> BeamMP (Server, Launcher, and Client Mod) is licensed under **AGPL-3.0**, which is incompatible with HighBeam's **GPL-3.0-only** license. Even "translating" their C++ into Rust or their Lua patterns line-by-line would create a derivative work and force relicensing.
+> **CRITICAL: HighBeam is 100% original code.**
 >
 > **Rules:**
-> - Never open BeamMP source files while writing HighBeam code.
-> - Never copy function signatures, packet formats, or wire protocols from their codebase.
-> - Our architecture docs describe *what* to build. Implement *how* from first principles, Rust/Lua documentation, and general game networking knowledge (Glenn Fiedler, Gabriel Gambetta, etc.).
-> - If you need to understand a BeamNG.drive API, read BeamNG's own docs or test in the game console — do not look at how BeamMP calls it.
-> - The `docs/reference/BEAMMP_RESEARCH.md` file documents public-facing behavior for competitive analysis only. It is NOT a code reference.
+> - Implement features from first principles, Rust/Lua documentation, and general game networking knowledge (Glenn Fiedler, Gabriel Gambetta, etc.).
+> - If you need to understand a BeamNG.drive API, read BeamNG's own docs or test in the game console.
 
 ### Port Convention
 
@@ -1906,7 +1901,6 @@ HighBeam runs entirely in GELUA. We:
 
 - Karl Benz patented the first automobile on January 29, **1886**
 - Port 18860 is unassigned in the IANA port registry
-- Avoids any conflict with BeamMP's port 30814
 - Memorable and historically significant for a car game mod
 
 ---
