@@ -3,6 +3,7 @@ local logTag = "HighBeam.Vehicles"
 
 M.remoteVehicles = {} -- [playerId_vehicleId] = vehicleData
 M._remoteGameIds = {} -- [gameVehicleId] = true  (quick lookup for isRemote)
+M._spawningRemote = false -- Guard flag: true while core_vehicles.spawnNewVehicle is in-flight
 
 local interpolationMath = require("highbeam/math")
 local config = require("highbeam/config")
@@ -83,9 +84,10 @@ local function _buildSpawnSpec(configData, snapshot)
 end
 
 local function _spawnGameVehicle(spec)
-  local vid = nil
+  local vehObj = nil
+  M._spawningRemote = true
   local ok, err = pcall(function()
-    vid = core_vehicles.spawnNewVehicle(spec.model, {
+    vehObj = core_vehicles.spawnNewVehicle(spec.model, {
       config = spec.partCfg,
       pos = vec3(spec.pos[1], spec.pos[2], spec.pos[3]),
       rot = quat(spec.rot[1], spec.rot[2], spec.rot[3], spec.rot[4]),
@@ -94,23 +96,38 @@ local function _spawnGameVehicle(spec)
     })
   end)
 
-  if not ok or not vid then
+  if not ok or not vehObj then
     local firstErr = err
     local ok2
     ok2, err = pcall(function()
-      vid = core_vehicles.spawnNewVehicle("pickup", {
+      vehObj = core_vehicles.spawnNewVehicle("pickup", {
         pos = vec3(spec.pos[1], spec.pos[2], spec.pos[3]),
         rot = quat(spec.rot[1], spec.rot[2], spec.rot[3], spec.rot[4]),
         autoEnterVehicle = false,
         cling = true,
       })
     end)
-    if not ok2 or not vid then
-      return nil, tostring(firstErr or err)
+    if not ok2 or not vehObj then
+      M._spawningRemote = false
+      return nil, nil, tostring(firstErr or err)
     end
   end
+  M._spawningRemote = false
 
-  return vid
+  -- core_vehicles.spawnNewVehicle returns a vehicle object (userdata), not an ID
+  local vid = nil
+  if type(vehObj) == "userdata" and vehObj.getID then
+    vid = vehObj:getID()
+  elseif type(vehObj) == "number" then
+    vid = vehObj
+    vehObj = scenetree.findObjectById(vid)
+  end
+
+  if not vid then
+    return nil, nil, "spawnNewVehicle returned unexpected type: " .. type(vehObj)
+  end
+
+  return vid, vehObj
 end
 
 -- Check if a game vehicle ID belongs to a remote player
@@ -126,13 +143,17 @@ M.spawnRemote = function(playerId, vehicleId, configData, snapshot)
   end
 
   local spec = _buildSpawnSpec(configData, snapshot)
-  local vid, spawnErr = _spawnGameVehicle(spec)
+  local vid, vehObj, spawnErr = _spawnGameVehicle(spec)
+
+  if vid then
+    M._remoteGameIds[vid] = true
+  end
 
   M.remoteVehicles[key] = {
     playerId = playerId,
     vehicleId = vehicleId,
     gameVehicleId = vid,
-    gameVehicle = vid and scenetree.findObjectById(vid) or nil,
+    gameVehicle = vehObj,
     snapshots = {},
     lastSeqTime = -1,  -- For out-of-order rejection
     spawnSpec = spec,
@@ -151,7 +172,6 @@ M.spawnRemote = function(playerId, vehicleId, configData, snapshot)
   end
 
   if vid then
-    M._remoteGameIds[vid] = true
     log('I', logTag, 'Spawned remote vehicle: ' .. key .. ' gameVid=' .. tostring(vid))
   else
     M.remoteVehicles[key].spawnRetry = {
@@ -449,11 +469,11 @@ M.tick = function(dt)
           rv.spawnSpec.vel = latest.vel
         end
 
-        local vid, spawnErr = _spawnGameVehicle(rv.spawnSpec)
+        local vid, vehObj, spawnErr = _spawnGameVehicle(rv.spawnSpec)
         _spawnRetryAttemptCount = _spawnRetryAttemptCount + 1
         if vid then
           rv.gameVehicleId = vid
-          rv.gameVehicle = scenetree.findObjectById(vid)
+          rv.gameVehicle = vehObj
           rv.spawnRetry = nil
           M._remoteGameIds[vid] = true
           _spawnRetrySuccessCount = _spawnRetrySuccessCount + 1

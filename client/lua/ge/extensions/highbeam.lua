@@ -197,6 +197,8 @@ M.onVehicleSpawned = function(gameVehicleId)
   if connection.getState() ~= connection.STATE_CONNECTED then return end
   -- Ignore remote vehicles we spawned ourselves
   if vehicles and vehicles.isRemote(gameVehicleId) then return end
+  -- Ignore vehicles being spawned by the remote spawn pipeline (callback fires synchronously)
+  if vehicles and vehicles._spawningRemote then return end
 
   local veh = be:getObjectByID(gameVehicleId)
   if not veh then return end
