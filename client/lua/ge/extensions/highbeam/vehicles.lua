@@ -136,6 +136,7 @@ M.updateRemote = function(decoded)
     vel = decoded.vel,
     time = decoded.time,
     received = os.clock(),
+    inputs = decoded.inputs,  -- nil for legacy 0x10 packets
   })
 
   local maxSnapshots = _getMaxSnapshots()
@@ -243,6 +244,85 @@ M.applyDamage = function(playerId, vehicleId, damageData)
   end
 end
 
+-- Apply electrics state update to a remote vehicle
+M.applyElectrics = function(playerId, vehicleId, electricsData)
+  local key = makeKey(playerId, vehicleId)
+  local rv = M.remoteVehicles[key]
+  if not rv then return end
+
+  local veh = rv.gameVehicle or (rv.gameVehicleId and scenetree.findObjectById(rv.gameVehicleId))
+  if not veh then return end
+
+  local elec = _decodeJson(electricsData)
+  if not elec then return end
+
+  -- Apply electrics via vehicle-side Lua
+  pcall(function()
+    local cmds = {}
+    if elec.lights ~= nil then
+      table.insert(cmds, 'electrics.values.lights_state = ' .. tostring(elec.lights))
+    end
+    if elec.signal_L ~= nil then
+      table.insert(cmds, 'electrics.values.signal_L = ' .. tostring(elec.signal_L))
+    end
+    if elec.signal_R ~= nil then
+      table.insert(cmds, 'electrics.values.signal_R = ' .. tostring(elec.signal_R))
+    end
+    if elec.hazard ~= nil then
+      table.insert(cmds, 'electrics.values.hazard_enabled = ' .. tostring(elec.hazard))
+    end
+    if elec.horn ~= nil then
+      table.insert(cmds, 'electrics.values.horn = ' .. tostring(elec.horn))
+    end
+    if elec.headlights ~= nil then
+      table.insert(cmds, 'electrics.values.lowbeam = ' .. tostring(elec.headlights))
+    end
+    if elec.highbeams ~= nil then
+      table.insert(cmds, 'electrics.values.highbeam = ' .. tostring(elec.highbeams))
+    end
+    if #cmds > 0 then
+      veh:queueLuaCommand(table.concat(cmds, ' '))
+    end
+  end)
+end
+
+-- Apply coupling/trailer state
+M.applyCoupling = function(playerId, vehicleId, targetVehicleId, coupled, nodeId, targetNodeId)
+  -- Find both remote vehicles by server vehicle ID
+  local sourceRv = nil
+  local targetRv = nil
+  for _, rv in pairs(M.remoteVehicles) do
+    if rv.playerId == playerId and rv.vehicleId == vehicleId then
+      sourceRv = rv
+    end
+    -- Target could belong to any player
+    if rv.vehicleId == targetVehicleId then
+      targetRv = rv
+    end
+  end
+
+  if not sourceRv or not targetRv then return end
+  local sourceVeh = sourceRv.gameVehicle or (sourceRv.gameVehicleId and scenetree.findObjectById(sourceRv.gameVehicleId))
+  local targetVeh = targetRv.gameVehicle or (targetRv.gameVehicleId and scenetree.findObjectById(targetRv.gameVehicleId))
+  if not sourceVeh or not targetVeh then return end
+
+  if coupled then
+    pcall(function()
+      sourceVeh:queueLuaCommand(
+        'beamstate.attachCouplerByNodeId(' .. tostring(nodeId or 0) .. ', '
+        .. tostring(targetRv.gameVehicleId) .. ', '
+        .. tostring(targetNodeId or 0) .. ')'
+      )
+    end)
+    log('D', logTag, 'Applied coupling: ' .. tostring(sourceRv.gameVehicleId) .. ' -> ' .. tostring(targetRv.gameVehicleId))
+  else
+    pcall(function()
+      sourceVeh:queueLuaCommand('beamstate.detachCoupler(' .. tostring(nodeId or 0) .. ')')
+    end)
+    log('D', logTag, 'Applied decoupling: ' .. tostring(sourceRv.gameVehicleId))
+  end
+end
+
 M._escapeForLuaCmd = function(s)
   if type(s) ~= "string" then return tostring(s) end
   return "'" .. s:gsub("'", "\\'") .. "'"
@@ -336,13 +416,44 @@ M.tick = function(dt)
         pos = interpolationMath.hermiteVec3(s1.pos, s1.vel, s2.pos, s2.vel, span, t)
         rot = interpolationMath.slerpQuat(s1.rot, s2.rot, t)
       else
-        -- Extrapolate using latest velocity
+        -- Extrapolate using latest velocity + input-augmented arc
         local extraT = math.min((renderTime - s2.received), extrapolationWindow)
-        pos = {
-          s2.pos[1] + (s2.vel[1] or 0) * extraT,
-          s2.pos[2] + (s2.vel[2] or 0) * extraT,
-          s2.pos[3] + (s2.vel[3] or 0) * extraT,
-        }
+        local vx = s2.vel[1] or 0
+        local vy = s2.vel[2] or 0
+        local vz = s2.vel[3] or 0
+
+        -- If we have input data, use steering for curved extrapolation
+        if s2.inputs and s2.inputs.steer and math.abs(s2.inputs.steer) > 0.01 then
+          local speed = math.sqrt(vx * vx + vy * vy)
+          if speed > 1.0 then
+            -- Approximate turn rate from steering input and speed
+            -- Wheelbase ~2.5m, max steering angle ~35deg
+            local turnRate = s2.inputs.steer * 0.6 / (speed * 0.1 + 1)
+            local angle = turnRate * extraT
+            local cosA = math.cos(angle)
+            local sinA = math.sin(angle)
+            -- Rotate the velocity vector
+            local rvx = vx * cosA - vy * sinA
+            local rvy = vx * sinA + vy * cosA
+            pos = {
+              s2.pos[1] + rvx * extraT,
+              s2.pos[2] + rvy * extraT,
+              s2.pos[3] + vz * extraT,
+            }
+          else
+            pos = {
+              s2.pos[1] + vx * extraT,
+              s2.pos[2] + vy * extraT,
+              s2.pos[3] + vz * extraT,
+            }
+          end
+        else
+          pos = {
+            s2.pos[1] + vx * extraT,
+            s2.pos[2] + vy * extraT,
+            s2.pos[3] + vz * extraT,
+          }
+        end
         rot = s2.rot
       end
 

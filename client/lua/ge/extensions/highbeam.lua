@@ -12,6 +12,7 @@ local state        -- highbeam/state.lua
 local chat         -- highbeam/chat.lua
 local config       -- highbeam/config.lua
 local browser      -- highbeam/browser.lua
+local nametags     -- highbeam/nametags.lua
 
 local MENU_ENTRY_ID = "highbeam.multiplayer"
 local _menuRegistered = false
@@ -102,6 +103,7 @@ M.onExtensionLoaded = function()
   chat       = _safeRequire("highbeam/chat")
   config     = _safeRequire("highbeam/config")
   browser    = _safeRequire("highbeam/browser")
+  nametags   = _safeRequire("highbeam/nametags")
 
   if not connection or not protocol or not vehicles or not state or not chat or not config then
     log('E', logTag, 'HighBeam startup aborted due to module load failure')
@@ -130,6 +132,10 @@ M.onExtensionLoaded = function()
 
   if browser then
     browser.load(connection, config)
+  end
+
+  if nametags then
+    nametags.init(vehicles, connection, config)
   end
 
   _registerMenuEntry()
@@ -171,6 +177,10 @@ M.onPreRender = function(dtReal, dtSim, dtRaw)
   -- Render the server browser IMGUI window every frame when it is open
   if browser then
     browser.renderUI()
+  end
+  -- Render player name tags above remote vehicles
+  if nametags then
+    nametags.render()
   end
 end
 
@@ -219,6 +229,64 @@ M.onVehicleResetted = function(gameVehicleId)
     vehicle_id = serverVid,
     data = resetData,
   })
+end
+
+-- ─────────────── Vehicle-side Lua callbacks (damage/electrics) ──────────────
+
+-- Called from vehicle-side queueGameEngineLua with damage state JSON
+M.onVehicleDamageReport = function(gameVid, damageJson)
+  if state and state.onDamageReport then
+    state.onDamageReport(gameVid, damageJson)
+  end
+end
+
+-- Called from vehicle-side queueGameEngineLua with electrics state JSON
+M.onElectricsReport = function(gameVid, electricsJson)
+  if state and state.onElectricsReport then
+    state.onElectricsReport(gameVid, electricsJson)
+  end
+end
+
+-- ─────────────── Coupling/trailer hooks ─────────────────────────────────────
+
+M.onCouplerAttached = function(objId1, objId2, nodeId, obj2nodeId)
+  if not state or not connection then return end
+  if connection.getState() ~= connection.STATE_CONNECTED then return end
+  if vehicles and (vehicles.isRemote(objId1) or vehicles.isRemote(objId2)) then return end
+
+  local serverId1 = state.localVehicles[objId1]
+  local serverId2 = state.localVehicles[objId2]
+  if not serverId1 or not serverId2 then return end
+
+  connection._sendPacket({
+    type = "vehicle_coupling",
+    vehicle_id = serverId1,
+    target_vehicle_id = serverId2,
+    coupled = true,
+    node_id = nodeId,
+    target_node_id = obj2nodeId,
+  })
+  log('I', logTag, 'Coupler attached: ' .. tostring(serverId1) .. ' <-> ' .. tostring(serverId2))
+end
+
+M.onCouplerDetached = function(objId1, objId2, nodeId, obj2nodeId)
+  if not state or not connection then return end
+  if connection.getState() ~= connection.STATE_CONNECTED then return end
+  if vehicles and (vehicles.isRemote(objId1) or vehicles.isRemote(objId2)) then return end
+
+  local serverId1 = state.localVehicles[objId1]
+  local serverId2 = state.localVehicles[objId2]
+  if not serverId1 or not serverId2 then return end
+
+  connection._sendPacket({
+    type = "vehicle_coupling",
+    vehicle_id = serverId1,
+    target_vehicle_id = serverId2,
+    coupled = false,
+    node_id = nodeId,
+    target_node_id = obj2nodeId,
+  })
+  log('I', logTag, 'Coupler detached: ' .. tostring(serverId1) .. ' <-> ' .. tostring(serverId2))
 end
 
 -- ──────────────────── Public API (callable from GE Lua console) ──────────────

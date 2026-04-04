@@ -12,6 +12,9 @@ M.defaults = {
   username = "",
   communityNodes = {},
   showChat = true,
+  nametagRenderDistance = 200,
+  nametagFadeNear = 30,
+  nametagFontScale = 1.0,
 }
 
 M.current = {}

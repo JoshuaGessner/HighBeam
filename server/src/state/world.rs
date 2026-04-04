@@ -112,6 +112,23 @@ impl WorldState {
     /// Update a vehicle's config (from VehicleEdit).
     pub fn update_config(&self, player_id: u32, vehicle_id: u16, config: String) {
         if let Some(mut entry) = self.vehicles.get_mut(&(player_id, vehicle_id)) {
+            // Try to merge delta JSON into existing config (for delta compression).
+            // If the incoming config is valid JSON and the stored config is too,
+            // merge only the provided keys. Otherwise, full replace.
+            if let (Ok(mut stored), Ok(delta)) = (
+                serde_json::from_str::<serde_json::Value>(&entry.config),
+                serde_json::from_str::<serde_json::Value>(&config),
+            ) {
+                if let (Some(stored_obj), Some(delta_obj)) =
+                    (stored.as_object_mut(), delta.as_object())
+                {
+                    for (k, v) in delta_obj {
+                        stored_obj.insert(k.clone(), v.clone());
+                    }
+                    entry.config = serde_json::to_string(&stored).unwrap_or(config);
+                    return;
+                }
+            }
             entry.config = config;
         }
     }

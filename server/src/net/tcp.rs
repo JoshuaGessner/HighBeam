@@ -643,6 +643,64 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                     tracing::warn!(player_id, vehicle_id, "VehicleDamage for unowned vehicle");
                 }
             }
+            TcpPacket::VehicleElectrics {
+                vehicle_id, data, ..
+            } => {
+                if let Err(e) = crate::validation::validate_vehicle_id(vehicle_id) {
+                    tracing::warn!(player_id, vehicle_id, error = %e, "VehicleElectrics: invalid vehicle ID");
+                    continue;
+                }
+
+                if world.is_owner(player_id, vehicle_id) {
+                    sessions.broadcast(
+                        TcpPacket::VehicleElectrics {
+                            player_id: Some(player_id),
+                            vehicle_id,
+                            data,
+                        },
+                        Some(player_id),
+                    );
+                } else {
+                    tracing::warn!(
+                        player_id,
+                        vehicle_id,
+                        "VehicleElectrics for unowned vehicle"
+                    );
+                }
+            }
+            TcpPacket::VehicleCoupling {
+                vehicle_id,
+                target_vehicle_id,
+                coupled,
+                node_id,
+                target_node_id,
+                ..
+            } => {
+                if let Err(e) = crate::validation::validate_vehicle_id(vehicle_id) {
+                    tracing::warn!(player_id, vehicle_id, error = %e, "VehicleCoupling: invalid vehicle ID");
+                    continue;
+                }
+                if let Err(e) = crate::validation::validate_vehicle_id(target_vehicle_id) {
+                    tracing::warn!(player_id, target_vehicle_id, error = %e, "VehicleCoupling: invalid target vehicle ID");
+                    continue;
+                }
+
+                if world.is_owner(player_id, vehicle_id) {
+                    sessions.broadcast(
+                        TcpPacket::VehicleCoupling {
+                            player_id: Some(player_id),
+                            vehicle_id,
+                            target_vehicle_id,
+                            coupled,
+                            node_id,
+                            target_node_id,
+                        },
+                        Some(player_id),
+                    );
+                } else {
+                    tracing::warn!(player_id, vehicle_id, "VehicleCoupling for unowned vehicle");
+                }
+            }
             TcpPacket::ChatMessage { text } => {
                 // Check chat rate limit
                 if !rate_limiters.check_chat_limit(player_id).await {

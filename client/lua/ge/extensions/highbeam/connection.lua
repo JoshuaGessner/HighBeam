@@ -638,6 +638,14 @@ M._handlePacket = function(jsonStr)
     if vehicles and packet.player_id ~= M._playerId then
       vehicles.applyDamage(packet.player_id, packet.vehicle_id, packet.data)
     end
+  elseif ptype == "vehicle_electrics" then
+    if vehicles and packet.player_id ~= M._playerId then
+      vehicles.applyElectrics(packet.player_id, packet.vehicle_id, packet.data)
+    end
+  elseif ptype == "vehicle_coupling" then
+    if vehicles and packet.player_id ~= M._playerId then
+      vehicles.applyCoupling(packet.player_id, packet.vehicle_id, packet.target_vehicle_id, packet.coupled, packet.node_id, packet.target_node_id)
+    end
   elseif ptype == "server_message" then
     log('I', logTag, 'Server message: ' .. tostring(packet.text))
     local okChat, chat = pcall(require, "highbeam/chat")
@@ -766,8 +774,8 @@ M._tickUdp = function()
   while true do
     local data = udp:receive()
     if not data then break end
-    if #data >= 65 and data:byte(17) == 0x10 then
-      -- Binary position update — decode and dispatch
+    if #data >= 65 and (data:byte(17) == 0x10 or data:byte(17) == 0x11) then
+      -- Binary position update (0x10 legacy / 0x11 extended) — decode and dispatch
       local decoded = protocol.decodePositionUpdate(data)
       if decoded and vehicles then
         vehicles.updateRemote(decoded)
