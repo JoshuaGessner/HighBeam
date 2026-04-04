@@ -812,14 +812,14 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                     player.last_pong_time = Instant::now();
 
                     // RTT is only valid for the most recent ping sequence.
-                    if player.last_ping_seq_sent == Some(seq)
-                        && let Some(sent_at) = player.last_ping_sent_at
-                    {
-                        let rtt_ms = sent_at.elapsed().as_millis().min(5_000) as u32;
-                        player.ping_ms = Some(match player.ping_ms {
-                            Some(prev) => ((prev * 3) + rtt_ms) / 4,
-                            None => rtt_ms,
-                        });
+                    if player.last_ping_seq_sent == Some(seq) {
+                        if let Some(sent_at) = player.last_ping_sent_at {
+                            let rtt_ms = sent_at.elapsed().as_millis().min(5_000) as u32;
+                            player.ping_ms = Some(match player.ping_ms {
+                                Some(prev) => ((prev * 3) + rtt_ms) / 4,
+                                None => rtt_ms,
+                            });
+                        }
                     }
                     tracing::debug!(player_id, seq, "Pong received");
                 } else {
