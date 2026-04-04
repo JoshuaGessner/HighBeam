@@ -407,22 +407,41 @@ where
         }
     });
 
-    // Spawn a ping task to send heartbeat pings every 20s and monitor pong timeout (Phase 2.2)
+    // Spawn a ping task to send heartbeat pings and periodic player metrics.
     let ping_tx = tcp_tx_ping;
     let ping_sessions = sessions.clone();
     let ping_task = tokio::spawn(async move {
-        let ping_interval = Duration::from_secs(20);
+        let ping_interval = Duration::from_secs(5);
+        let metrics_interval = Duration::from_secs(1);
         let pong_timeout = Duration::from_secs(30);
         let mut seq = 0u32;
+        let mut ping_tick = tokio::time::interval(ping_interval);
+        let mut metrics_tick = tokio::time::interval(metrics_interval);
 
         loop {
-            tokio::time::sleep(ping_interval).await;
-            if let Err(e) = ping_tx.send(TcpPacket::PingPong { seq }).await {
-                tracing::debug!(player_id, "Ping send failed: {e}");
-                break;
+            tokio::select! {
+                _ = ping_tick.tick() => {
+                    if let Some(mut player) = ping_sessions.get_player_mut(player_id) {
+                        player.last_ping_seq_sent = Some(seq);
+                        player.last_ping_sent_at = Some(Instant::now());
+                    }
+
+                    if let Err(e) = ping_tx.send(TcpPacket::PingPong { seq }).await {
+                        tracing::debug!(player_id, "Ping send failed: {e}");
+                        break;
+                    }
+                    tracing::debug!(player_id, seq, "Ping sent");
+                    seq = seq.wrapping_add(1);
+                }
+                _ = metrics_tick.tick() => {
+                    let metrics = ping_sessions.get_player_metrics_snapshot();
+                    if let Err(e) = ping_tx.send(TcpPacket::PlayerMetrics { players: metrics }).await {
+                        tracing::debug!(player_id, "Player metrics send failed: {e}");
+                        break;
+                    }
+                }
             }
-            tracing::debug!(player_id, seq, "Ping sent");
-            seq = seq.wrapping_add(1);
+
             if let Some(player) = ping_sessions.get_player(player_id) {
                 if player.last_pong_time.elapsed() > pong_timeout {
                     tracing::warn!(player_id, "Pong timeout after {}s", pong_timeout.as_secs());
@@ -791,6 +810,17 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                 // Handle pong response from client (Phase 2.2: heartbeat)
                 if let Some(mut player) = sessions.get_player_mut(player_id) {
                     player.last_pong_time = Instant::now();
+
+                    // RTT is only valid for the most recent ping sequence.
+                    if player.last_ping_seq_sent == Some(seq) {
+                        if let Some(sent_at) = player.last_ping_sent_at {
+                            let rtt_ms = sent_at.elapsed().as_millis().min(5_000) as u32;
+                            player.ping_ms = Some(match player.ping_ms {
+                                Some(prev) => ((prev * 3) + rtt_ms) / 4,
+                                None => rtt_ms,
+                            });
+                        }
+                    }
                     tracing::debug!(player_id, seq, "Pong received");
                 } else {
                     tracing::warn!(player_id, "PingPong from unknown player");
