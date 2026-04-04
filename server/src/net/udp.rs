@@ -56,6 +56,19 @@ pub async fn start_udp(
     let mut buf = vec![0u8; 65535];
     let relay_interval = Duration::from_secs_f64(1.0 / tick_rate.max(1) as f64);
     let mut last_relay_at = std::collections::HashMap::<u32, Instant>::new();
+    let mut diag_last = Instant::now();
+    let diag_interval = Duration::from_secs(5);
+    let mut diag_discovery_rx: u64 = 0;
+    let mut diag_drop_short: u64 = 0;
+    let mut diag_drop_unknown_session: u64 = 0;
+    let mut diag_drop_invalid_pose: u64 = 0;
+    let mut diag_drop_rate_limited: u64 = 0;
+    let mut diag_bind_count: u64 = 0;
+    let mut diag_pos_rx: u64 = 0;
+    let mut diag_pos_relay_packets: u64 = 0;
+    let mut diag_pos_relay_targets: u64 = 0;
+    let mut diag_pos_throttled: u64 = 0;
+    let mut diag_unknown_type: u64 = 0;
 
     // Per-source-IP rate limiting for unauthenticated discovery queries.
     // Prevents UDP amplification: a 1-byte query yields ~250 bytes in response.
@@ -79,6 +92,7 @@ pub async fn start_udp(
 
         // Unauthenticated server discovery query.
         if len >= 1 && buf[0] == DISCOVERY_QUERY_PACKET {
+            diag_discovery_rx += 1;
             let now = Instant::now();
             let src_ip = addr.ip();
 
@@ -97,6 +111,7 @@ pub async fn start_udp(
             };
             if !allowed {
                 tracing::debug!(%addr, "Discovery rate limit exceeded; dropping query");
+                diag_drop_rate_limited += 1;
                 continue;
             }
 
@@ -134,6 +149,7 @@ pub async fn start_udp(
 
         // Minimum packet: 16-byte session hash + 1-byte type
         if len < 17 {
+            diag_drop_short += 1;
             continue;
         }
 
@@ -146,13 +162,17 @@ pub async fn start_udp(
         // Validate session
         let player_id = match sessions.lookup_by_hash(&session_hash) {
             Some(id) => id,
-            None => continue, // Silently drop unknown sessions
+            None => {
+                diag_drop_unknown_session += 1;
+                continue;
+            } // Silently drop unknown sessions
         };
 
         match packet_type {
             // UdpBind: register this addr for the player
             0x01 => {
                 sessions.register_udp_addr(player_id, addr);
+                diag_bind_count += 1;
             }
 
             // Position update (0x10 legacy / 0x11 extended with inputs)
@@ -162,6 +182,7 @@ pub async fn start_udp(
             0x10 | 0x11 => {
                 let min_size = if packet_type == 0x11 { 69 } else { 63 };
                 if len < min_size {
+                    diag_drop_short += 1;
                     continue;
                 }
 
@@ -175,8 +196,11 @@ pub async fn start_udp(
 
                 if !all_finite3(&pos) || !all_finite4(&rot) || !all_finite3(&vel) {
                     tracing::debug!(player_id, vid, "Dropping non-finite UDP position payload");
+                    diag_drop_invalid_pose += 1;
                     continue;
                 }
+
+                diag_pos_rx += 1;
 
                 // Update world state
                 world.update_position(player_id, vid, pos, rot, vel);
@@ -188,6 +212,7 @@ pub async fn start_udp(
                     .unwrap_or(true);
 
                 if !should_relay {
+                    diag_pos_throttled += 1;
                     continue;
                 }
                 last_relay_at.insert(player_id, now);
@@ -201,6 +226,8 @@ pub async fn start_udp(
 
                 // Relay to all other players' registered UDP addresses
                 let relay_targets = sessions.player_count().saturating_sub(1) as u64;
+                diag_pos_relay_packets += 1;
+                diag_pos_relay_targets += relay_targets;
                 if let Some(metrics) = metrics::global() {
                     metrics.record_udp_tx(relay_targets);
                 }
@@ -224,7 +251,40 @@ pub async fn start_udp(
                 }
             }
 
-            _ => { /* Unknown type, ignore */ }
+            _ => {
+                diag_unknown_type += 1;
+                /* Unknown type, ignore */
+            }
+        }
+
+        if diag_last.elapsed() >= diag_interval {
+            tracing::info!(
+                discovery_rx = diag_discovery_rx,
+                drop_short = diag_drop_short,
+                drop_unknown_session = diag_drop_unknown_session,
+                drop_invalid_pose = diag_drop_invalid_pose,
+                drop_rate_limited = diag_drop_rate_limited,
+                binds = diag_bind_count,
+                pos_rx = diag_pos_rx,
+                pos_relays = diag_pos_relay_packets,
+                relay_targets = diag_pos_relay_targets,
+                pos_throttled = diag_pos_throttled,
+                unknown_type = diag_unknown_type,
+                players = sessions.player_count(),
+                "UDP relay diagnostics"
+            );
+            diag_last = Instant::now();
+            diag_discovery_rx = 0;
+            diag_drop_short = 0;
+            diag_drop_unknown_session = 0;
+            diag_drop_invalid_pose = 0;
+            diag_drop_rate_limited = 0;
+            diag_bind_count = 0;
+            diag_pos_rx = 0;
+            diag_pos_relay_packets = 0;
+            diag_pos_relay_targets = 0;
+            diag_pos_throttled = 0;
+            diag_unknown_type = 0;
         }
     }
 }

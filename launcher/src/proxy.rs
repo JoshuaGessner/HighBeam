@@ -12,7 +12,7 @@
 
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -81,13 +81,15 @@ pub fn start(remote_addr: &str) -> anyhow::Result<ProxyHandle> {
     tracing::info!(tcp_port, %remote, "Proxy TCP listener bound");
 
     let sd = shutdown.clone();
-    threads.push(thread::Builder::new().name("proxy-tcp".into()).spawn(
-        move || {
-            if let Err(e) = run_tcp_proxy(tcp_listener, remote, sd) {
-                tracing::warn!(error = %e, "Proxy TCP relay ended with error");
-            }
-        },
-    )?);
+    threads.push(
+        thread::Builder::new()
+            .name("proxy-tcp".into())
+            .spawn(move || {
+                if let Err(e) = run_tcp_proxy(tcp_listener, remote, sd) {
+                    tracing::warn!(error = %e, "Proxy TCP relay ended with error");
+                }
+            })?,
+    );
 
     // ── UDP ──────────────────────────────────────────────────────────────
     let udp_local = UdpSocket::bind("127.0.0.1:0")?;
@@ -96,13 +98,15 @@ pub fn start(remote_addr: &str) -> anyhow::Result<ProxyHandle> {
     tracing::info!(udp_port, %remote, "Proxy UDP listener bound");
 
     let sd = shutdown.clone();
-    threads.push(thread::Builder::new().name("proxy-udp".into()).spawn(
-        move || {
-            if let Err(e) = run_udp_proxy(udp_local, remote, sd) {
-                tracing::warn!(error = %e, "Proxy UDP relay ended with error");
-            }
-        },
-    )?);
+    threads.push(
+        thread::Builder::new()
+            .name("proxy-udp".into())
+            .spawn(move || {
+                if let Err(e) = run_udp_proxy(udp_local, remote, sd) {
+                    tracing::warn!(error = %e, "Proxy UDP relay ended with error");
+                }
+            })?,
+    );
 
     Ok(ProxyHandle {
         tcp_port,
@@ -119,26 +123,41 @@ fn run_tcp_proxy(
     remote: SocketAddr,
     shutdown: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
-    // Accept exactly one client (the in-game Lua mod).
+    // Accept clients in a loop so reconnects can re-use the same proxy ports.
     // Use a short non-blocking poll so we can honour `shutdown`.
     listener.set_nonblocking(true)?;
 
-    let client = loop {
-        if shutdown.load(Ordering::SeqCst) {
-            return Ok(());
-        }
-        match listener.accept() {
-            Ok((stream, addr)) => {
-                tracing::info!(%addr, "Proxy TCP: client connected");
-                break stream;
+    while !shutdown.load(Ordering::SeqCst) {
+        let client = loop {
+            if shutdown.load(Ordering::SeqCst) {
+                return Ok(());
             }
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(50));
+            match listener.accept() {
+                Ok((stream, addr)) => {
+                    tracing::info!(%addr, "Proxy TCP: client connected");
+                    break stream;
+                }
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(50));
+                }
+                Err(e) => return Err(e.into()),
             }
-            Err(e) => return Err(e.into()),
-        }
-    };
+        };
 
+        if let Err(e) = run_tcp_session(client, remote, shutdown.clone()) {
+            tracing::warn!(error = %e, "Proxy TCP session ended with error");
+        }
+        tracing::info!("Proxy TCP: waiting for next client session");
+    }
+
+    Ok(())
+}
+
+fn run_tcp_session(
+    client: TcpStream,
+    remote: SocketAddr,
+    shutdown: Arc<AtomicBool>,
+) -> anyhow::Result<()> {
     // Connect to the real server.
     let server = TcpStream::connect_timeout(&remote, Duration::from_secs(10))
         .map_err(|e| anyhow::anyhow!("Proxy TCP: failed to connect to {}: {}", remote, e))?;
@@ -153,25 +172,53 @@ fn run_tcp_proxy(
     let server_r = server.try_clone()?;
     let server_w = server.try_clone()?;
 
-    let sd1 = shutdown.clone();
-    let sd2 = shutdown.clone();
+    let session_stop = Arc::new(AtomicBool::new(false));
+    let stop1 = session_stop.clone();
+    let stop2 = session_stop.clone();
+    let shutdown1 = shutdown.clone();
+    let shutdown2 = shutdown.clone();
+    let c2s_bytes = Arc::new(AtomicU64::new(0));
+    let s2c_bytes = Arc::new(AtomicU64::new(0));
+    let c2s_bytes_thread = c2s_bytes.clone();
+    let s2c_bytes_thread = s2c_bytes.clone();
 
-    // client → server
+    // client -> server
     let h1 = thread::Builder::new()
         .name("proxy-tcp-c2s".into())
-        .spawn(move || relay_tcp(client_r, server_w, sd1, "client→server"))?;
+        .spawn(move || {
+            relay_tcp(
+                client_r,
+                server_w,
+                shutdown1,
+                stop1,
+                "client->server",
+                c2s_bytes_thread,
+            )
+        })?;
 
-    // server → client
+    // server -> client
     let h2 = thread::Builder::new()
         .name("proxy-tcp-s2c".into())
-        .spawn(move || relay_tcp(server_r, client_w, sd2, "server→client"))?;
+        .spawn(move || {
+            relay_tcp(
+                server_r,
+                client_w,
+                shutdown2,
+                stop2,
+                "server->client",
+                s2c_bytes_thread,
+            )
+        })?;
 
-    // When either direction finishes, tear down both.
     let _ = h1.join();
-    shutdown.store(true, Ordering::SeqCst);
+    session_stop.store(true, Ordering::SeqCst);
     let _ = h2.join();
 
-    tracing::info!("Proxy TCP relay stopped");
+    tracing::info!(
+        c2s_bytes = c2s_bytes.load(Ordering::Relaxed),
+        s2c_bytes = s2c_bytes.load(Ordering::Relaxed),
+        "Proxy TCP: client session closed"
+    );
     Ok(())
 }
 
@@ -179,32 +226,39 @@ fn relay_tcp(
     mut reader: TcpStream,
     mut writer: TcpStream,
     shutdown: Arc<AtomicBool>,
+    session_stop: Arc<AtomicBool>,
     label: &str,
+    byte_counter: Arc<AtomicU64>,
 ) {
     let mut buf = vec![0u8; RELAY_BUF];
     loop {
         if shutdown.load(Ordering::SeqCst) {
             break;
         }
+        if session_stop.load(Ordering::SeqCst) {
+            break;
+        }
+
         match reader.read(&mut buf) {
             Ok(0) => {
                 tracing::debug!(label, "Proxy TCP: EOF");
                 break;
             }
             Ok(n) => {
+                byte_counter.fetch_add(n as u64, Ordering::Relaxed);
                 if writer.write_all(&buf[..n]).is_err() {
                     break;
                 }
             }
             Err(ref e)
-                if e.kind() == io::ErrorKind::WouldBlock
-                    || e.kind() == io::ErrorKind::TimedOut =>
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
             {
                 continue;
             }
             Err(_) => break,
         }
     }
+    session_stop.store(true, Ordering::SeqCst);
     // Shut down writer half to unblock the peer relay thread.
     let _ = writer.shutdown(std::net::Shutdown::Write);
 }
@@ -232,22 +286,53 @@ fn run_udp_proxy(
 
     let sd1 = shutdown.clone();
     let sd2 = shutdown.clone();
+    let c2s_packets = Arc::new(AtomicU64::new(0));
+    let c2s_bytes = Arc::new(AtomicU64::new(0));
+    let s2c_packets = Arc::new(AtomicU64::new(0));
+    let s2c_bytes = Arc::new(AtomicU64::new(0));
+
+    let c2s_packets_thread = c2s_packets.clone();
+    let c2s_bytes_thread = c2s_bytes.clone();
+    let s2c_packets_thread = s2c_packets.clone();
+    let s2c_bytes_thread = s2c_bytes.clone();
 
     // client → server
     let h1 = thread::Builder::new()
         .name("proxy-udp-c2s".into())
-        .spawn(move || relay_udp_c2s(local, server_sock, sd1))?;
+        .spawn(move || {
+            relay_udp_c2s(
+                local,
+                server_sock,
+                sd1,
+                c2s_packets_thread,
+                c2s_bytes_thread,
+            )
+        })?;
 
     // server → client
     let h2 = thread::Builder::new()
         .name("proxy-udp-s2c".into())
-        .spawn(move || relay_udp_s2c(server_clone, local_clone, sd2))?;
+        .spawn(move || {
+            relay_udp_s2c(
+                server_clone,
+                local_clone,
+                sd2,
+                s2c_packets_thread,
+                s2c_bytes_thread,
+            )
+        })?;
 
     let _ = h1.join();
     shutdown.store(true, Ordering::SeqCst);
     let _ = h2.join();
 
-    tracing::info!("Proxy UDP relay stopped");
+    tracing::info!(
+        c2s_packets = c2s_packets.load(Ordering::Relaxed),
+        c2s_bytes = c2s_bytes.load(Ordering::Relaxed),
+        s2c_packets = s2c_packets.load(Ordering::Relaxed),
+        s2c_bytes = s2c_bytes.load(Ordering::Relaxed),
+        "Proxy UDP relay stopped"
+    );
     Ok(())
 }
 
@@ -256,6 +341,8 @@ fn relay_udp_c2s(
     local: UdpSocket,
     server: UdpSocket,
     shutdown: Arc<AtomicBool>,
+    packet_counter: Arc<AtomicU64>,
+    byte_counter: Arc<AtomicU64>,
 ) {
     let mut buf = vec![0u8; RELAY_BUF];
     // We don't know the client's local ephemeral addr until the first packet.
@@ -271,11 +358,12 @@ fn relay_udp_c2s(
                     tracing::debug!(%addr, "Proxy UDP: learned client address");
                 }
                 client_addr = Some(addr);
+                packet_counter.fetch_add(1, Ordering::Relaxed);
+                byte_counter.fetch_add(n as u64, Ordering::Relaxed);
                 let _ = server.send(&buf[..n]);
             }
             Err(ref e)
-                if e.kind() == io::ErrorKind::WouldBlock
-                    || e.kind() == io::ErrorKind::TimedOut =>
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
             {
                 continue;
             }
@@ -289,6 +377,8 @@ fn relay_udp_s2c(
     server: UdpSocket,
     local: UdpSocket,
     shutdown: Arc<AtomicBool>,
+    packet_counter: Arc<AtomicU64>,
+    byte_counter: Arc<AtomicU64>,
 ) {
     let mut buf = vec![0u8; RELAY_BUF];
 
@@ -303,8 +393,7 @@ fn relay_udp_s2c(
         match local.peek_from(&mut buf) {
             Ok((_n, addr)) => break addr,
             Err(ref e)
-                if e.kind() == io::ErrorKind::WouldBlock
-                    || e.kind() == io::ErrorKind::TimedOut =>
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
             {
                 continue;
             }
@@ -320,11 +409,12 @@ fn relay_udp_s2c(
         }
         match server.recv(&mut buf) {
             Ok(n) => {
+                packet_counter.fetch_add(1, Ordering::Relaxed);
+                byte_counter.fetch_add(n as u64, Ordering::Relaxed);
                 let _ = local.send_to(&buf[..n], client_addr);
             }
             Err(ref e)
-                if e.kind() == io::ErrorKind::WouldBlock
-                    || e.kind() == io::ErrorKind::TimedOut =>
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
             {
                 continue;
             }

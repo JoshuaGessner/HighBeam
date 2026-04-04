@@ -15,7 +15,9 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -31,6 +33,7 @@ const IPC_STATE_FILE: &str = "highbeam-launcher.json";
 
 /// How long to wait between failed/no-op `accept()` calls (milliseconds).
 const POLL_SLEEP_MS: u64 = 100;
+static IPC_JOIN_REQUEST_SEQ: AtomicU64 = AtomicU64::new(1);
 
 // ─────────────────────────────── State file helpers ──────────────────────────
 
@@ -234,7 +237,9 @@ fn handle_join_request(
         );
     }
 
-    tracing::info!(server = %server, "IPC: join request");
+    let join_req_id = IPC_JOIN_REQUEST_SEQ.fetch_add(1, Ordering::Relaxed);
+    let join_started = Instant::now();
+    tracing::info!(join_req_id, server = %server, "IPC: join request");
 
     // Acknowledge immediately so the client knows we got the request.
     send_response(
@@ -263,11 +268,20 @@ fn handle_join_request(
     };
 
     // ----- Query server for mod sync capability -----
-    tracing::info!(server = %server, timeout_ms = cfg.query_timeout_ms, "IPC: querying server for mod sync capability");
+    let discovery_started = Instant::now();
+    tracing::info!(
+        join_req_id,
+        server = %server,
+        timeout_ms = cfg.query_timeout_ms,
+        "IPC: querying server for mod sync capability"
+    );
     let should_sync = match crate::discovery::query_server(&server, cfg.query_timeout_ms) {
         Ok(server_info) => {
+            let discovery_ms = discovery_started.elapsed().as_millis();
             tracing::info!(
+                join_req_id,
                 server = %server,
+                discovery_ms,
                 mod_sync_port = ?server_info.mod_sync_port,
                 name = %server_info.name,
                 "IPC: server discovery succeeded"
@@ -286,7 +300,14 @@ fn handle_join_request(
             }
         }
         Err(e) => {
-            tracing::warn!(error = %e, server = %server, "Server discovery failed; falling back to default mod sync port");
+            let discovery_ms = discovery_started.elapsed().as_millis();
+            tracing::warn!(
+                join_req_id,
+                error = %e,
+                server = %server,
+                discovery_ms,
+                "Server discovery failed; falling back to default mod sync port"
+            );
             let (host, _) = server.rsplit_once(':').unwrap_or((&server, "18860"));
             Some(format!("{host}:18861"))
         }
@@ -317,6 +338,7 @@ fn handle_join_request(
         };
 
         tracing::info!(
+            join_req_id,
             server            = %server,
             downloaded        = report.downloaded_mods,
             total_server_mods = report.total_server_mods,
@@ -351,16 +373,34 @@ fn handle_join_request(
             }
         }
 
-        send_response(
+        let response = send_response(
             stream,
             start_proxy_and_build_response(active_proxy, &server),
-        )
+        );
+        if response.is_ok() {
+            tracing::info!(
+                join_req_id,
+                server = %server,
+                total_ms = join_started.elapsed().as_millis(),
+                "IPC join request completed"
+            );
+        }
+        response
     } else {
         // Mod sync was skipped (server has it disabled); still report success to client
-        send_response(
+        let response = send_response(
             stream,
             start_proxy_and_build_response(active_proxy, &server),
-        )
+        );
+        if response.is_ok() {
+            tracing::info!(
+                join_req_id,
+                server = %server,
+                total_ms = join_started.elapsed().as_millis(),
+                "IPC join request completed (sync skipped)"
+            );
+        }
+        response
     }
 }
 
@@ -380,12 +420,7 @@ fn start_proxy_and_build_response(
         Ok(handle) => {
             let tcp_port = handle.tcp_port;
             let udp_port = handle.udp_port;
-            tracing::info!(
-                tcp_port,
-                udp_port,
-                server,
-                "Proxy started for IPC join"
-            );
+            tracing::info!(tcp_port, udp_port, server, "Proxy started for IPC join");
             *active_proxy = Some(handle);
             serde_json::json!({
                 "type": "sync_complete",
