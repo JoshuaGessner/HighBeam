@@ -117,6 +117,11 @@ M.getConnectionQuality = function()
   }
 end
 
+-- Backward-compatible alias used by legacy UI surfaces.
+M.getQuality = function()
+  return M.getConnectionQuality()
+end
+
 M.setErrorCallback = function(callback)
   M._errorCallback = callback
 end
@@ -739,7 +744,10 @@ M._handlePacket = function(jsonStr)
     if packet.players then
       for _, p in ipairs(packet.players) do
         if p.player_id and p.name then
-          M._players[p.player_id] = { name = p.name }
+          M._players[p.player_id] = {
+            name = p.name,
+            ping_ms = p.ping_ms,
+          }
         end
       end
     end
@@ -831,7 +839,10 @@ M._handlePacket = function(jsonStr)
   elseif ptype == "player_join" then
     log('I', logTag, 'Player joined: ' .. tostring(packet.name) .. ' (id=' .. tostring(packet.player_id) .. ')')
     if packet.player_id and packet.name then
-      M._players[packet.player_id] = { name = packet.name }
+      M._players[packet.player_id] = {
+        name = packet.name,
+        ping_ms = nil,
+      }
     end
   elseif ptype == "player_leave" then
     log('I', logTag, 'Player left: id=' .. tostring(packet.player_id))
@@ -854,6 +865,22 @@ M._handlePacket = function(jsonStr)
       end
     else
       M._reportError('W', 'chat_require', 'Chat module unavailable: ' .. tostring(chat))
+    end
+  elseif ptype == "player_metrics" then
+    if packet.players then
+      for _, p in ipairs(packet.players) do
+        if p.player_id then
+          local existing = M._players[p.player_id]
+          if existing then
+            existing.ping_ms = p.ping_ms
+          else
+            M._players[p.player_id] = {
+              name = "Player " .. tostring(p.player_id),
+              ping_ms = p.ping_ms,
+            }
+          end
+        end
+      end
     end
   elseif ptype == "ping_pong" then
     log('D', logTag, 'Received PingPong: seq=' .. tostring(packet.seq))

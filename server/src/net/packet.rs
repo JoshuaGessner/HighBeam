@@ -45,6 +45,10 @@ pub enum TcpPacket {
     #[serde(rename = "player_leave")]
     PlayerLeave { player_id: u32 },
 
+    /// Periodic player metrics snapshot (ping, etc.) for HUD overlays.
+    #[serde(rename = "player_metrics")]
+    PlayerMetrics { players: Vec<PlayerPingInfo> },
+
     /// Server kicking a player.
     #[serde(rename = "kick")]
     Kick { reason: String },
@@ -197,6 +201,16 @@ pub enum TcpPacket {
 pub struct PlayerInfo {
     pub player_id: u32,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ping_ms: Option<u32>,
+}
+
+/// Lightweight per-player ping snapshot for frequent updates.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlayerPingInfo {
+    pub player_id: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ping_ms: Option<u32>,
 }
 
 /// Vehicle info included in WorldState.
@@ -444,6 +458,7 @@ mod tests {
             players: vec![PlayerInfo {
                 player_id: 1,
                 name: "Alice".into(),
+                ping_ms: Some(42),
             }],
             vehicles: vec![VehicleInfo {
                 player_id: 1,
@@ -480,6 +495,16 @@ mod tests {
             player_id: 1,
             player_name: "Alice".into(),
             text: "Hello, everyone!".into(),
+        });
+    }
+
+    #[test]
+    fn test_player_metrics_round_trip() {
+        round_trip(&TcpPacket::PlayerMetrics {
+            players: vec![PlayerPingInfo {
+                player_id: 7,
+                ping_ms: Some(55),
+            }],
         });
     }
 

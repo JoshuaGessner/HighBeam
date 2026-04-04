@@ -17,8 +17,10 @@ local chat         -- highbeam/chat.lua
 local config       -- highbeam/config.lua
 local browser      -- highbeam/browser.lua
 local nametags     -- highbeam/nametags.lua
+local overlay      -- highbeam/overlay.lua
 
 local MENU_ENTRY_ID = "highbeam.multiplayer"
+local OVERLAY_MENU_ENTRY_ID = "highbeam.overlay"
 local _menuRegistered = false
 
 local function _safeRequire(moduleName)
@@ -36,6 +38,12 @@ local function _openBrowserFromMenu()
   end
 end
 
+local function _toggleOverlayFromMenu()
+  if overlay and overlay.toggle then
+    overlay.toggle()
+  end
+end
+
 local function _menuController()
   return (extensions and extensions.core_quickAccess) or core_quickAccess
 end
@@ -47,7 +55,7 @@ local function _registerMenuEntry()
     return false
   end
 
-  local entry = {
+  local browserEntry = {
     id = MENU_ENTRY_ID,
     title = "HighBeam Multiplayer",
     desc = "Open server browser",
@@ -55,30 +63,44 @@ local function _registerMenuEntry()
     onSelect = _openBrowserFromMenu,
   }
 
+  local overlayEntry = {
+    id = OVERLAY_MENU_ENTRY_ID,
+    title = "HighBeam Overlay",
+    desc = "Toggle live chat and player stats",
+    icon = "group",
+    onSelect = _toggleOverlayFromMenu,
+  }
+
   -- BeamNG builds differ in addEntry/removeEntry signatures; try method-call
   -- (qa:addEntry) and plain-function variants.
-  local ok = false
-  if qa.addEntry then
-    ok = pcall(qa.addEntry, qa, MENU_ENTRY_ID, entry)
-    if not ok then
-      ok = pcall(qa.addEntry, qa, entry)
+  local function _registerOne(id, entry)
+    local ok = false
+    if qa.addEntry then
+      ok = pcall(qa.addEntry, qa, id, entry)
+      if not ok then
+        ok = pcall(qa.addEntry, qa, entry)
+      end
+      if not ok then
+        ok = pcall(qa.addEntry, entry)
+      end
+      if not ok then
+        ok = pcall(qa.addEntry, id, entry)
+      end
     end
-    if not ok then
-      ok = pcall(qa.addEntry, entry)
-    end
-    if not ok then
-      ok = pcall(qa.addEntry, MENU_ENTRY_ID, entry)
-    end
+    return ok
   end
 
-  if ok then
+  local okBrowser = _registerOne(MENU_ENTRY_ID, browserEntry)
+  local okOverlay = _registerOne(OVERLAY_MENU_ENTRY_ID, overlayEntry)
+
+  if okBrowser or okOverlay then
     _menuRegistered = true
-    log('I', logTag, 'Registered More menu button: HighBeam Multiplayer')
+    log('I', logTag, 'Registered More menu entries for browser/overlay')
   else
-    log('W', logTag, 'Could not register More menu button (addEntry failed)')
+    log('W', logTag, 'Could not register More menu entries (addEntry failed)')
   end
 
-  return ok
+  return okBrowser or okOverlay
 end
 
 local function _unregisterMenuEntry()
@@ -92,6 +114,8 @@ local function _unregisterMenuEntry()
     if not ok then
       pcall(qa.removeEntry, "HighBeam Multiplayer")
     end
+    pcall(qa.removeEntry, OVERLAY_MENU_ENTRY_ID)
+    pcall(qa.removeEntry, "HighBeam Overlay")
   end
 
   _menuRegistered = false
@@ -108,8 +132,9 @@ M.onExtensionLoaded = function()
   config     = _safeRequire("highbeam/config")
   browser    = _safeRequire("highbeam/browser")
   nametags   = _safeRequire("highbeam/nametags")
+  overlay    = _safeRequire("highbeam/overlay")
 
-  if not connection or not protocol or not vehicles or not state or not chat or not config then
+  if not connection or not protocol or not vehicles or not state or not chat or not config or not overlay then
     log('E', logTag, 'HighBeam startup aborted due to module load failure')
     return
   end
@@ -124,6 +149,9 @@ M.onExtensionLoaded = function()
   connection.setStatusCallback(function(status, detail)
     if browser and browser.onConnectionStatus then
       browser.onConnectionStatus(status, detail)
+    end
+    if overlay and overlay.onConnectionStatus then
+      overlay.onConnectionStatus(status, detail)
     end
     if status == "connected" and browser then
       browser.onConnected()
@@ -142,6 +170,10 @@ M.onExtensionLoaded = function()
 
   if nametags then
     nametags.init(vehicles, connection, config)
+  end
+
+  if overlay then
+    overlay.load(connection, vehicles, chat, config)
   end
 
   _registerMenuEntry()
@@ -177,6 +209,9 @@ M.onUpdate = function(dtReal, dtSim, dtRaw)
   if vehicles then
     vehicles.tick(dtReal)
   end
+  if overlay then
+    overlay.tick(dtReal)
+  end
 end
 
 M.onPreRender = function(dtReal, dtSim, dtRaw)
@@ -187,6 +222,9 @@ M.onPreRender = function(dtReal, dtSim, dtRaw)
   -- Render player name tags above remote vehicles
   if nametags then
     nametags.render()
+  end
+  if overlay then
+    overlay.render()
   end
 end
 
@@ -314,6 +352,18 @@ end
 -- Close the server browser window
 M.closeBrowser = function()
   if browser then browser.close() end
+end
+
+M.toggleOverlay = function()
+  if overlay then overlay.toggle() end
+end
+
+M.openOverlay = function()
+  if overlay then overlay.open() end
+end
+
+M.closeOverlay = function()
+  if overlay then overlay.close() end
 end
 
 -- Quick connect shortcut (for external scripts / launcher integration)

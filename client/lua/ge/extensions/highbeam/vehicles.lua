@@ -609,4 +609,42 @@ M.tick = function(dt)
   end
 end
 
+-- Returns the best current vehicle summary for a player based on newest snapshot.
+M.getPlayerActiveVehicle = function(playerId)
+  local selected = nil
+  local newest = -math.huge
+
+  for _, rv in pairs(M.remoteVehicles) do
+    if rv.playerId == playerId then
+      local s = rv.snapshots and rv.snapshots[#rv.snapshots] or nil
+      local ts = (s and s.received) or 0
+      if ts >= newest then
+        newest = ts
+        local pos = nil
+        if s and s.pos then
+          pos = { s.pos[1], s.pos[2], s.pos[3] }
+        elseif rv.gameVehicle then
+          local p = rv.gameVehicle:getPosition()
+          if p then pos = { p.x, p.y, p.z } end
+        elseif rv.gameVehicleId then
+          local obj = scenetree.findObjectById(rv.gameVehicleId)
+          if obj then
+            local p = obj:getPosition()
+            if p then pos = { p.x, p.y, p.z } end
+          end
+        end
+
+        selected = {
+          playerId = rv.playerId,
+          vehicleId = rv.vehicleId,
+          model = (rv.spawnSpec and rv.spawnSpec.model) or "unknown",
+          position = pos,
+        }
+      end
+    end
+  end
+
+  return selected
+end
+
 return M

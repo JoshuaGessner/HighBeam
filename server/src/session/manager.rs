@@ -8,7 +8,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
-use crate::net::packet::{PlayerInfo, TcpPacket};
+use crate::net::packet::{PlayerInfo, PlayerPingInfo, TcpPacket};
 
 use super::player::Player;
 
@@ -113,6 +113,9 @@ impl SessionManager {
             connected_at: now,
             last_activity: now,
             last_pong_time: now, // Initialize pong time (Phase 2.2)
+            last_ping_seq_sent: None,
+            last_ping_sent_at: None,
+            ping_ms: None,
         };
 
         self.session_hashes.insert(session_hash, player_id);
@@ -171,6 +174,21 @@ impl SessionManager {
                 PlayerInfo {
                     player_id: p.id,
                     name: p.name.clone(),
+                    ping_ms: p.ping_ms,
+                }
+            })
+            .collect()
+    }
+
+    /// Get lightweight ping-only metrics snapshot for frequent HUD updates.
+    pub fn get_player_metrics_snapshot(&self) -> Vec<PlayerPingInfo> {
+        self.players
+            .iter()
+            .map(|entry| {
+                let p = entry.value();
+                PlayerPingInfo {
+                    player_id: p.id,
+                    ping_ms: p.ping_ms,
                 }
             })
             .collect()

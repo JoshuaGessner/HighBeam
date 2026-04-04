@@ -21,4 +21,10 @@ pub struct Player {
     pub last_activity: Instant,
     /// Last time a pong was received from this player (Phase 2.2 heartbeat).
     pub last_pong_time: Instant,
+    /// Last ping sequence sent to this player.
+    pub last_ping_seq_sent: Option<u32>,
+    /// Timestamp of the last ping sent to this player.
+    pub last_ping_sent_at: Option<Instant>,
+    /// Smoothed round-trip latency in milliseconds.
+    pub ping_ms: Option<u32>,
 }

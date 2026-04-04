@@ -70,10 +70,12 @@ fn sample_corpus() -> Vec<TcpPacket> {
                 crate::net::packet::PlayerInfo {
                     player_id: 1,
                     name: "Alice".into(),
+                    ping_ms: Some(38),
                 },
                 crate::net::packet::PlayerInfo {
                     player_id: 2,
                     name: "Bob".into(),
+                    ping_ms: Some(52),
                 },
             ],
             vehicles: vec![VehicleInfo {
