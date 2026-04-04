@@ -143,11 +143,13 @@ pub async fn start_udp(
                 sessions.register_udp_addr(player_id, addr);
             }
 
-            // Position update (0x10)
-            // Client sends 63 bytes: [16B hash][0x10][2B vid][12B pos][16B rot][12B vel][4B time]
-            // Server relays 65 bytes: [16B hash][0x10][2B pid][2B vid][12B pos][16B rot][12B vel][4B time]
-            0x10 => {
-                if len < 63 {
+            // Position update (0x10 legacy / 0x11 extended with inputs)
+            // Client 0x10: 63 bytes: [16B hash][0x10][2B vid][12B pos][16B rot][12B vel][4B time]
+            // Client 0x11: 69 bytes: [16B hash][0x11][2B vid][12B pos][16B rot][12B vel][4B time][6B inputs]
+            // Server relays: inserts 2B pid after type byte (65 or 71 bytes)
+            0x10 | 0x11 => {
+                let min_size = if packet_type == 0x11 { 69 } else { 63 };
+                if len < min_size {
                     continue;
                 }
 
@@ -179,18 +181,26 @@ pub async fn start_udp(
                 last_relay_at.insert(player_id, now);
 
                 // Build relay packet: insert player_id (u16 LE) after type byte
-                let mut relay = Vec::with_capacity(65);
+                let relay_capacity = if packet_type == 0x11 { 71 } else { 65 };
+                let mut relay = Vec::with_capacity(relay_capacity);
                 relay.extend_from_slice(&buf[..17]); // hash + type
                 relay.extend_from_slice(&(player_id as u16).to_le_bytes()); // pid
-                relay.extend_from_slice(&buf[17..len]); // vid + pos + rot + vel + time
+                relay.extend_from_slice(&buf[17..len]); // vid + pos + rot + vel + time [+ inputs]
 
                 // Relay to all other players' registered UDP addresses
                 let relay_targets = sessions.player_count().saturating_sub(1) as u64;
                 if let Some(metrics) = metrics::global() {
                     metrics.record_udp_tx(relay_targets);
                 }
+
+                // Use distance-based LOD: skip relaying to players > 1000m away
+                const LOD_DISTANCE: f32 = 1000.0;
+                let lod_distance_sq = LOD_DISTANCE * LOD_DISTANCE;
+                let world_ref = &world;
                 sessions
-                    .broadcast_udp(&socket, &relay, Some(player_id))
+                    .broadcast_udp_lod(&socket, &relay, player_id, pos, lod_distance_sq, |pid| {
+                        world_ref.player_centroid(pid)
+                    })
                     .await;
             }
 

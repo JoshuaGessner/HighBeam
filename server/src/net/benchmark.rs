@@ -89,6 +89,7 @@ fn sample_corpus() -> Vec<TcpPacket> {
             player_id: Some(1),
             vehicle_id: 42,
             data: "{\"model\":\"sunburst\",\"config\":\"sport\"}".into(),
+            spawn_request_id: None,
         },
         TcpPacket::VehicleEdit {
             player_id: Some(1),

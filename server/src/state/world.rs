@@ -112,7 +112,57 @@ impl WorldState {
     /// Update a vehicle's config (from VehicleEdit).
     pub fn update_config(&self, player_id: u32, vehicle_id: u16, config: String) {
         if let Some(mut entry) = self.vehicles.get_mut(&(player_id, vehicle_id)) {
+            // Try to merge delta JSON into existing config (for delta compression).
+            // If the incoming config is valid JSON and the stored config is too,
+            // merge only the provided keys. Otherwise, full replace.
+            if let (Ok(mut stored), Ok(delta)) = (
+                serde_json::from_str::<serde_json::Value>(&entry.config),
+                serde_json::from_str::<serde_json::Value>(&config),
+            ) {
+                if let (Some(stored_obj), Some(delta_obj)) =
+                    (stored.as_object_mut(), delta.as_object())
+                {
+                    for (k, v) in delta_obj {
+                        stored_obj.insert(k.clone(), v.clone());
+                    }
+                    entry.config = serde_json::to_string(&stored).unwrap_or(config);
+                    return;
+                }
+            }
             entry.config = config;
+        }
+    }
+
+    /// Update a vehicle's position from a VehicleReset event.
+    /// Attempts to parse position/rotation from the JSON data blob.
+    pub fn update_reset_position(&self, player_id: u32, vehicle_id: u16, data: &str) {
+        if let Some(mut entry) = self.vehicles.get_mut(&(player_id, vehicle_id)) {
+            // Best-effort parse of {"pos":[x,y,z],"rot":[x,y,z,w]}
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(data) {
+                if let Some(pos) = val.get("pos").and_then(|p| p.as_array()) {
+                    if pos.len() >= 3 {
+                        if let (Some(x), Some(y), Some(z)) =
+                            (pos[0].as_f64(), pos[1].as_f64(), pos[2].as_f64())
+                        {
+                            entry.position = [x as f32, y as f32, z as f32];
+                        }
+                    }
+                }
+                if let Some(rot) = val.get("rot").and_then(|r| r.as_array()) {
+                    if rot.len() >= 4 {
+                        if let (Some(x), Some(y), Some(z), Some(w)) = (
+                            rot[0].as_f64(),
+                            rot[1].as_f64(),
+                            rot[2].as_f64(),
+                            rot[3].as_f64(),
+                        ) {
+                            entry.rotation = [x as f32, y as f32, z as f32, w as f32];
+                        }
+                    }
+                }
+                entry.velocity = [0.0; 3];
+                entry.last_update = Instant::now();
+            }
         }
     }
 
@@ -148,6 +198,27 @@ impl WorldState {
 
     pub fn vehicle_count(&self) -> usize {
         self.vehicles.len()
+    }
+
+    /// Get the centroid position of a player's vehicles (for distance-based LOD).
+    /// Returns None if the player has no vehicles.
+    pub fn player_centroid(&self, player_id: u32) -> Option<[f32; 3]> {
+        let mut sum = [0.0f32; 3];
+        let mut count = 0u32;
+        for entry in self.vehicles.iter() {
+            if entry.value().owner_id == player_id {
+                let pos = entry.value().position;
+                sum[0] += pos[0];
+                sum[1] += pos[1];
+                sum[2] += pos[2];
+                count += 1;
+            }
+        }
+        if count == 0 {
+            return None;
+        }
+        let c = count as f32;
+        Some([sum[0] / c, sum[1] / c, sum[2] / c])
     }
 }
 

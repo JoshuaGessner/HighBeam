@@ -4,15 +4,54 @@ local logTag = "HighBeam.State"
 M.localVehicles = {}  -- [gameVehicleId] = serverVehicleId
 M.playerId = nil
 M.sessionToken = nil
-M._pendingSpawnQueue = {}  -- FIFO queue of game vehicle IDs awaiting server assignment
+M._pendingSpawns = {}  -- [requestId] = gameVehicleId  (request-ID keyed map)
+M._nextSpawnRequestId = 1
 
 local sendTimer = 0
 local connection = nil
 local config = nil
+local _damageTimers = {}  -- [gameVehicleId] = cooldown timer
+local _damageTimer = 0  -- global polling timer for damage
+local _lastDamageHashes = {}  -- [gameVehicleId] = hash string of last sent damage
+local _configPollTimer = 0  -- timer for mid-session config change detection
+local _lastConfigs = {}  -- [gameVehicleId] = last known partConfig string
+local _electricsTimer = 0  -- timer for electrics polling
+local _lastElectrics = {}  -- [gameVehicleId] = last sent electrics state string
 
 M.setSubsystems = function(conn, cfg)
   connection = conn
   config = cfg
+end
+
+-- Capture the vehicle config JSON from a BeamNG vehicle object
+M.captureVehicleConfig = function(veh)
+  local model = veh:getField('JBeam', '0') or 'pickup'
+  local partConfig = ''
+  local ok, pc = pcall(function() return veh:getField('partConfig', '0') end)
+  if ok and pc and pc ~= '' then partConfig = pc end
+
+  local pos = veh:getPosition()
+  local rot = quatFromDir(veh:getDirectionVector(), veh:getDirectionVectorUp())
+
+  -- Build JSON manually to avoid dependency on a JSON encoder
+  local json = '{"model":' .. M._jsonStr(model)
+    .. ',"partConfig":' .. M._jsonStr(partConfig)
+    .. ',"pos":[' .. pos.x .. ',' .. pos.y .. ',' .. pos.z .. ']'
+    .. ',"rot":[' .. rot.x .. ',' .. rot.y .. ',' .. rot.z .. ',' .. rot.w .. ']'
+
+  -- Try to capture color data
+  local okColor, color = pcall(function() return veh:getField('color', '0') end)
+  if okColor and color and color ~= '' then
+    json = json .. ',"color":' .. M._jsonStr(color)
+  end
+
+  json = json .. '}'
+  return json
+end
+
+M._jsonStr = function(s)
+  if not s then return '""' end
+  return '"' .. tostring(s):gsub('\\', '\\\\'):gsub('"', '\\"'):gsub('\n', '\\n') .. '"'
 end
 
 M.tick = function(dt)
@@ -36,42 +75,224 @@ M.tick = function(dt)
       local rot = quatFromDir(veh:getDirectionVector(), veh:getDirectionVectorUp())
       local vel = veh:getVelocity()
 
+      -- Capture input state for input-augmented extrapolation
+      local inputs = nil
+      pcall(function()
+        local electrics = veh:getElectricsByName()
+        if electrics then
+          inputs = {
+            steer = electrics.steering_input or electrics.steering or 0,
+            throttle = electrics.throttle_input or electrics.throttle or 0,
+            brake = electrics.brake_input or electrics.brake or 0,
+          }
+        end
+      end)
+
       local data = protocol.encodePositionUpdate(
         sessionHash,
         serverVid,
         { pos.x, pos.y, pos.z },
         { rot.x, rot.y, rot.z, rot.w },
         { vel.x, vel.y, vel.z },
-        veh:getSimTime()
+        veh:getSimTime(),
+        inputs
       )
       connection.sendUdp(data)
     end
   end
+
+  -- ── Damage polling (every 200ms) ──────────────────────────────────
+  _damageTimer = _damageTimer + dt
+  if _damageTimer >= 0.2 then
+    _damageTimer = 0
+    for gameVid, serverVid in pairs(M.localVehicles) do
+      M._pollDamage(gameVid)
+    end
+  end
+
+  -- ── Config change detection (every 2s) ────────────────────────────
+  _configPollTimer = _configPollTimer + dt
+  if _configPollTimer >= 2.0 then
+    _configPollTimer = 0
+    for gameVid, serverVid in pairs(M.localVehicles) do
+      M._pollConfigChange(gameVid, serverVid)
+    end
+  end
+
+  -- ── Electrics polling (every 100ms) ───────────────────────────────
+  _electricsTimer = _electricsTimer + dt
+  if _electricsTimer >= 0.1 then
+    _electricsTimer = 0
+    for gameVid, serverVid in pairs(M.localVehicles) do
+      M._pollElectrics(gameVid, serverVid)
+    end
+  end
+end
+
+-- ── Damage polling ───────────────────────────────────────────────────
+-- Queries the vehicle-side Lua for beam break/deform state and sends deltas.
+-- BeamNG vehicles expose beam state via queueLuaCommand + obj callback pattern,
+-- but for GE extension polling we use the object's getBeamCount / getDeformGroupDamage
+-- approach and track a simple hash to detect changes.
+M._pollDamage = function(gameVid)
+  local veh = scenetree.findObjectById(gameVid)
+  if not veh then return end
+
+  -- Request the vehicle Lua to report damage state back to GE.
+  -- The vehicle-side callback will fire our GE extension event.
+  pcall(function()
+    veh:queueLuaCommand(
+      'local d = {} '
+      .. 'd.broken = {} '
+      .. 'for i = 0, obj:getBeamCount() - 1 do '
+      .. '  if obj:beamIsBroken(i) then table.insert(d.broken, i) end '
+      .. 'end '
+      .. 'd.deform = {} '
+      .. 'for i = 0, obj:getBeamCount() - 1 do '
+      .. '  if not obj:beamIsBroken(i) then '
+      .. '    local def = obj:getBeamDeformation(i) '
+      .. '    if def > 0.001 then d.deform[tostring(i)] = math.floor(def * 1000) / 1000 end '
+      .. '  end '
+      .. 'end '
+      .. 'obj:queueGameEngineLua("extensions.highbeam.onVehicleDamageReport(' .. gameVid .. ', \'" .. (jsonEncode and jsonEncode(d) or "{}") .. "\')")'
+    )
+  end)
+end
+
+-- Called back from vehicle-side Lua with damage state JSON
+M.onDamageReport = function(gameVid, damageJson)
+  if not M.localVehicles[gameVid] then return end
+
+  -- Simple change detection: compare JSON string hash
+  local hash = damageJson  -- use the full string as a change key
+  if _lastDamageHashes[gameVid] == hash then return end
+  _lastDamageHashes[gameVid] = hash
+
+  -- Only send if there's actual damage content
+  if damageJson == '{}' or damageJson == '' or damageJson == '{"broken":[],"deform":{}}' then return end
+
+  M.sendDamage(gameVid, damageJson)
+end
+
+-- ── Config change detection ─────────────────────────────────────────
+M._pollConfigChange = function(gameVid, serverVid)
+  local veh = scenetree.findObjectById(gameVid)
+  if not veh then return end
+
+  local currentConfig = ''
+  pcall(function() currentConfig = veh:getField('partConfig', '0') or '' end)
+
+  local currentColor = ''
+  pcall(function() currentColor = veh:getField('color', '0') or '' end)
+
+  local combined = currentConfig .. '|' .. currentColor
+
+  if _lastConfigs[gameVid] == nil then
+    -- First poll: store baseline, don't send
+    _lastConfigs[gameVid] = { combined = combined, partConfig = currentConfig, color = currentColor }
+    return
+  end
+
+  if _lastConfigs[gameVid].combined ~= combined then
+    -- Build delta: only include fields that actually changed
+    local editParts = {}
+    if _lastConfigs[gameVid].partConfig ~= currentConfig then
+      table.insert(editParts, '"partConfig":' .. M._jsonStr(currentConfig))
+    end
+    if _lastConfigs[gameVid].color ~= currentColor then
+      table.insert(editParts, '"color":' .. M._jsonStr(currentColor))
+    end
+
+    _lastConfigs[gameVid] = { combined = combined, partConfig = currentConfig, color = currentColor }
+
+    if #editParts > 0 then
+      local editData = '{' .. table.concat(editParts, ',') .. '}'
+      connection._sendPacket({
+        type = "vehicle_edit",
+        vehicle_id = serverVid,
+        data = editData,
+      })
+      log('I', logTag, 'Config change detected, sent VehicleEdit delta for gameVid=' .. tostring(gameVid))
+    end
+  end
+end
+
+-- ── Electrics polling ───────────────────────────────────────────────
+-- Polls key electrics values and sends state changes via TCP.
+M._pollElectrics = function(gameVid, serverVid)
+  local veh = scenetree.findObjectById(gameVid)
+  if not veh then return end
+
+  -- Query electrics via vehicle-side Lua and report back to GE
+  pcall(function()
+    veh:queueLuaCommand(
+      'local e = electrics.values '
+      .. 'local s = {} '
+      .. 's.lights = e.lights_state or 0 '
+      .. 's.signal_L = (e.signal_L and e.signal_L > 0.5) and 1 or 0 '
+      .. 's.signal_R = (e.signal_R and e.signal_R > 0.5) and 1 or 0 '
+      .. 's.hazard = (e.hazard_enabled and e.hazard_enabled > 0.5) and 1 or 0 '
+      .. 's.horn = (e.horn and e.horn > 0.5) and 1 or 0 '
+      .. 's.headlights = e.lowbeam or 0 '
+      .. 's.highbeams = e.highbeam or 0 '
+      .. 'obj:queueGameEngineLua("extensions.highbeam.onElectricsReport(' .. gameVid .. ', \'" .. (jsonEncode and jsonEncode(s) or "{}") .. "\')")'
+    )
+  end)
+end
+
+-- Called back from vehicle-side Lua with electrics state
+M.onElectricsReport = function(gameVid, electricsJson)
+  local serverVid = M.localVehicles[gameVid]
+  if not serverVid then return end
+
+  -- Delta detection: only send if state changed
+  if _lastElectrics[gameVid] == electricsJson then return end
+  _lastElectrics[gameVid] = electricsJson
+
+  connection._sendPacket({
+    type = "vehicle_electrics",
+    vehicle_id = serverVid,
+    data = electricsJson,
+  })
 end
 
 M.onWorldState = function(players)
-  -- Store player info from initial world state
   log('I', logTag, 'Received world state with ' .. tostring(#players) .. ' players')
 end
 
-M.onLocalVehicleSpawned = function(serverVehicleId, configData)
-  -- Pop the oldest pending game vehicle ID from the FIFO queue
-  if #M._pendingSpawnQueue > 0 then
-    local gameVid = table.remove(M._pendingSpawnQueue, 1)
-    M.localVehicles[gameVid] = serverVehicleId
-    log('I', logTag, 'Local vehicle mapped: game=' .. tostring(gameVid) .. ' server=' .. tostring(serverVehicleId))
+M.onLocalVehicleSpawned = function(serverVehicleId, configData, spawnRequestId)
+  -- Use request ID to map if available (robust), fall back to first pending (legacy)
+  local gameVid = nil
+  if spawnRequestId and M._pendingSpawns[spawnRequestId] then
+    gameVid = M._pendingSpawns[spawnRequestId]
+    M._pendingSpawns[spawnRequestId] = nil
   else
-    log('W', logTag, 'Received vehicle spawn confirmation but no pending spawn in queue (server vid=' .. tostring(serverVehicleId) .. ')')
+    -- Legacy fallback: find any pending spawn
+    for rid, gvid in pairs(M._pendingSpawns) do
+      gameVid = gvid
+      M._pendingSpawns[rid] = nil
+      break
+    end
+  end
+
+  if gameVid then
+    M.localVehicles[gameVid] = serverVehicleId
+    log('I', logTag, 'Local vehicle mapped: game=' .. tostring(gameVid) .. ' server=' .. tostring(serverVehicleId) .. ' reqId=' .. tostring(spawnRequestId))
+  else
+    log('W', logTag, 'Spawn confirmation but no pending spawn (server vid=' .. tostring(serverVehicleId) .. ')')
   end
 end
 
 M.requestSpawn = function(gameVehicleId, configData)
   if not connection or connection.getState() ~= connection.STATE_CONNECTED then return end
-  table.insert(M._pendingSpawnQueue, gameVehicleId)
+  local requestId = M._nextSpawnRequestId
+  M._nextSpawnRequestId = M._nextSpawnRequestId + 1
+  M._pendingSpawns[requestId] = gameVehicleId
   connection._sendPacket({
     type = "vehicle_spawn",
     vehicle_id = 0,  -- Server will assign
     data = configData,
+    spawn_request_id = requestId,
   })
 end
 
@@ -87,13 +308,39 @@ M.requestDelete = function(gameVehicleId)
   end
 end
 
+-- Send damage state for a local vehicle (called on collision events)
+M.sendDamage = function(gameVehicleId, damageData)
+  if not connection or connection.getState() ~= connection.STATE_CONNECTED then return end
+  local serverVid = M.localVehicles[gameVehicleId]
+  if not serverVid then return end
+
+  -- Throttle damage sends: at most once per 200ms per vehicle
+  local now = os.clock()
+  if _damageTimers[gameVehicleId] and (now - _damageTimers[gameVehicleId]) < 0.2 then return end
+  _damageTimers[gameVehicleId] = now
+
+  connection._sendPacket({
+    type = "vehicle_damage",
+    vehicle_id = serverVid,
+    data = damageData,
+  })
+end
+
 M.onDisconnect = function()
   log('I', logTag, 'Clearing local vehicle state on disconnect')
   M.localVehicles = {}
-  M._pendingSpawnQueue = {}
+  M._pendingSpawns = {}
+  M._nextSpawnRequestId = 1
   M.playerId = nil
   M.sessionToken = nil
   sendTimer = 0
+  _damageTimers = {}
+  _damageTimer = 0
+  _lastDamageHashes = {}
+  _configPollTimer = 0
+  _lastConfigs = {}
+  _electricsTimer = 0
+  _lastElectrics = {}
 end
 
 return M

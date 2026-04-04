@@ -98,6 +98,8 @@ pub enum TcpPacket {
         player_id: Option<u32>,
         vehicle_id: u16,
         data: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        spawn_request_id: Option<u32>,
     },
 
     /// A vehicle's config was edited.
@@ -124,6 +126,38 @@ pub enum TcpPacket {
         player_id: Option<u32>,
         vehicle_id: u16,
         data: String,
+    },
+
+    /// Damage/deformation data for a vehicle.
+    #[serde(rename = "vehicle_damage")]
+    VehicleDamage {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        player_id: Option<u32>,
+        vehicle_id: u16,
+        data: String,
+    },
+
+    /// Electrics state (lights, signals, horn) for a vehicle.
+    #[serde(rename = "vehicle_electrics")]
+    VehicleElectrics {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        player_id: Option<u32>,
+        vehicle_id: u16,
+        data: String,
+    },
+
+    /// Coupling/trailer attachment state between two vehicles.
+    #[serde(rename = "vehicle_coupling")]
+    VehicleCoupling {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        player_id: Option<u32>,
+        vehicle_id: u16,
+        target_vehicle_id: u16,
+        coupled: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        node_id: Option<i32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        target_node_id: Option<i32>,
     },
 
     /// Full world snapshot sent to newly-joined players.
@@ -324,6 +358,47 @@ mod tests {
             player_id: Some(1),
             vehicle_id: 5,
             data: r#"{"model":"pickup"}"#.into(),
+            spawn_request_id: None,
+        });
+    }
+
+    #[test]
+    fn test_vehicle_spawn_with_request_id_round_trip() {
+        round_trip(&TcpPacket::VehicleSpawn {
+            player_id: Some(1),
+            vehicle_id: 5,
+            data: r#"{"model":"pickup"}"#.into(),
+            spawn_request_id: Some(42),
+        });
+    }
+
+    #[test]
+    fn test_vehicle_damage_round_trip() {
+        round_trip(&TcpPacket::VehicleDamage {
+            player_id: Some(1),
+            vehicle_id: 3,
+            data: r#"{"beams":[1,2,3]}"#.into(),
+        });
+    }
+
+    #[test]
+    fn test_vehicle_electrics_round_trip() {
+        round_trip(&TcpPacket::VehicleElectrics {
+            player_id: Some(1),
+            vehicle_id: 2,
+            data: r#"{"lights":2,"signal_L":1}"#.into(),
+        });
+    }
+
+    #[test]
+    fn test_vehicle_coupling_round_trip() {
+        round_trip(&TcpPacket::VehicleCoupling {
+            player_id: Some(1),
+            vehicle_id: 3,
+            target_vehicle_id: 4,
+            coupled: true,
+            node_id: Some(12),
+            target_node_id: Some(7),
         });
     }
 
