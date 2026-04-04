@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-04-04
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.1-dev.16 (protocol v2)
+> **Current version:** v0.8.1-dev.17 (protocol v2)
 > **Status:** v0.8.0 released | v0.8.1 in development
 
 ---
@@ -1167,6 +1167,11 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.1-dev.17 — 2026-04-04 (draft)
+- **Fix spawn return type:** `core_vehicles.spawnNewVehicle()` returns a vehicle object (userdata), not a numeric ID. Now extracts ID via `:getID()` and keeps the object directly — fixes the `findObjectById(userdata)` crash that disconnected both players immediately on remote spawn.
+- **Fix remote-as-local ghost registration:** `onVehicleSpawned` fires synchronously during `spawnNewVehicle`. Added `_spawningRemote` guard so the callback skips vehicles being spawned by the remote pipeline, preventing them from being re-registered as the local player's own vehicles.
+- **Fix retry path:** spawn retry in `tick()` also updated to use the new `(vid, vehObj)` return signature.
 
 ### v0.8.1-dev.16 — 2026-04-04 (draft)
 - **Critical spawn fix:** replaced non-existent `be:spawnVehicle()` with `core_vehicles.spawnNewVehicle(model, opts)` — the documented BeamNG GE API. This was the root cause of all remote vehicles failing to appear.
