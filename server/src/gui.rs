@@ -19,12 +19,20 @@ use tray_icon::{
 };
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]
+#[derive(Clone, Copy, Debug)]
+enum TrayCommand {
+    ToggleVisibility,
+    Show,
+    Quit,
+}
+
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 struct TrayBridge {
     /// Shared egui context so tray event handlers can wake the eframe event loop
     /// even when the window is hidden.
     ctx_holder: Arc<Mutex<Option<egui::Context>>>,
     hidden_state: Arc<AtomicBool>,
-    close_requested: Arc<AtomicBool>,
+    pending_commands: Arc<Mutex<Vec<TrayCommand>>>,
     available: bool,
 }
 
@@ -37,7 +45,7 @@ struct TrayBridge {
 fn setup_system_tray_bridge() -> TrayBridge {
     let ctx_holder: Arc<Mutex<Option<egui::Context>>> = Arc::new(Mutex::new(None));
     let hidden_state = Arc::new(AtomicBool::new(false));
-    let close_requested = Arc::new(AtomicBool::new(false));
+    let pending_commands = Arc::new(Mutex::new(Vec::new()));
 
     // Build context menu with Show/Hide + Quit items.
     let show_hide_item = MenuItem::new("Show/Hide", true, None);
@@ -63,7 +71,7 @@ fn setup_system_tray_bridge() -> TrayBridge {
             return TrayBridge {
                 ctx_holder,
                 hidden_state,
-                close_requested,
+                pending_commands,
                 available: false,
             };
         }
@@ -82,7 +90,7 @@ fn setup_system_tray_bridge() -> TrayBridge {
             return TrayBridge {
                 ctx_holder,
                 hidden_state,
-                close_requested,
+                pending_commands,
                 available: false,
             };
         }
@@ -95,27 +103,26 @@ fn setup_system_tray_bridge() -> TrayBridge {
     let show_hide_id = show_hide_item.id().clone();
     let quit_id = quit_item.id().clone();
     let ctx_menu = ctx_holder.clone();
-    let hidden_for_menu = hidden_state.clone();
-    let close_for_menu = close_requested.clone();
+    let pending_for_menu = pending_commands.clone();
     MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
+        let command = if event.id == show_hide_id {
+            Some(TrayCommand::ToggleVisibility)
+        } else if event.id == quit_id {
+            Some(TrayCommand::Quit)
+        } else {
+            None
+        };
+
+        if let Some(command) = command {
+            if let Ok(mut queue) = pending_for_menu.lock() {
+                queue.push(command);
+            } else {
+                tracing::warn!("Failed to queue tray menu command");
+            }
+        }
+
         if let Ok(guard) = ctx_menu.lock() {
             if let Some(ctx) = guard.as_ref() {
-                if event.id == show_hide_id {
-                    if hidden_for_menu.load(Ordering::SeqCst) {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                        hidden_for_menu.store(false, Ordering::SeqCst);
-                    } else {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-                        hidden_for_menu.store(true, Ordering::SeqCst);
-                    }
-                } else if event.id == quit_id {
-                    close_for_menu.store(true, Ordering::SeqCst);
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                } else {
-                    return;
-                }
                 ctx.request_repaint();
             }
         }
@@ -123,7 +130,7 @@ fn setup_system_tray_bridge() -> TrayBridge {
 
     // Wire up tray icon events (double-click to show, Windows only).
     let ctx_icon = ctx_holder.clone();
-    let hidden_for_icon = hidden_state.clone();
+    let pending_for_icon = pending_commands.clone();
     TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
         #[allow(clippy::single_match)]
         match event {
@@ -131,12 +138,14 @@ fn setup_system_tray_bridge() -> TrayBridge {
                 button: TrayMouseButton::Left,
                 ..
             } => {
+                if let Ok(mut queue) = pending_for_icon.lock() {
+                    queue.push(TrayCommand::Show);
+                } else {
+                    tracing::warn!("Failed to queue tray double-click command");
+                }
+
                 if let Ok(guard) = ctx_icon.lock() {
                     if let Some(ctx) = guard.as_ref() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                        hidden_for_icon.store(false, Ordering::SeqCst);
                         ctx.request_repaint();
                     }
                 }
@@ -149,7 +158,7 @@ fn setup_system_tray_bridge() -> TrayBridge {
     TrayBridge {
         ctx_holder,
         hidden_state,
-        close_requested,
+        pending_commands,
         available: true,
     }
 }
@@ -321,11 +330,32 @@ impl ServerGuiApp {
     fn handle_tray_commands(&mut self, _ctx: &egui::Context) {
         #[cfg(any(target_os = "windows", target_os = "linux"))]
         {
-            let _ = _ctx;
-            self.tray_hidden = self.tray_bridge.hidden_state.load(Ordering::SeqCst);
-            if self.tray_bridge.close_requested.load(Ordering::SeqCst) {
-                self.allow_window_close = true;
+            let mut commands = Vec::new();
+            if let Ok(mut queue) = self.tray_bridge.pending_commands.lock() {
+                commands.extend(queue.drain(..));
             }
+
+            for command in commands {
+                match command {
+                    TrayCommand::ToggleVisibility => {
+                        if self.tray_hidden {
+                            self.show_from_tray(_ctx);
+                        } else {
+                            self.hide_to_tray(_ctx);
+                        }
+                    }
+                    TrayCommand::Show => {
+                        self.show_from_tray(_ctx);
+                    }
+                    TrayCommand::Quit => {
+                        self.request_exit(_ctx);
+                    }
+                }
+            }
+
+            self.tray_bridge
+                .hidden_state
+                .store(self.tray_hidden, Ordering::SeqCst);
         }
 
         #[cfg(not(any(target_os = "windows", target_os = "linux")))]
@@ -340,6 +370,17 @@ impl ServerGuiApp {
             self.tray_hidden = true;
             #[cfg(any(target_os = "windows", target_os = "linux"))]
             self.tray_bridge.hidden_state.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn show_from_tray(&mut self, ctx: &egui::Context) {
+        if self.tray_bridge.available {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            self.tray_hidden = false;
+            #[cfg(any(target_os = "windows", target_os = "linux"))]
+            self.tray_bridge.hidden_state.store(false, Ordering::SeqCst);
         }
     }
 
