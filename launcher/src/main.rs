@@ -598,5 +598,22 @@ fn main() -> Result<()> {
         );
     }
 
+    match installer::disable_client_mod(cfg.beamng_userfolder.as_deref()) {
+        Ok(report) => {
+            tracing::info!(
+                removed_zip = report.removed_zip,
+                removed_temp_zip = report.removed_temp_zip,
+                mods_dir = %report.mods_dir.display(),
+                "Disabled HighBeam client mod on launcher exit (user preferences preserved)"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "Failed to disable HighBeam client mod on launcher exit"
+            );
+        }
+    }
+
     Ok(())
 }
