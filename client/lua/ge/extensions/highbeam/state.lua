@@ -18,10 +18,22 @@ local _lastConfigs = {}  -- [gameVehicleId] = last known partConfig string
 local _electricsTimer = 0  -- timer for electrics polling
 local _lastElectrics = {}  -- [gameVehicleId] = last sent electrics state string
 M._cachedInputs = {}  -- [gameVehicleId] = {steer, throttle, brake} from vlua callback
+local _lastUdpErrorLogAt = -math.huge
+local _udpErrorLogCooldown = 2.0
+
+local function _logUdpErrorRateLimited(message)
+  local now = os.clock()
+  if (now - _lastUdpErrorLogAt) >= _udpErrorLogCooldown then
+    _lastUdpErrorLogAt = now
+    log('E', logTag, message)
+  end
+end
 
 M.setSubsystems = function(conn, cfg)
   connection = conn
   config = cfg
+  local marker = (rawget(_G, "HIGHBEAM_CLIENT_MARKER") or "unknown")
+  log('I', logTag, 'State subsystem active marker=' .. tostring(marker))
 end
 
 -- Capture the vehicle config JSON from a BeamNG vehicle object
@@ -81,7 +93,8 @@ M.tick = function(dt)
       -- populated by _pollInputs via queueLuaCommand callback
       local inputs = M._cachedInputs and M._cachedInputs[gameVid] or nil
 
-      local data = protocol.encodePositionUpdate(
+      local okEncode, dataOrErr = pcall(
+        protocol.encodePositionUpdate,
         sessionHash,
         serverVid,
         { pos.x, pos.y, pos.z },
@@ -90,7 +103,17 @@ M.tick = function(dt)
         0,
         inputs
       )
-      connection.sendUdp(data)
+
+      if not okEncode then
+        _logUdpErrorRateLimited('UDP encode threw for vehicle ' .. tostring(serverVid) .. ': ' .. tostring(dataOrErr))
+      elseif not dataOrErr or dataOrErr == '' then
+        _logUdpErrorRateLimited('UDP encode returned empty packet for vehicle ' .. tostring(serverVid))
+      else
+        local okSend, sendErr = pcall(connection.sendUdp, dataOrErr)
+        if not okSend then
+          _logUdpErrorRateLimited('UDP send threw for vehicle ' .. tostring(serverVid) .. ': ' .. tostring(sendErr))
+        end
+      end
     end
   end
 
@@ -362,6 +385,7 @@ M.onDisconnect = function()
   _electricsTimer = 0
   _lastElectrics = {}
   M._cachedInputs = {}
+  _lastUdpErrorLogAt = -math.huge
 end
 
 return M

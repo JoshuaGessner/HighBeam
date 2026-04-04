@@ -3,6 +3,10 @@
 
 local M = {}
 local logTag = "HighBeam"
+local CLIENT_BUILD_MARKER = "hb-client-2026-04-04-proto-safe-v1"
+
+-- Expose marker globally so subsystem modules can include it in diagnostics.
+rawset(_G, "HIGHBEAM_CLIENT_MARKER", CLIENT_BUILD_MARKER)
 
 -- Subsystem references (loaded in onExtensionLoaded)
 local connection   -- highbeam/connection.lua
@@ -94,7 +98,7 @@ local function _unregisterMenuEntry()
 end
 
 M.onExtensionLoaded = function()
-  log('I', logTag, 'HighBeam extension loaded')
+  log('I', logTag, 'HighBeam extension loaded marker=' .. CLIENT_BUILD_MARKER)
 
   connection = _safeRequire("highbeam/connection")
   protocol   = _safeRequire("highbeam/protocol")
@@ -109,6 +113,8 @@ M.onExtensionLoaded = function()
     log('E', logTag, 'HighBeam startup aborted due to module load failure')
     return
   end
+
+  log('I', logTag, 'Protocol module version=' .. tostring(protocol.VERSION))
 
   connection.setErrorCallback(function(context, message, level)
     log(level or 'E', logTag, '[ConnectionError][' .. tostring(context) .. '] ' .. tostring(message))
