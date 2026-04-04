@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-04-04
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.1-dev.15 (protocol v2)
+> **Current version:** v0.8.1-dev.16 (protocol v2)
 > **Status:** v0.8.0 released | v0.8.1 in development
 
 ---
@@ -1167,6 +1167,11 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.1-dev.16 — 2026-04-04 (draft)
+- **Critical spawn fix:** replaced non-existent `be:spawnVehicle()` with `core_vehicles.spawnNewVehicle(model, opts)` — the documented BeamNG GE API. This was the root cause of all remote vehicles failing to appear.
+- **Delete API fix:** replaced non-existent `be:deleteVehicle(id)` with `be:getObjectByID(id):delete()` in `removeRemote` and `removeAllForPlayer`.
+- **Doc correction:** updated BUILD_GUIDE spawn example to use the correct API and added explicit warning against `be:spawnVehicle()`.
 
 ### v0.8.1-dev.13 — 2026-04-04 (draft)
 - **Proxy reconnect hardening:** launcher TCP proxy now accepts sequential client sessions so reconnects can reuse localhost relay ports without requiring launcher restart.
