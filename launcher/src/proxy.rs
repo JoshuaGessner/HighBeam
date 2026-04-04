@@ -14,6 +14,7 @@ use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -273,10 +274,9 @@ fn run_udp_proxy(
     local.set_read_timeout(Some(UDP_POLL_TIMEOUT))?;
 
     // Create a second UDP socket for talking to the real server.
-    // (We keep them separate so `recv_from` on `local` only returns client
-    // packets and `recv_from` on `server_sock` only returns server packets.)
+    // Keep it unconnected and use send_to/recv_from so we don't accidentally
+    // filter replies if source address metadata differs across NAT/interface hops.
     let server_sock = UdpSocket::bind("0.0.0.0:0")?;
-    server_sock.connect(remote)?;
     server_sock.set_read_timeout(Some(UDP_POLL_TIMEOUT))?;
 
     tracing::info!(%remote, "Proxy UDP: relay started");
@@ -295,6 +295,9 @@ fn run_udp_proxy(
     let c2s_bytes_thread = c2s_bytes.clone();
     let s2c_packets_thread = s2c_packets.clone();
     let s2c_bytes_thread = s2c_bytes.clone();
+    let client_addr_shared: Arc<Mutex<Option<SocketAddr>>> = Arc::new(Mutex::new(None));
+    let client_addr_c2s = client_addr_shared.clone();
+    let client_addr_s2c = client_addr_shared.clone();
 
     // client → server
     let h1 = thread::Builder::new()
@@ -303,9 +306,11 @@ fn run_udp_proxy(
             relay_udp_c2s(
                 local,
                 server_sock,
+                remote,
                 sd1,
                 c2s_packets_thread,
                 c2s_bytes_thread,
+                client_addr_c2s,
             )
         })?;
 
@@ -316,9 +321,11 @@ fn run_udp_proxy(
             relay_udp_s2c(
                 server_clone,
                 local_clone,
+                remote,
                 sd2,
                 s2c_packets_thread,
                 s2c_bytes_thread,
+                client_addr_s2c,
             )
         })?;
 
@@ -340,9 +347,11 @@ fn run_udp_proxy(
 fn relay_udp_c2s(
     local: UdpSocket,
     server: UdpSocket,
+    remote: SocketAddr,
     shutdown: Arc<AtomicBool>,
     packet_counter: Arc<AtomicU64>,
     byte_counter: Arc<AtomicU64>,
+    client_addr_shared: Arc<Mutex<Option<SocketAddr>>>,
 ) {
     let mut buf = vec![0u8; RELAY_BUF];
     // We don't know the client's local ephemeral addr until the first packet.
@@ -372,10 +381,13 @@ fn relay_udp_c2s(
                     tracing::info!(%addr, bytes = n, "Proxy UDP c2s: learned client address");
                 }
                 client_addr = Some(addr);
+                if let Ok(mut slot) = client_addr_shared.lock() {
+                    *slot = Some(addr);
+                }
                 packet_counter.fetch_add(1, Ordering::Relaxed);
                 byte_counter.fetch_add(n as u64, Ordering::Relaxed);
                 diag_packets += 1;
-                let _ = server.send(&buf[..n]);
+                let _ = server.send_to(&buf[..n], remote);
             }
             Err(ref e)
                 if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
@@ -391,19 +403,17 @@ fn relay_udp_c2s(
 fn relay_udp_s2c(
     server: UdpSocket,
     local: UdpSocket,
+    remote: SocketAddr,
     shutdown: Arc<AtomicBool>,
     packet_counter: Arc<AtomicU64>,
     byte_counter: Arc<AtomicU64>,
+    client_addr_shared: Arc<Mutex<Option<SocketAddr>>>,
 ) {
     let mut buf = vec![0u8; RELAY_BUF];
 
-    // Learn the client's ephemeral address by peeking the first incoming
-    // packet on the local socket (the c2s thread owns recv, so we peek
-    // non-destructively).  The client always sends UdpBind before the
-    // server starts replying, so there is no race.
-    //
+    // Wait for c2s to learn the local client address.
     // Time-box to 30 seconds so this thread doesn't block forever if the
-    // client never sends a UDP packet (e.g. SHA-256 unavailable).
+    // client never sends a UDP packet.
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     let client_addr = loop {
         if shutdown.load(Ordering::SeqCst) {
@@ -413,24 +423,19 @@ fn relay_udp_s2c(
             tracing::warn!("Proxy UDP s2c: timed out waiting for client UDP packet after 30s");
             return;
         }
-        match local.peek_from(&mut buf) {
-            Ok((_n, addr)) => break addr,
-            Err(ref e)
-                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
-            {
-                continue;
+        if let Ok(slot) = client_addr_shared.lock() {
+            if let Some(addr) = *slot {
+                break addr;
             }
-            Err(_) => return,
         }
+        std::thread::sleep(Duration::from_millis(10));
     };
 
     tracing::info!(%client_addr, "Proxy UDP s2c: learned client address, waiting for server packets");
 
     let server_local_addr = server.local_addr().ok();
-    let server_peer_addr = server.peer_addr().ok();
     tracing::info!(
         local_addr = ?server_local_addr,
-        peer_addr = ?server_peer_addr,
         "Proxy UDP s2c: server socket info"
     );
 
@@ -457,10 +462,13 @@ fn relay_udp_s2c(
             diag_timeouts = 0;
             last_diag = now_diag;
         }
-        match server.recv(&mut buf) {
-            Ok(n) => {
+        match server.recv_from(&mut buf) {
+            Ok((n, src_addr)) => {
+                if src_addr != remote {
+                    tracing::debug!(%src_addr, expected = %remote, "Proxy UDP s2c: forwarding packet from unexpected source");
+                }
                 if !first_packet_logged {
-                    tracing::info!(bytes = n, "Proxy UDP s2c: first packet from server");
+                    tracing::info!(bytes = n, %src_addr, "Proxy UDP s2c: first packet from server");
                     first_packet_logged = true;
                 }
                 packet_counter.fetch_add(1, Ordering::Relaxed);
