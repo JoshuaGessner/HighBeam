@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-04-03
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.1-dev.5 (protocol v2)
+> **Current version:** v0.8.1-dev.6 (protocol v2)
 > **Status:** v0.8.0 released | v0.8.1 in development
 
 ---
@@ -1167,6 +1167,14 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.1-dev.6 — 2026-04-03 (draft)
+- **Client connect diagnostics:** direct-connect fallback now surfaces real connection failures and timeouts instead of masking them behind launcher availability messaging.
+- **Server GUI tray reliability:** tray Show/Hide, Quit, and double-click restore now execute reliably after hiding to tray.
+- **Launcher lifecycle UX:** launcher now disables/removes `highbeam.zip` on exit while preserving `userdata/highbeam` preferences.
+- **Launcher Windows branding:** launcher binary now embeds project icon resource at build time.
+- **Actions dedupe:** reduced duplicate GitHub Actions workload by narrowing CI branch triggers and removing redundant release-workflow test runs.
+- Version bumped to `0.8.1-dev.6`.
 
 ### v0.8.1-dev.5 — 2026-04-03 (draft)
 - **Current branch alignment:** Cut from merged `main` lineage including PR #14 (mod sync hardening) and PR #15 (tray icon rework).
