@@ -208,12 +208,19 @@ pub async fn start_udp(
                 if let Some(lod_distance_sq) = relay_distance_sq {
                     let world_ref = &world;
                     sessions
-                        .broadcast_udp_lod(&socket, &relay, player_id, pos, lod_distance_sq, |pid| {
-                            world_ref.player_centroid(pid)
-                        })
+                        .broadcast_udp_lod(
+                            &socket,
+                            &relay,
+                            player_id,
+                            pos,
+                            lod_distance_sq,
+                            |pid| world_ref.player_centroid(pid),
+                        )
                         .await;
                 } else {
-                    sessions.broadcast_udp(&socket, &relay, Some(player_id)).await;
+                    sessions
+                        .broadcast_udp(&socket, &relay, Some(player_id))
+                        .await;
                 }
             }
 

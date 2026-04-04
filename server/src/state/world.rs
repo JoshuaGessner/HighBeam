@@ -180,12 +180,12 @@ impl WorldState {
                     position: v.position,
                     rotation: v.rotation,
                     velocity: v.velocity,
-                      snapshot_time_ms: Some(
-                          SystemTime::now()
-                              .duration_since(UNIX_EPOCH)
-                              .unwrap_or_default()
-                              .as_millis() as u64,
-                      ),
+                    snapshot_time_ms: Some(
+                        SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64,
+                    ),
                 }
             })
             .collect()
@@ -244,7 +244,7 @@ mod tests {
                 position: [1.0, 2.0, 3.0],
                 rotation: [0.0, 0.0, 0.0, 1.0],
                 velocity: [0.1, 0.2, 0.3],
-                 snapshot_time_ms: Some(1_700_000_000_000),
+                snapshot_time_ms: Some(1_700_000_000_000),
             },
             VehicleInfo {
                 player_id: 8,
@@ -253,7 +253,7 @@ mod tests {
                 position: [4.0, 5.0, 6.0],
                 rotation: [0.0, 0.0, 0.0, 1.0],
                 velocity: [0.0, 0.0, 0.0],
-                 snapshot_time_ms: Some(1_700_000_000_000),
+                snapshot_time_ms: Some(1_700_000_000_000),
             },
         ];
 
