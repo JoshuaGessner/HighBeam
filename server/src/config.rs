@@ -62,6 +62,11 @@ pub struct NetworkConfig {
     pub tick_rate: u32,
     #[serde(rename = "UdpBufferSize", default = "default_udp_buffer")]
     pub udp_buffer_size: usize,
+    #[serde(
+        rename = "UdpRelayDistanceMeters",
+        default = "default_udp_relay_distance_meters"
+    )]
+    pub udp_relay_distance_meters: f32,
     #[serde(rename = "TcpKeepAliveSec", default = "default_tcp_keepalive")]
     pub tcp_keepalive_sec: u64,
     #[serde(rename = "EnableModSync", default = "default_enable_mod_sync")]
@@ -196,6 +201,9 @@ fn default_tick_rate() -> u32 {
 fn default_udp_buffer() -> usize {
     65535
 }
+fn default_udp_relay_distance_meters() -> f32 {
+    0.0
+}
 fn default_tcp_keepalive() -> u64 {
     15
 }
@@ -294,6 +302,7 @@ impl Default for ServerConfig {
             network: NetworkConfig {
                 tick_rate: 20,
                 udp_buffer_size: 65535,
+                udp_relay_distance_meters: default_udp_relay_distance_meters(),
                 tcp_keepalive_sec: 15,
                 enable_mod_sync: false,
                 mod_sync_port: None,

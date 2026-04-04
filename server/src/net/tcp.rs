@@ -502,15 +502,30 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                 spawn_request_id,
                 ..
             } => {
+                let reject_spawn = |reason: &str| {
+                    let sent = sessions.send_to_player(
+                        player_id,
+                        TcpPacket::VehicleSpawnRejected {
+                            spawn_request_id,
+                            reason: reason.to_string(),
+                        },
+                    );
+                    if !sent {
+                        tracing::debug!(player_id, "Failed to send VehicleSpawnRejected to player");
+                    }
+                };
+
                 // Check spawn rate limit
                 if !rate_limiters.check_spawn_limit(player_id).await {
                     tracing::warn!(player_id, "Vehicle spawn rate limit exceeded");
+                    reject_spawn("spawn_rate_limited");
                     continue;
                 }
 
                 // Validate vehicle config size
                 if let Err(e) = crate::validation::validate_vehicle_config_size(&data) {
                     tracing::warn!(player_id, error = %e, "VehicleSpawn rejected: invalid config");
+                    reject_spawn("invalid_vehicle_config");
                     continue;
                 }
 
@@ -523,6 +538,7 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                         max_cars,
                         "MaxCarsPerPlayer limit reached"
                     );
+                    reject_spawn("max_cars_reached");
                     continue;
                 }
 
@@ -531,6 +547,7 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                     data: data.clone(),
                 }) {
                     tracing::warn!(player_id, reason = %reason, "VehicleSpawn blocked by plugin");
+                    reject_spawn("blocked_by_plugin");
                     continue;
                 }
 

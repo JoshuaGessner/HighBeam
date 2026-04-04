@@ -17,6 +17,7 @@ AuthTimeoutSec = 30
 [Network]
 TickRate = 20
 UdpBufferSize = 65535
+UdpRelayDistanceMeters = 0 # <=0 disables distance culling (full sync across map)
 TcpKeepAliveSec = 15
 EnableModSync = true
 # ModSyncPort = 18861  # Optional. Used only when EnableModSync = true. Auto-disabled if Resources/Client/ has no mods.

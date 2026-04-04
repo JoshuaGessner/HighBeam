@@ -83,6 +83,7 @@ fn sample_corpus() -> Vec<TcpPacket> {
                 position: [10.0, 20.0, 30.0],
                 rotation: [0.0, 0.0, 0.0, 1.0],
                 velocity: [1.0, 0.0, 0.0],
+                snapshot_time_ms: Some(1_700_000_000_000),
             }],
         },
         TcpPacket::VehicleSpawn {
