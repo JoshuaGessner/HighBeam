@@ -386,8 +386,16 @@ fn relay_udp_s2c(
     // packet on the local socket (the c2s thread owns recv, so we peek
     // non-destructively).  The client always sends UdpBind before the
     // server starts replying, so there is no race.
+    //
+    // Time-box to 30 seconds so this thread doesn't block forever if the
+    // client never sends a UDP packet (e.g. SHA-256 unavailable).
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
     let client_addr = loop {
         if shutdown.load(Ordering::SeqCst) {
+            return;
+        }
+        if std::time::Instant::now() >= deadline {
+            tracing::warn!("Proxy UDP s2c: timed out waiting for client UDP packet after 30s");
             return;
         }
         match local.peek_from(&mut buf) {

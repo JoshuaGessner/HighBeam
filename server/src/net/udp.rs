@@ -220,7 +220,8 @@ pub async fn start_udp(
                 // Build relay packet: insert player_id (u16 LE) after type byte
                 let relay_capacity = if packet_type == 0x11 { 71 } else { 65 };
                 let mut relay = Vec::with_capacity(relay_capacity);
-                relay.extend_from_slice(&buf[..17]); // hash + type
+                relay.extend_from_slice(&[0u8; 16]); // zeroed hash (receivers ignore it)
+                relay.push(buf[16]); // type byte
                 relay.extend_from_slice(&(player_id as u16).to_le_bytes()); // pid
                 relay.extend_from_slice(&buf[17..len]); // vid + pos + rot + vel + time [+ inputs]
 

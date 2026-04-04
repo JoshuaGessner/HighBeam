@@ -98,9 +98,20 @@ M.tick = function(dt)
   for requestId, pending in pairs(M._pendingSpawns) do
     local sentAt = (type(pending) == "table" and pending.sentAt) or 0
     if (now - sentAt) >= _pendingSpawnTimeoutSec then
+      local gameVid = (type(pending) == "table" and pending.gameVid) or pending
       log('W', logTag, 'Spawn request timed out reqId=' .. tostring(requestId)
-        .. ' gameVid=' .. tostring(type(pending) == "table" and pending.gameVid or pending))
+        .. ' gameVid=' .. tostring(gameVid))
       M._pendingSpawns[requestId] = nil
+      -- Tell the server to clean up the vehicle it may have spawned for us.
+      -- Without this, a late server confirmation creates a phantom vehicle
+      -- that receives no position updates from us.
+      if connection and connection.getState() == connection.STATE_CONNECTED then
+        -- We don't know the server-assigned vehicle_id, but request id 0
+        -- signals a cleanup-by-game-vid which the server won't process.
+        -- Instead, just log prominently so operators can investigate.
+        log('E', logTag, 'PHANTOM RISK: spawn timeout for gameVid=' .. tostring(gameVid)
+          .. ' — server may hold an orphaned vehicle')
+      end
     end
   end
 
@@ -369,8 +380,16 @@ M.onLocalVehicleSpawned = function(serverVehicleId, configData, spawnRequestId)
     M.localVehicles[gameVid] = serverVehicleId
     log('I', logTag, 'Local vehicle mapped: game=' .. tostring(gameVid) .. ' server=' .. tostring(serverVehicleId) .. ' reqId=' .. tostring(spawnRequestId))
   else
+    -- Confirmation arrived after our pending request timed out (phantom).
+    -- Tell the server to delete this orphaned vehicle immediately.
     log('W', logTag, 'Spawn confirmation without matching pending request reqId=' .. tostring(spawnRequestId)
-      .. ' serverVid=' .. tostring(serverVehicleId))
+      .. ' serverVid=' .. tostring(serverVehicleId) .. ' — sending VehicleDelete to clean up phantom')
+    if connection and connection.getState() == connection.STATE_CONNECTED then
+      connection._sendPacket({
+        type = "vehicle_delete",
+        vehicle_id = serverVehicleId,
+      })
+    end
   end
 end
 

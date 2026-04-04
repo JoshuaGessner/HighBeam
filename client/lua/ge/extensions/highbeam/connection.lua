@@ -158,6 +158,35 @@ local function _spawnWorldVehicles(vehiclesList)
   end
 end
 
+-- After reconnect to the same map, re-register existing local vehicles
+-- with the server. On first connect these are picked up by onVehicleSpawned,
+-- but on reconnect the game vehicles already exist and that hook doesn't fire.
+local function _reRegisterLocalVehicles()
+  if not state or not be then return end
+  local count = be:getObjectCount()
+  if count == 0 then return end
+  local registered = 0
+  for i = 0, count - 1 do
+    local veh = be:getObject(i)
+    if veh then
+      local gameVid = veh:getID()
+      -- Skip remote vehicles (already tracked from WorldState)
+      if not (vehicles and vehicles.isRemote(gameVid)) then
+        -- Skip if already registered
+        if not state.localVehicles[gameVid] then
+          local configData = state.captureVehicleConfig(veh)
+          log('I', logTag, 'Re-registering local vehicle after reconnect: gameVid=' .. tostring(gameVid))
+          state.requestSpawn(gameVid, configData)
+          registered = registered + 1
+        end
+      end
+    end
+  end
+  if registered > 0 then
+    log('I', logTag, 'Re-registered ' .. tostring(registered) .. ' local vehicle(s) after reconnect')
+  end
+end
+
 M._flushPendingWorldVehicles = function(reason)
   if not M._pendingWorldVehicles then return end
   local pending = M._pendingWorldVehicles
@@ -167,6 +196,7 @@ M._flushPendingWorldVehicles = function(reason)
   log('I', logTag, 'Spawning deferred world vehicles count=' .. tostring(#pending)
     .. ' reason=' .. tostring(reason))
   _spawnWorldVehicles(pending)
+  _reRegisterLocalVehicles()
 end
 
 M.getPlayers = function()
@@ -451,7 +481,7 @@ M.tick = function(dt)
         M._onDisconnect("Buffer processing error: " .. tostring(err))
       end
     end
-    if err == "closed" then
+    if err == "closed" and M.state ~= M.STATE_DISCONNECTED then
       M._onDisconnect("Connection closed by server")
     end
   end
@@ -658,9 +688,10 @@ M._handlePacket = function(jsonStr)
         return
       end
       M._notifyStatus("connected")
-      -- Reset reconnection state on successful connect
-      M._reconnectAttempt = 0
-      M._reconnectTimer = 0
+      -- NOTE: reconnect counter is intentionally NOT reset here.
+      -- It is reset in the world_state handler once the session is proven
+      -- stable.  Resetting on auth alone allowed infinite reconnect loops
+      -- when the server dropped the connection immediately after auth.
       M._lastPingTime = os.clock()  -- Initialize ping tracking (Phase 2.2)
       -- Bind UDP after successful auth
       if M._pendingAuth then
@@ -726,11 +757,19 @@ M._handlePacket = function(jsonStr)
         log('I', logTag, 'Deferring world vehicle spawn until map is ready count=' .. tostring(#packet.vehicles))
       else
         _spawnWorldVehicles(packet.vehicles)
+        _reRegisterLocalVehicles()
       end
+    else
+      -- No vehicles in WorldState but still need to re-register locals on reconnect
+      _reRegisterLocalVehicles()
     end
     if state and packet.players then
       state.onWorldState(packet.players)
     end
+    -- Connection is stable — WorldState received and processed without
+    -- crashing.  Safe to reset the reconnect counter now.
+    M._reconnectAttempt = 0
+    M._reconnectTimer = 0
   elseif ptype == "vehicle_spawn" then
     log('I', logTag, 'VehicleSpawn: player=' .. tostring(packet.player_id) .. ' vid=' .. tostring(packet.vehicle_id))
     if packet.player_id == M._playerId then
@@ -854,12 +893,17 @@ end
 
 M._bindUdp = function(host, port, sessionToken)
   if not socket then return end
-  udp = socket.udp()
-  udp:settimeout(0)  -- Non-blocking
-  udp:setpeername(host, port)  -- Connected mode
 
   -- Compute session hash (SHA-256 truncated to 16 bytes)
   M._sessionHash = M._computeSessionHash(sessionToken)
+  if not M._sessionHash then
+    log('E', logTag, 'Cannot bind UDP: session hash computation failed (SHA-256 unavailable)')
+    return
+  end
+
+  udp = socket.udp()
+  udp:settimeout(0)  -- Non-blocking
+  udp:setpeername(host, port)  -- Connected mode
 
   -- Send UdpBind packet: hash + type 0x01
   udp:send(M._sessionHash .. string.char(0x01))
@@ -911,7 +955,10 @@ M._tickUdp = function()
           log('I', logTag, 'First UDP snapshot for remote vehicle ' .. firstKey)
         end
         vehicles.updateRemote(decoded)
+      elseif not decoded then
+        M._udpDecodeErrorCount = M._udpDecodeErrorCount + 1
       else
+        -- decoded is valid but vehicles subsystem not loaded
         M._udpDecodeErrorCount = M._udpDecodeErrorCount + 1
       end
     else
@@ -928,8 +975,8 @@ M._computeSessionHash = function(token)
   local tokenBytes = { token:byte(1, #token) }
   -- Portable SHA-256 implementation (standard FIPS 180-4)
   -- For BeamNG, we use the built-in hashStringSHA256 if available
-  local hashHex = hashStringSHA256(token)
-  if hashHex then
+  local okHash, hashHex = pcall(hashStringSHA256, token)
+  if okHash and hashHex and #hashHex >= 32 then
     -- Convert first 32 hex chars (16 bytes) to binary
     local result = ""
     for i = 1, 32, 2 do
@@ -937,10 +984,10 @@ M._computeSessionHash = function(token)
     end
     return result
   end
-  -- Fallback: use token bytes directly (padded/truncated to 16)
-  local result = token
-  while #result < 16 do result = result .. "\0" end
-  return result:sub(1, 16)
+  -- hashStringSHA256 unavailable — cannot compute a valid session hash.
+  -- Returning nil will prevent UDP binding; TCP still works.
+  log('E', logTag, 'hashStringSHA256 unavailable — UDP will be disabled for this session')
+  return nil
 end
 
 M.getSessionHash = function()
@@ -978,6 +1025,9 @@ M._onDisconnect = function(reason)
   M._lastPingTime = nil  -- Clear ping tracking on disconnect (Phase 2.2)
   M._serverMap = nil
   M._players = {}
+  M._pendingWorldVehicles = nil
+  M._pendingWorldStateDeadline = nil
+  M._pendingWorldStateLevel = nil
   M._setState(M.STATE_DISCONNECTED, "remote_disconnect")
   -- Trigger auto-reconnection if enabled
   if M._autoReconnect and M._reconnectCredentials then

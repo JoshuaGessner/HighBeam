@@ -349,14 +349,28 @@ where
 
     // 8. Wait for Ready packet
     let ready_timeout = Duration::from_secs(10);
-    let ready_packet = timeout(ready_timeout, read_packet_from(&mut stream))
-        .await
-        .context("Timeout waiting for Ready packet")?
-        .context("Failed to read Ready packet")?;
+    let ready_result = timeout(ready_timeout, read_packet_from(&mut stream)).await;
+
+    let ready_packet = match ready_result {
+        Ok(Ok(p)) => p,
+        Ok(Err(e)) => {
+            // Read error before Ready — clean up the session we just created.
+            tracing::warn!(player_id, name = %username, error = %e, "Failed to read Ready packet; cleaning up session");
+            sessions.remove_player(player_id);
+            return Err(e.context("Failed to read Ready packet"));
+        }
+        Err(_) => {
+            // Timeout — clean up the session we just created.
+            tracing::warn!(player_id, name = %username, "Timeout waiting for Ready packet; cleaning up session");
+            sessions.remove_player(player_id);
+            anyhow::bail!("Timeout waiting for Ready packet after 10s");
+        }
+    };
 
     match &ready_packet {
         TcpPacket::Ready {} => {}
         other => {
+            sessions.remove_player(player_id);
             anyhow::bail!("Expected Ready, got {:?}", std::mem::discriminant(other));
         }
     }
@@ -446,7 +460,7 @@ where
                 player_id: Some(player_id),
                 vehicle_id: *vid,
             },
-            None,
+            Some(player_id),
         );
     }
 
@@ -552,7 +566,18 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                 }
 
                 let vid = world.spawn_vehicle(player_id, data.clone());
-                // Broadcast to ALL players (including sender so they learn the server-assigned ID)
+                // Step 1: Confirm to the spawner first so they learn the
+                // server-assigned vehicle_id before anyone else sends updates.
+                sessions.send_to_player(
+                    player_id,
+                    TcpPacket::VehicleSpawn {
+                        player_id: Some(player_id),
+                        vehicle_id: vid,
+                        data: data.clone(),
+                        spawn_request_id,
+                    },
+                );
+                // Step 2: Broadcast to all other players.
                 sessions.broadcast(
                     TcpPacket::VehicleSpawn {
                         player_id: Some(player_id),
@@ -560,7 +585,7 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                         data,
                         spawn_request_id,
                     },
-                    None,
+                    Some(player_id),
                 );
             }
             TcpPacket::VehicleEdit {
