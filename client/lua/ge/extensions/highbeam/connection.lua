@@ -53,8 +53,37 @@ M._pendingWorldStateDeadline = nil
 M._pendingWorldStateLevel = nil
 M._udpFirstSeenVehicles = {}
 M._udpRxCount = 0
+M._udpPositionRxCount = 0
+M._udpDecodeErrorCount = 0
+M._udpUnexpectedCount = 0
+M._tcpRxTypeCounts = {}
+M._tcpTxTypeCounts = {}
 M._diagTimer = 0
 M._diagIntervalSec = 5.0
+
+local function _bumpCounter(map, key)
+  if not map then return end
+  local k = tostring(key or "unknown")
+  map[k] = (map[k] or 0) + 1
+end
+
+local function _formatCounterMap(map)
+  local keys = {}
+  for k, v in pairs(map or {}) do
+    if v and v > 0 then
+      table.insert(keys, k)
+    end
+  end
+  table.sort(keys)
+  local out = {}
+  for _, k in ipairs(keys) do
+    table.insert(out, k .. '=' .. tostring(map[k]))
+  end
+  if #out == 0 then
+    return "none"
+  end
+  return table.concat(out, ',')
+end
 
 M.getErrorStats = function()
   return {
@@ -346,6 +375,11 @@ M.disconnect = function()
   M._pendingWorldStateLevel = nil
   M._udpFirstSeenVehicles = {}
   M._udpRxCount = 0
+  M._udpPositionRxCount = 0
+  M._udpDecodeErrorCount = 0
+  M._udpUnexpectedCount = 0
+  M._tcpRxTypeCounts = {}
+  M._tcpTxTypeCounts = {}
   M._diagTimer = 0
   M._setState(M.STATE_DISCONNECTED, "disconnect_complete")
   M._notifyStatus("disconnected")
@@ -451,9 +485,25 @@ M.tick = function(dt)
     if M._diagTimer >= M._diagIntervalSec then
       M._diagTimer = 0
       local deferredCount = M._pendingWorldVehicles and #M._pendingWorldVehicles or 0
-      log('I', logTag, 'Sync diag udpRx=' .. tostring(M._udpRxCount)
+      local tcpSince = M._lastServerPacketTime and (os.clock() - M._lastServerPacketTime) or -1
+      local reconnectHost = M._reconnectCredentials and M._reconnectCredentials.host or 'none'
+      log('I', logTag, 'Sync diag state=' .. tostring(STATE_NAMES[M.state])
+        .. ' tcpIdle=' .. string.format('%.2f', tcpSince)
+        .. ' udpRx=' .. tostring(M._udpRxCount)
+        .. ' udpPos=' .. tostring(M._udpPositionRxCount)
+        .. ' udpDecodeErr=' .. tostring(M._udpDecodeErrorCount)
+        .. ' udpUnexpected=' .. tostring(M._udpUnexpectedCount)
         .. ' deferredWorldVehicles=' .. tostring(deferredCount))
+      log('I', logTag, 'Sync diag tcpRxTypes=' .. _formatCounterMap(M._tcpRxTypeCounts)
+        .. ' tcpTxTypes=' .. _formatCounterMap(M._tcpTxTypeCounts)
+        .. ' reconnectAttempt=' .. tostring(M._reconnectAttempt)
+        .. ' reconnectHost=' .. tostring(reconnectHost))
       M._udpRxCount = 0
+      M._udpPositionRxCount = 0
+      M._udpDecodeErrorCount = 0
+      M._udpUnexpectedCount = 0
+      M._tcpRxTypeCounts = {}
+      M._tcpTxTypeCounts = {}
     end
   end
 end
@@ -522,6 +572,7 @@ M._sendPacket = function(packetTable)
     M._reportError('W', 'send_packet', 'TCP send failed: ' .. tostring(sendErr))
     return false
   end
+  _bumpCounter(M._tcpTxTypeCounts, packetTable and packetTable.type)
   return true
 end
 
@@ -577,6 +628,7 @@ M._handlePacket = function(jsonStr)
   end
 
   local ptype = packet.type
+  _bumpCounter(M._tcpRxTypeCounts, ptype)
   if ptype == "server_hello" then
     log('I', logTag, 'Received ServerHello: ' .. tostring(packet.name) .. ' map=' .. tostring(packet.map))
     M._serverMap = packet.map
@@ -852,13 +904,18 @@ M._tickUdp = function()
       -- Binary position update (0x10 legacy / 0x11 extended) — decode and dispatch
       local decoded = protocol.decodePositionUpdate(data)
       if decoded and vehicles then
+        M._udpPositionRxCount = M._udpPositionRxCount + 1
         local firstKey = tostring(decoded.playerId) .. '_' .. tostring(decoded.vehicleId)
         if not M._udpFirstSeenVehicles[firstKey] then
           M._udpFirstSeenVehicles[firstKey] = true
           log('I', logTag, 'First UDP snapshot for remote vehicle ' .. firstKey)
         end
         vehicles.updateRemote(decoded)
+      else
+        M._udpDecodeErrorCount = M._udpDecodeErrorCount + 1
       end
+    else
+      M._udpUnexpectedCount = M._udpUnexpectedCount + 1
     end
   end
 end

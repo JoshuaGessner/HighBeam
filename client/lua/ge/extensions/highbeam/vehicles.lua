@@ -10,8 +10,20 @@ local _diagTimer = 0
 local _diagIntervalSec = 5.0
 local _staleDropCount = 0
 local _spawnRetryDropCount = 0
+local _spawnRetryAttemptCount = 0
+local _spawnRetrySuccessCount = 0
 local SPAWN_RETRY_MAX_ATTEMPTS = 5
 local SPAWN_RETRY_BASE_DELAY = 0.75
+
+local function _countPendingSpawnRetries()
+  local count = 0
+  for _, rv in pairs(M.remoteVehicles) do
+    if rv.spawnRetry then
+      count = count + 1
+    end
+  end
+  return count
+end
 
 local function _getConfigNumber(key, fallback)
   local value = config and config.get and config.get(key) or nil
@@ -432,11 +444,13 @@ M.tick = function(dt)
         end
 
         local vid, spawnErr = _spawnGameVehicle(rv.spawnSpec)
+        _spawnRetryAttemptCount = _spawnRetryAttemptCount + 1
         if vid then
           rv.gameVehicleId = vid
           rv.gameVehicle = scenetree.findObjectById(vid)
           rv.spawnRetry = nil
           M._remoteGameIds[vid] = true
+          _spawnRetrySuccessCount = _spawnRetrySuccessCount + 1
           log('I', logTag, 'Remote spawn recovered: ' .. tostring(rv.playerId) .. '_' .. tostring(rv.vehicleId) .. ' gameVid=' .. tostring(vid))
         else
           rv.spawnRetry.attempts = rv.spawnRetry.attempts + 1
@@ -557,6 +571,14 @@ M.tick = function(dt)
     if _spawnRetryDropCount > 0 then
       log('W', logTag, 'Remote spawns abandoned after retries=' .. tostring(_spawnRetryDropCount))
       _spawnRetryDropCount = 0
+    end
+    local pendingRetries = _countPendingSpawnRetries()
+    if pendingRetries > 0 or _spawnRetryAttemptCount > 0 or _spawnRetrySuccessCount > 0 then
+      log('I', logTag, 'Spawn retry diag pending=' .. tostring(pendingRetries)
+        .. ' attempts=' .. tostring(_spawnRetryAttemptCount)
+        .. ' recovered=' .. tostring(_spawnRetrySuccessCount))
+      _spawnRetryAttemptCount = 0
+      _spawnRetrySuccessCount = 0
     end
   end
 end
