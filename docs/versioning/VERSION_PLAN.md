@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-04-04
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.1-dev.17 (protocol v2)
+> **Current version:** v0.8.1-dev.18 (protocol v2)
 > **Status:** v0.8.0 released | v0.8.1 in development
 
 ---
@@ -1167,6 +1167,13 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.1-dev.18 — 2026-04-04 (draft)
+- **UDP bind reliability:** client now retries `UdpBind` every 2 seconds until first inbound UDP packet is seen, fixing sessions where the initial one-shot bind was lost during NAT/firewall warm-up.
+- **UDP diagnostics expansion:** added bind confirmation and retry counters in client sync diagnostics to make bind-state visibility explicit.
+- **Server metrics feed:** server now tracks rolling ping RTT and sends periodic `PlayerMetrics` updates for in-game overlay/telemetry.
+- **In-game chat overlay:** added live overlay plumbing for player-level chat/session metrics integration.
+- **Formatting/CI cleanup:** aligned `session::manager` formatting with `cargo fmt` and carried forward related CI hardening updates.
 
 ### v0.8.1-dev.17 — 2026-04-04 (draft)
 - **Fix spawn return type:** `core_vehicles.spawnNewVehicle()` returns a vehicle object (userdata), not a numeric ID. Now extracts ID via `:getID()` and keeps the object directly — fixes the `findObjectById(userdata)` crash that disconnected both players immediately on remote spawn.
