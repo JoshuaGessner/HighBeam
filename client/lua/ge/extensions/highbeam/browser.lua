@@ -205,6 +205,10 @@ M._bridge = {
   error   = nil,      -- error string when state == "failed"
   pending = nil,      -- {host, port, username, password, name} waiting for sync
 }
+
+-- Last resolved real server target used behind launcher proxy. This lets us
+-- recover when a stale localhost proxy port times out during reconnect.
+M._lastBridgeTarget = nil -- {host, port, username, password, name}
 local function _bridgeDirectConnect()
   local p = M._bridge.pending
   if not p then return end
@@ -215,6 +219,13 @@ local function _bridgeDirectConnect()
     return
   end
   M._bridge.pending = nil
+  M._lastBridgeTarget = {
+    host = p.host,
+    port = p.port,
+    username = p.username,
+    password = p.password,
+    name = p.name,
+  }
 
   -- If the launcher provided proxy ports, route through localhost proxy
   -- instead of connecting directly to the (sandbox-blocked) remote address.
@@ -252,6 +263,29 @@ local function _bridgeDirectConnect()
   if M._bridge.state == "unavailable" then
     M._bridge.state = "idle"
   end
+end
+
+local function _bridgeRefreshForReconnect(reason)
+  local p = M._lastBridgeTarget
+  if not p then
+    M._connectError = reason or "Proxy reconnect required but no previous target is known"
+    return
+  end
+  if M._bridge.state == "syncing" then
+    return
+  end
+
+  log('I', logTag, 'Refreshing launcher proxy endpoints after reconnect failure: ' .. tostring(reason))
+  M._connectError = "Refreshing launcher proxy..."
+  M._bridge.error = nil
+  M._bridge.pending = {
+    host = p.host,
+    port = p.port,
+    username = p.username,
+    password = p.password,
+    name = p.name,
+  }
+  _bridgeInitiate(p.host, p.port)
 end
 
 -- Open the IPC socket and send a join_request
@@ -819,6 +853,8 @@ M.onConnectionStatus = function(status, detail)
       M._bridge.state = "failed"
       M._bridge.error = M._connectError
     end
+  elseif status == "proxy_reconnect_required" then
+    _bridgeRefreshForReconnect(detail)
   elseif status == "disconnected" or status == "reconnect_failed" then
     if M._bridge.state == "syncing" then
       M._bridge.state = "failed"

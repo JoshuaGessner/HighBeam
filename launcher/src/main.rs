@@ -574,11 +574,7 @@ fn main() -> Result<()> {
             let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
             if let Some(ref path) = ipc_state_path {
                 let (proxy_tcp, proxy_udp, proxy_srv) = match active_proxy.as_ref() {
-                    Some(h) => (
-                        Some(h.tcp_port),
-                        Some(h.udp_port),
-                        join_server.clone(),
-                    ),
+                    Some(h) => (Some(h.tcp_port), Some(h.udp_port), join_server.clone()),
                     None => (None, None, None),
                 };
                 match ipc::write_state_file_full(path, port, proxy_tcp, proxy_udp, proxy_srv) {
@@ -605,7 +601,13 @@ fn main() -> Result<()> {
 
     // ── Main loop: monitor game + serve IPC connections ──────────────────────
     if let Some(ref listener) = ipc_listener {
-        ipc::run_ipc_loop(&mut game_child, listener, &cfg, &cache_dir, &mut active_proxy)?;
+        ipc::run_ipc_loop(
+            &mut game_child,
+            listener,
+            &cfg,
+            &cache_dir,
+            &mut active_proxy,
+        )?;
     } else {
         // No IPC; fall back to blocking wait.
         let _ = game_child.wait();

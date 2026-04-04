@@ -380,12 +380,7 @@ fn start_proxy_and_build_response(
         Ok(handle) => {
             let tcp_port = handle.tcp_port;
             let udp_port = handle.udp_port;
-            tracing::info!(
-                tcp_port,
-                udp_port,
-                server,
-                "Proxy started for IPC join"
-            );
+            tracing::info!(tcp_port, udp_port, server, "Proxy started for IPC join");
             *active_proxy = Some(handle);
             serde_json::json!({
                 "type": "sync_complete",

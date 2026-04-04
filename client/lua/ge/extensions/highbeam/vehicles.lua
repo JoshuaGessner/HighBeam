@@ -9,6 +9,9 @@ local config = require("highbeam/config")
 local _diagTimer = 0
 local _diagIntervalSec = 5.0
 local _staleDropCount = 0
+local _spawnRetryDropCount = 0
+local SPAWN_RETRY_MAX_ATTEMPTS = 5
+local SPAWN_RETRY_BASE_DELAY = 0.75
 
 local function _getConfigNumber(key, fallback)
   local value = config and config.get and config.get(key) or nil
@@ -33,6 +36,45 @@ end
 
 local function makeKey(playerId, vehicleId)
   return tostring(playerId) .. "_" .. tostring(vehicleId)
+end
+
+local function _buildSpawnSpec(configData, snapshot)
+  local cfg = _decodeJson(configData) or {}
+  return {
+    model = cfg.model or "pickup",
+    partCfg = cfg.partConfig or "",
+    pos = (snapshot and snapshot.position) or cfg.pos or { 0, 0, 0 },
+    rot = (snapshot and snapshot.rotation) or cfg.rot or { 0, 0, 0, 1 },
+    vel = (snapshot and snapshot.velocity) or { 0, 0, 0 },
+    snapshotTimeMs = snapshot and snapshot.snapshotTimeMs,
+  }
+end
+
+local function _spawnGameVehicle(spec)
+  local vid = nil
+  local ok, err = pcall(function()
+    vid = be:spawnVehicle(
+      spec.model,
+      spec.partCfg,
+      vec3(spec.pos[1], spec.pos[2], spec.pos[3]),
+      quat(spec.rot[1], spec.rot[2], spec.rot[3], spec.rot[4])
+    )
+  end)
+
+  if not ok or not vid then
+    pcall(function()
+      vid = be:spawnVehicle(
+        "pickup", "",
+        vec3(spec.pos[1], spec.pos[2], spec.pos[3]),
+        quat(spec.rot[1], spec.rot[2], spec.rot[3], spec.rot[4])
+      )
+    end)
+    if not vid then
+      return nil, tostring(err)
+    end
+  end
+
+  return vid
 end
 
 -- Check if a game vehicle ID belongs to a remote player
@@ -67,41 +109,8 @@ M.spawnRemote = function(playerId, vehicleId, configData, snapshot)
     return
   end
 
-  local cfg = _decodeJson(configData) or {}
-
-  local model = cfg.model or "pickup"
-  local partCfg = cfg.partConfig or ""
-  local pos = (snapshot and snapshot.position) or cfg.pos or { 0, 0, 0 }
-  local rot = (snapshot and snapshot.rotation) or cfg.rot or { 0, 0, 0, 1 }
-  local vel = (snapshot and snapshot.velocity) or { 0, 0, 0 }
-
-  -- Validate model availability; fall back to pickup if not found
-  local modelAvailable = true
-  if scenetree and scenetree.findObject then
-    -- BeamNG doesn't have a direct "does model exist" API, so we just try
-    -- to spawn and handle failure below
-  end
-
-  local vid = nil
-  local ok, err = pcall(function()
-    vid = be:spawnVehicle(
-      model,
-      partCfg,
-      vec3(pos[1], pos[2], pos[3]),
-      quat(rot[1], rot[2], rot[3], rot[4])
-    )
-  end)
-
-  if not ok or not vid then
-    log('W', logTag, 'Failed to spawn model "' .. tostring(model) .. '": ' .. tostring(err) .. ' — falling back to pickup')
-    pcall(function()
-      vid = be:spawnVehicle(
-        "pickup", "",
-        vec3(pos[1], pos[2], pos[3]),
-        quat(rot[1], rot[2], rot[3], rot[4])
-      )
-    end)
-  end
+  local spec = _buildSpawnSpec(configData, snapshot)
+  local vid, spawnErr = _spawnGameVehicle(spec)
 
   M.remoteVehicles[key] = {
     playerId = playerId,
@@ -110,14 +119,16 @@ M.spawnRemote = function(playerId, vehicleId, configData, snapshot)
     gameVehicle = vid and scenetree.findObjectById(vid) or nil,
     snapshots = {},
     lastSeqTime = -1,  -- For out-of-order rejection
+    spawnSpec = spec,
+    spawnRetry = nil,
   }
 
-  if snapshot then
+  if snapshot or spec.snapshotTimeMs then
     table.insert(M.remoteVehicles[key].snapshots, {
-      pos = pos,
-      rot = rot,
-      vel = vel,
-      time = (snapshot.snapshotTimeMs or 0) / 1000.0,
+      pos = spec.pos,
+      rot = spec.rot,
+      vel = spec.vel,
+      time = (spec.snapshotTimeMs or 0) / 1000.0,
       received = os.clock(),
       inputs = nil,
     })
@@ -125,9 +136,15 @@ M.spawnRemote = function(playerId, vehicleId, configData, snapshot)
 
   if vid then
     M._remoteGameIds[vid] = true
+    log('I', logTag, 'Spawned remote vehicle: ' .. key .. ' gameVid=' .. tostring(vid))
+  else
+    M.remoteVehicles[key].spawnRetry = {
+      attempts = 1,
+      nextAt = os.clock() + SPAWN_RETRY_BASE_DELAY,
+      lastError = spawnErr,
+    }
+    log('W', logTag, 'Remote spawn failed: ' .. key .. ' gameVid=nil; queued retry attempts=' .. tostring(SPAWN_RETRY_MAX_ATTEMPTS))
   end
-
-  log('I', logTag, 'Spawned remote vehicle: ' .. key .. ' gameVid=' .. tostring(vid))
 end
 
 M.spawnRemoteFromSnapshot = function(vehicle)
@@ -405,6 +422,38 @@ M.tick = function(dt)
   local renderTime = now - interpolationDelay
 
   for _, rv in pairs(M.remoteVehicles) do
+    if (not rv.gameVehicleId) and rv.spawnRetry then
+      if now >= rv.spawnRetry.nextAt then
+        local latest = rv.snapshots[#rv.snapshots]
+        if latest then
+          rv.spawnSpec.pos = latest.pos
+          rv.spawnSpec.rot = latest.rot
+          rv.spawnSpec.vel = latest.vel
+        end
+
+        local vid, spawnErr = _spawnGameVehicle(rv.spawnSpec)
+        if vid then
+          rv.gameVehicleId = vid
+          rv.gameVehicle = scenetree.findObjectById(vid)
+          rv.spawnRetry = nil
+          M._remoteGameIds[vid] = true
+          log('I', logTag, 'Remote spawn recovered: ' .. tostring(rv.playerId) .. '_' .. tostring(rv.vehicleId) .. ' gameVid=' .. tostring(vid))
+        else
+          rv.spawnRetry.attempts = rv.spawnRetry.attempts + 1
+          rv.spawnRetry.lastError = spawnErr
+          if rv.spawnRetry.attempts > SPAWN_RETRY_MAX_ATTEMPTS then
+            _spawnRetryDropCount = _spawnRetryDropCount + 1
+            log('E', logTag, 'Remote spawn permanently failed: ' .. tostring(rv.playerId) .. '_' .. tostring(rv.vehicleId)
+              .. ' err=' .. tostring(rv.spawnRetry.lastError))
+            rv.spawnRetry = nil
+          else
+            local backoff = math.min(4.0, SPAWN_RETRY_BASE_DELAY * rv.spawnRetry.attempts)
+            rv.spawnRetry.nextAt = now + backoff
+          end
+        end
+      end
+    end
+
     if not rv.gameVehicle and rv.gameVehicleId then
       rv.gameVehicle = scenetree.findObjectById(rv.gameVehicleId)
     end
@@ -504,6 +553,10 @@ M.tick = function(dt)
     if _staleDropCount > 0 then
       log('I', logTag, 'Dropped stale remote snapshots=' .. tostring(_staleDropCount))
       _staleDropCount = 0
+    end
+    if _spawnRetryDropCount > 0 then
+      log('W', logTag, 'Remote spawns abandoned after retries=' .. tostring(_spawnRetryDropCount))
+      _spawnRetryDropCount = 0
     end
   end
 end

@@ -81,13 +81,15 @@ pub fn start(remote_addr: &str) -> anyhow::Result<ProxyHandle> {
     tracing::info!(tcp_port, %remote, "Proxy TCP listener bound");
 
     let sd = shutdown.clone();
-    threads.push(thread::Builder::new().name("proxy-tcp".into()).spawn(
-        move || {
-            if let Err(e) = run_tcp_proxy(tcp_listener, remote, sd) {
-                tracing::warn!(error = %e, "Proxy TCP relay ended with error");
-            }
-        },
-    )?);
+    threads.push(
+        thread::Builder::new()
+            .name("proxy-tcp".into())
+            .spawn(move || {
+                if let Err(e) = run_tcp_proxy(tcp_listener, remote, sd) {
+                    tracing::warn!(error = %e, "Proxy TCP relay ended with error");
+                }
+            })?,
+    );
 
     // ── UDP ──────────────────────────────────────────────────────────────
     let udp_local = UdpSocket::bind("127.0.0.1:0")?;
@@ -96,13 +98,15 @@ pub fn start(remote_addr: &str) -> anyhow::Result<ProxyHandle> {
     tracing::info!(udp_port, %remote, "Proxy UDP listener bound");
 
     let sd = shutdown.clone();
-    threads.push(thread::Builder::new().name("proxy-udp".into()).spawn(
-        move || {
-            if let Err(e) = run_udp_proxy(udp_local, remote, sd) {
-                tracing::warn!(error = %e, "Proxy UDP relay ended with error");
-            }
-        },
-    )?);
+    threads.push(
+        thread::Builder::new()
+            .name("proxy-udp".into())
+            .spawn(move || {
+                if let Err(e) = run_udp_proxy(udp_local, remote, sd) {
+                    tracing::warn!(error = %e, "Proxy UDP relay ended with error");
+                }
+            })?,
+    );
 
     Ok(ProxyHandle {
         tcp_port,
@@ -119,26 +123,41 @@ fn run_tcp_proxy(
     remote: SocketAddr,
     shutdown: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
-    // Accept exactly one client (the in-game Lua mod).
+    // Accept clients in a loop so reconnects can re-use the same proxy ports.
     // Use a short non-blocking poll so we can honour `shutdown`.
     listener.set_nonblocking(true)?;
 
-    let client = loop {
-        if shutdown.load(Ordering::SeqCst) {
-            return Ok(());
-        }
-        match listener.accept() {
-            Ok((stream, addr)) => {
-                tracing::info!(%addr, "Proxy TCP: client connected");
-                break stream;
+    while !shutdown.load(Ordering::SeqCst) {
+        let client = loop {
+            if shutdown.load(Ordering::SeqCst) {
+                return Ok(());
             }
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(50));
+            match listener.accept() {
+                Ok((stream, addr)) => {
+                    tracing::info!(%addr, "Proxy TCP: client connected");
+                    break stream;
+                }
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(50));
+                }
+                Err(e) => return Err(e.into()),
             }
-            Err(e) => return Err(e.into()),
-        }
-    };
+        };
 
+        if let Err(e) = run_tcp_session(client, remote, shutdown.clone()) {
+            tracing::warn!(error = %e, "Proxy TCP session ended with error");
+        }
+        tracing::info!("Proxy TCP: waiting for next client session");
+    }
+
+    Ok(())
+}
+
+fn run_tcp_session(
+    client: TcpStream,
+    remote: SocketAddr,
+    shutdown: Arc<AtomicBool>,
+) -> anyhow::Result<()> {
     // Connect to the real server.
     let server = TcpStream::connect_timeout(&remote, Duration::from_secs(10))
         .map_err(|e| anyhow::anyhow!("Proxy TCP: failed to connect to {}: {}", remote, e))?;
@@ -153,25 +172,27 @@ fn run_tcp_proxy(
     let server_r = server.try_clone()?;
     let server_w = server.try_clone()?;
 
-    let sd1 = shutdown.clone();
-    let sd2 = shutdown.clone();
+    let session_stop = Arc::new(AtomicBool::new(false));
+    let stop1 = session_stop.clone();
+    let stop2 = session_stop.clone();
+    let shutdown1 = shutdown.clone();
+    let shutdown2 = shutdown.clone();
 
-    // client → server
+    // client -> server
     let h1 = thread::Builder::new()
         .name("proxy-tcp-c2s".into())
-        .spawn(move || relay_tcp(client_r, server_w, sd1, "client→server"))?;
+        .spawn(move || relay_tcp(client_r, server_w, shutdown1, stop1, "client->server"))?;
 
-    // server → client
+    // server -> client
     let h2 = thread::Builder::new()
         .name("proxy-tcp-s2c".into())
-        .spawn(move || relay_tcp(server_r, client_w, sd2, "server→client"))?;
+        .spawn(move || relay_tcp(server_r, client_w, shutdown2, stop2, "server->client"))?;
 
-    // When either direction finishes, tear down both.
     let _ = h1.join();
-    shutdown.store(true, Ordering::SeqCst);
+    session_stop.store(true, Ordering::SeqCst);
     let _ = h2.join();
 
-    tracing::info!("Proxy TCP relay stopped");
+    tracing::info!("Proxy TCP: client session closed");
     Ok(())
 }
 
@@ -179,6 +200,7 @@ fn relay_tcp(
     mut reader: TcpStream,
     mut writer: TcpStream,
     shutdown: Arc<AtomicBool>,
+    session_stop: Arc<AtomicBool>,
     label: &str,
 ) {
     let mut buf = vec![0u8; RELAY_BUF];
@@ -186,6 +208,10 @@ fn relay_tcp(
         if shutdown.load(Ordering::SeqCst) {
             break;
         }
+        if session_stop.load(Ordering::SeqCst) {
+            break;
+        }
+
         match reader.read(&mut buf) {
             Ok(0) => {
                 tracing::debug!(label, "Proxy TCP: EOF");
@@ -197,14 +223,14 @@ fn relay_tcp(
                 }
             }
             Err(ref e)
-                if e.kind() == io::ErrorKind::WouldBlock
-                    || e.kind() == io::ErrorKind::TimedOut =>
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
             {
                 continue;
             }
             Err(_) => break,
         }
     }
+    session_stop.store(true, Ordering::SeqCst);
     // Shut down writer half to unblock the peer relay thread.
     let _ = writer.shutdown(std::net::Shutdown::Write);
 }
@@ -252,11 +278,7 @@ fn run_udp_proxy(
 }
 
 /// Relay datagrams from the local client to the remote server.
-fn relay_udp_c2s(
-    local: UdpSocket,
-    server: UdpSocket,
-    shutdown: Arc<AtomicBool>,
-) {
+fn relay_udp_c2s(local: UdpSocket, server: UdpSocket, shutdown: Arc<AtomicBool>) {
     let mut buf = vec![0u8; RELAY_BUF];
     // We don't know the client's local ephemeral addr until the first packet.
     let mut client_addr: Option<SocketAddr> = None;
@@ -274,8 +296,7 @@ fn relay_udp_c2s(
                 let _ = server.send(&buf[..n]);
             }
             Err(ref e)
-                if e.kind() == io::ErrorKind::WouldBlock
-                    || e.kind() == io::ErrorKind::TimedOut =>
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
             {
                 continue;
             }
@@ -285,11 +306,7 @@ fn relay_udp_c2s(
 }
 
 /// Relay datagrams from the remote server to the local client.
-fn relay_udp_s2c(
-    server: UdpSocket,
-    local: UdpSocket,
-    shutdown: Arc<AtomicBool>,
-) {
+fn relay_udp_s2c(server: UdpSocket, local: UdpSocket, shutdown: Arc<AtomicBool>) {
     let mut buf = vec![0u8; RELAY_BUF];
 
     // Learn the client's ephemeral address by peeking the first incoming
@@ -303,8 +320,7 @@ fn relay_udp_s2c(
         match local.peek_from(&mut buf) {
             Ok((_n, addr)) => break addr,
             Err(ref e)
-                if e.kind() == io::ErrorKind::WouldBlock
-                    || e.kind() == io::ErrorKind::TimedOut =>
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
             {
                 continue;
             }
@@ -323,8 +339,7 @@ fn relay_udp_s2c(
                 let _ = local.send_to(&buf[..n], client_addr);
             }
             Err(ref e)
-                if e.kind() == io::ErrorKind::WouldBlock
-                    || e.kind() == io::ErrorKind::TimedOut =>
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
             {
                 continue;
             }

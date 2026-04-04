@@ -102,6 +102,12 @@ M._notifyStatus = function(status, detail)
   end
 end
 
+local function _isLoopbackHost(host)
+  if not host then return false end
+  local h = tostring(host):lower()
+  return h == '127.0.0.1' or h == 'localhost' or h == '::1'
+end
+
 local function _normalizeLevelId(levelId)
   if not levelId or levelId == '' then return nil end
   return levelId:gsub('^/levels/', ''):gsub('/info%.json$', '')
@@ -937,11 +943,25 @@ end
 M._onConnectFailedTimeout = function(host)
   -- Handle connection timeout (Phase 2.1)
   local reason = "Connection timeout to " .. tostring(host)
+  local timedOutProxy = M._reconnectCredentials
+    and _isLoopbackHost(M._reconnectCredentials.host)
+
   if M._onConnectFailedCallback then
     pcall(M._onConnectFailedCallback, "timeout", host)
   end
+
+  -- Reconnecting to stale launcher proxy ports can dead-loop if we keep retrying
+  -- raw localhost sockets; ask browser/launcher bridge to refresh proxy endpoints.
+  if timedOutProxy then
+    M._autoReconnect = false
+  end
+
   M._notifyStatus("connect_failed", reason)
   M._onDisconnect(reason)
+
+  if timedOutProxy then
+    M._notifyStatus("proxy_reconnect_required", reason)
+  end
 end
 
 return M
