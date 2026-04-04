@@ -85,24 +85,28 @@ end
 local function _spawnGameVehicle(spec)
   local vid = nil
   local ok, err = pcall(function()
-    vid = be:spawnVehicle(
-      spec.model,
-      spec.partCfg,
-      vec3(spec.pos[1], spec.pos[2], spec.pos[3]),
-      quat(spec.rot[1], spec.rot[2], spec.rot[3], spec.rot[4])
-    )
+    vid = core_vehicles.spawnNewVehicle(spec.model, {
+      config = spec.partCfg,
+      pos = vec3(spec.pos[1], spec.pos[2], spec.pos[3]),
+      rot = quat(spec.rot[1], spec.rot[2], spec.rot[3], spec.rot[4]),
+      autoEnterVehicle = false,
+      cling = true,
+    })
   end)
 
   if not ok or not vid then
-    pcall(function()
-      vid = be:spawnVehicle(
-        "pickup", "",
-        vec3(spec.pos[1], spec.pos[2], spec.pos[3]),
-        quat(spec.rot[1], spec.rot[2], spec.rot[3], spec.rot[4])
-      )
+    local firstErr = err
+    local ok2
+    ok2, err = pcall(function()
+      vid = core_vehicles.spawnNewVehicle("pickup", {
+        pos = vec3(spec.pos[1], spec.pos[2], spec.pos[3]),
+        rot = quat(spec.rot[1], spec.rot[2], spec.rot[3], spec.rot[4]),
+        autoEnterVehicle = false,
+        cling = true,
+      })
     end)
-    if not vid then
-      return nil, tostring(err)
+    if not ok2 or not vid then
+      return nil, tostring(firstErr or err)
     end
   end
 
@@ -393,7 +397,8 @@ M.removeRemote = function(playerId, vehicleId)
   if rv.gameVehicleId then
     M._remoteGameIds[rv.gameVehicleId] = nil
     pcall(function()
-      be:deleteVehicle(rv.gameVehicleId)
+      local obj = be:getObjectByID(rv.gameVehicleId)
+      if obj then obj:delete() end
     end)
   end
 
@@ -411,7 +416,8 @@ M.removeAllForPlayer = function(playerId)
       if rv.gameVehicleId then
         M._remoteGameIds[rv.gameVehicleId] = nil
         pcall(function()
-          be:deleteVehicle(rv.gameVehicleId)
+          local obj = be:getObjectByID(rv.gameVehicleId)
+          if obj then obj:delete() end
         end)
       end
     end

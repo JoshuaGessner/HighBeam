@@ -1111,18 +1111,15 @@ end
 M.spawnRemote = function(playerId, vehicleId, configJson)
   -- Use BeamNG API to spawn a vehicle
   local config = jsonDecode(configJson)
-  local spawnData = {
-    model = config.model or "pickup",
-    config = config.partConfig or "",
-    pos = config.pos or {0, 0, 0},
-    rot = config.rot or {0, 0, 0, 1},
-  }
 
-  -- Spawn via BeamNG API
-  local vid = be:spawnVehicle(spawnData.model, spawnData.config,
-    vec3(spawnData.pos[1], spawnData.pos[2], spawnData.pos[3]),
-    quat(spawnData.rot[1], spawnData.rot[2], spawnData.rot[3], spawnData.rot[4])
-  )
+  -- Spawn via core_vehicles (the documented GE API)
+  local vid = core_vehicles.spawnNewVehicle(config.model or "pickup", {
+    config = config.partConfig or "",
+    pos = vec3(config.pos[1] or 0, config.pos[2] or 0, config.pos[3] or 0),
+    rot = quat(config.rot[1] or 0, config.rot[2] or 0, config.rot[3] or 0, config.rot[4] or 1),
+    autoEnterVehicle = false,
+    cling = true,
+  })
 
   local key = playerId .. "_" .. vehicleId
   M.remoteVehicles[key] = {
@@ -1134,7 +1131,7 @@ M.spawnRemote = function(playerId, vehicleId, configJson)
 end
 ```
 
-> **Note:** The exact BeamNG spawn API may differ. Use `core_vehicles.spawnNewVehicle()` or similar from the BeamNG codebase. Test in BeamNG console first.
+> **Important:** Use `core_vehicles.spawnNewVehicle(model, opts)` — **not** `be:spawnVehicle()` which does not exist at runtime. For deletion use `be:getObjectByID(id):delete()`.
 
 ### 2.7 — Phase 2 Acceptance Tests
 
