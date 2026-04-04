@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-04-03
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.1-dev.3 (protocol v2)
+> **Current version:** v0.8.1-dev.4 (protocol v2)
 > **Status:** v0.8.0 released | v0.8.1 in development
 
 ---
@@ -1167,6 +1167,13 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.1-dev.4 — 2026-04-03 (draft)
+- **Tray integration rework:** Migrated server tray integration from `tray-item` to `tray-icon` to reliably process tray actions while hidden.
+- **Tray interactions fixed:** `Show/Hide` and `Quit` actions now work after hide-to-tray by waking egui via shared context repaint requests.
+- **Windows restore UX:** Added tray icon double-click restore support via `TrayIconEvent::DoubleClick`.
+- **Launcher clippy cleanup:** Replaced `map_or(true, ..)` with `is_none_or(..)` in installer version selection logic.
+- Version bumped to `0.8.1-dev.4`.
 
 ### v0.8.1-dev.3 — 2026-04-03 (draft)
 - **Windows tray fix:** Use decoded PNG data (`IconSource::Data`) for tray icon instead of invalid `IconSource::Resource("network-workgroup")`. Fixes close-to-tray not working on Windows.
