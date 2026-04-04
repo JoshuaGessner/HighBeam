@@ -10,6 +10,7 @@ mod installer;
 mod ipc;
 mod mod_cache;
 mod mod_sync;
+mod proxy;
 #[allow(dead_code)]
 mod transfer;
 mod updater;
@@ -435,6 +436,9 @@ fn main() -> Result<()> {
         }
     }
 
+    // Track the active proxy relay (started for --server joins or in-session IPC joins).
+    let mut active_proxy: Option<proxy::ProxyHandle> = None;
+
     let mut joined_server = false;
     if let Some(server_addr) = join_server.as_deref() {
         joined_server = true;
@@ -508,6 +512,22 @@ fn main() -> Result<()> {
             );
             mod_cache::save_index(&cache_dir, &cache_index)?;
         }
+
+        // Start the proxy so the in-game client can connect through localhost.
+        match proxy::start(server_addr) {
+            Ok(handle) => {
+                tracing::info!(
+                    tcp_port = handle.tcp_port,
+                    udp_port = handle.udp_port,
+                    server = %server_addr,
+                    "Proxy relay started for --server join"
+                );
+                active_proxy = Some(handle);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, server = %server_addr, "Failed to start proxy relay");
+            }
+        }
     } else {
         tracing::info!("No explicit join requested; skipping server mod sync startup path");
     }
@@ -553,9 +573,19 @@ fn main() -> Result<()> {
         Ok(listener) => {
             let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
             if let Some(ref path) = ipc_state_path {
-                match ipc::write_state_file(path, port) {
+                let (proxy_tcp, proxy_udp, proxy_srv) = match active_proxy.as_ref() {
+                    Some(h) => (
+                        Some(h.tcp_port),
+                        Some(h.udp_port),
+                        join_server.clone(),
+                    ),
+                    None => (None, None, None),
+                };
+                match ipc::write_state_file_full(path, port, proxy_tcp, proxy_udp, proxy_srv) {
                     Ok(()) => tracing::info!(
                         port,
+                        ?proxy_tcp,
+                        ?proxy_udp,
                         path = %path.display(),
                         "IPC state file written; in-game mod sync enabled"
                     ),
@@ -575,7 +605,7 @@ fn main() -> Result<()> {
 
     // ── Main loop: monitor game + serve IPC connections ──────────────────────
     if let Some(ref listener) = ipc_listener {
-        ipc::run_ipc_loop(&mut game_child, listener, &cfg, &cache_dir)?;
+        ipc::run_ipc_loop(&mut game_child, listener, &cfg, &cache_dir, &mut active_proxy)?;
     } else {
         // No IPC; fall back to blocking wait.
         let _ = game_child.wait();
@@ -583,6 +613,12 @@ fn main() -> Result<()> {
     }
 
     // ── Cleanup ───────────────────────────────────────────────────────────────
+    // Shut down the proxy relay if one is running.
+    if let Some(handle) = active_proxy.take() {
+        tracing::info!("Shutting down proxy relay");
+        handle.shutdown();
+    }
+
     if let Some(ref path) = ipc_state_path {
         ipc::cleanup_state_file(path);
     }

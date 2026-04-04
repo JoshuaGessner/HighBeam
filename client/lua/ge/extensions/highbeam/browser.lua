@@ -215,8 +215,24 @@ local function _bridgeDirectConnect()
     return
   end
   M._bridge.pending = nil
-  local ok, started, err = pcall(_connection.connect, p.host, p.port, p.username,
-    (p.password and p.password ~= "" and p.password or nil))
+
+  -- If the launcher provided proxy ports, route through localhost proxy
+  -- instead of connecting directly to the (sandbox-blocked) remote address.
+  local connectHost = p.host
+  local connectPort = p.port
+  local connectUdpPort = nil
+  if p.proxy_tcp_port then
+    connectHost = "127.0.0.1"
+    connectPort = p.proxy_tcp_port
+    connectUdpPort = p.proxy_udp_port
+    log('I', logTag, 'Using launcher proxy: tcp=' .. tostring(connectPort)
+      .. ' udp=' .. tostring(connectUdpPort)
+      .. ' -> ' .. p.host .. ':' .. tostring(p.port))
+  end
+
+  local ok, started, err = pcall(_connection.connect, connectHost, connectPort, p.username,
+    (p.password and p.password ~= "" and p.password or nil),
+    connectUdpPort)
   if not ok then
     M._bridge.state = "failed"
     M._bridge.error = "Connect failed: " .. tostring(err)
@@ -286,6 +302,16 @@ local function _bridgeInitiate(targetHost, targetPort)
       M._bridge.port = tonumber(state.port)
       log('I', logTag, 'Bridge: launcher IPC port=' .. tostring(M._bridge.port)
         .. ' pid=' .. tostring(state.pid) .. ' version=' .. tostring(state.version))
+
+      -- If the state file already has proxy ports (--server CLI pre-start),
+      -- store them on the pending info so _bridgeDirectConnect can use them.
+      if M._bridge.pending and tonumber(state.proxy_tcp_port) then
+        M._bridge.pending.proxy_tcp_port = tonumber(state.proxy_tcp_port)
+        M._bridge.pending.proxy_udp_port = tonumber(state.proxy_udp_port)
+        log('I', logTag, 'Bridge: pre-started proxy ports found: tcp='
+          .. tostring(state.proxy_tcp_port) .. ' udp=' .. tostring(state.proxy_udp_port))
+      end
+
       _bridgeConnect(targetHost, targetPort)
       return
     else
@@ -316,6 +342,13 @@ local function _bridgePoll()
         local rtype = resp.type
         if rtype == "sync_complete" then
           log('I', logTag, 'Launcher IPC: mod sync complete')
+          -- Capture proxy ports from response if available
+          if M._bridge.pending and tonumber(resp.proxy_tcp_port) then
+            M._bridge.pending.proxy_tcp_port = tonumber(resp.proxy_tcp_port)
+            M._bridge.pending.proxy_udp_port = tonumber(resp.proxy_udp_port)
+            log('I', logTag, 'Launcher IPC: proxy ports tcp='
+              .. tostring(resp.proxy_tcp_port) .. ' udp=' .. tostring(resp.proxy_udp_port))
+          end
           M._bridge.sock:close()
           M._bridge.sock  = nil
           M._bridge.state = "idle"
