@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-04-03
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.1-dev.9 (protocol v2)
+> **Current version:** v0.8.1-dev.10 (protocol v2)
 > **Status:** v0.8.0 released | v0.8.1 in development
 
 ---
@@ -1167,6 +1167,17 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.1-dev.10 — 2026-04-04 (draft)
+- **Damage auto-detection:** Vehicle beam state polling with hash-based diff — broken/deformed beams detected and synced automatically without manual triggers.
+- **Mid-session config edit sync:** 2-second polling detects part config and color changes; sends delta-compressed JSON (only changed fields) instead of full config blob.
+- **Electrics sync:** Lights, turn signals, hazard, horn, low/high beams synced at 100ms intervals with delta detection. New `VehicleElectrics` TCP packet type.
+- **Coupling/trailer sync:** `onCouplerAttached`/`onCouplerDetached` hooks relay attach/detach events. New `VehicleCoupling` TCP packet type with node-level precision.
+- **Player name tags:** ImGui overlay renders player names above remote vehicles with distance-based alpha fade (visible 30–200m, configurable). Behind-camera culling and transparent background pill.
+- **Input-augmented extrapolation:** New UDP type `0x11` carries steering/throttle/brake as fixed-point f16. Extrapolation uses steering input for curved arc prediction instead of straight-line velocity projection.
+- **Config delta compression (server):** `world.update_config()` merges partial JSON deltas into stored full config, so late-joiners always receive complete vehicle state.
+- **Server:** UDP handler accepts both `0x10` and `0x11` with dynamic size validation; `VehicleElectrics` and `VehicleCoupling` relay with ownership checks; cargo fmt applied.
+- Version bumped to `0.8.1-dev.10`.
 
 ### v0.8.1-dev.9 — 2026-04-04 (draft)
 - **Vehicle sync overhaul (critical):** Complete rewrite of client-side vehicle synchronization.
