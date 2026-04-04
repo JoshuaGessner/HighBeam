@@ -460,7 +460,7 @@ where
                 player_id: Some(player_id),
                 vehicle_id: *vid,
             },
-            None,
+            Some(player_id),
         );
     }
 

@@ -986,6 +986,9 @@ M._onDisconnect = function(reason)
   M._lastPingTime = nil  -- Clear ping tracking on disconnect (Phase 2.2)
   M._serverMap = nil
   M._players = {}
+  M._pendingWorldVehicles = nil
+  M._pendingWorldStateDeadline = nil
+  M._pendingWorldStateLevel = nil
   M._setState(M.STATE_DISCONNECTED, "remote_disconnect")
   -- Trigger auto-reconnection if enabled
   if M._autoReconnect and M._reconnectCredentials then
