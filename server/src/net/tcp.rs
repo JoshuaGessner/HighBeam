@@ -497,7 +497,11 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
         last_activity = Instant::now();
 
         match packet {
-            TcpPacket::VehicleSpawn { data, spawn_request_id, .. } => {
+            TcpPacket::VehicleSpawn {
+                data,
+                spawn_request_id,
+                ..
+            } => {
                 // Check spawn rate limit
                 if !rate_limiters.check_spawn_limit(player_id).await {
                     tracing::warn!(player_id, "Vehicle spawn rate limit exceeded");

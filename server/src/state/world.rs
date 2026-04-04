@@ -124,11 +124,9 @@ impl WorldState {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(data) {
                 if let Some(pos) = val.get("pos").and_then(|p| p.as_array()) {
                     if pos.len() >= 3 {
-                        if let (Some(x), Some(y), Some(z)) = (
-                            pos[0].as_f64(),
-                            pos[1].as_f64(),
-                            pos[2].as_f64(),
-                        ) {
+                        if let (Some(x), Some(y), Some(z)) =
+                            (pos[0].as_f64(), pos[1].as_f64(), pos[2].as_f64())
+                        {
                             entry.position = [x as f32, y as f32, z as f32];
                         }
                     }
