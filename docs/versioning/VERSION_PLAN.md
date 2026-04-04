@@ -1,8 +1,8 @@
 # HighBeam Version Plan
 
-> **Last updated:** 2026-04-03
+> **Last updated:** 2026-04-04
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.1-dev.13 (protocol v2)
+> **Current version:** v0.8.1-dev.14 (protocol v2)
 > **Status:** v0.8.0 released | v0.8.1 in development
 
 ---
@@ -1167,6 +1167,18 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.1-dev.13 — 2026-04-04 (draft)
+- **Proxy reconnect hardening:** launcher TCP proxy now accepts sequential client sessions so reconnects can reuse localhost relay ports without requiring launcher restart.
+- **Reconnect recovery path:** client detects stale localhost proxy timeout loops and re-triggers launcher IPC join/proxy refresh flow instead of repeatedly retrying dead proxy endpoints.
+- **Remote spawn resilience:** remote `gameVid=nil` spawn failures now enter bounded retry/backoff recovery with diagnostics, reducing transient desync and invisible remote vehicles.
+- **Deep sync diagnostics:** added expanded telemetry across client, launcher, and server:
+   - client TCP/UDP packet-type counters and decode/error breakdowns
+   - launcher IPC join request IDs and timing spans
+   - launcher proxy byte/packet transfer metrics by direction
+   - server UDP relay drop/reason counters and periodic summaries
+- Rebuilt `launcher/payload/highbeam.zip` with updated client sync instrumentation.
+- Version bumped to `0.8.1-dev.13`.
 
 ### v0.8.1-dev.10 — 2026-04-04 (draft)
 - **Damage auto-detection:** Vehicle beam state polling with hash-based diff — broken/deformed beams detected and synced automatically without manual triggers.
