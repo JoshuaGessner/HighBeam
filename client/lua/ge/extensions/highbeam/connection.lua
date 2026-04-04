@@ -481,7 +481,7 @@ M.tick = function(dt)
         M._onDisconnect("Buffer processing error: " .. tostring(err))
       end
     end
-    if err == "closed" then
+    if err == "closed" and M.state ~= M.STATE_DISCONNECTED then
       M._onDisconnect("Connection closed by server")
     end
   end
@@ -688,9 +688,10 @@ M._handlePacket = function(jsonStr)
         return
       end
       M._notifyStatus("connected")
-      -- Reset reconnection state on successful connect
-      M._reconnectAttempt = 0
-      M._reconnectTimer = 0
+      -- NOTE: reconnect counter is intentionally NOT reset here.
+      -- It is reset in the world_state handler once the session is proven
+      -- stable.  Resetting on auth alone allowed infinite reconnect loops
+      -- when the server dropped the connection immediately after auth.
       M._lastPingTime = os.clock()  -- Initialize ping tracking (Phase 2.2)
       -- Bind UDP after successful auth
       if M._pendingAuth then
@@ -765,6 +766,10 @@ M._handlePacket = function(jsonStr)
     if state and packet.players then
       state.onWorldState(packet.players)
     end
+    -- Connection is stable — WorldState received and processed without
+    -- crashing.  Safe to reset the reconnect counter now.
+    M._reconnectAttempt = 0
+    M._reconnectTimer = 0
   elseif ptype == "vehicle_spawn" then
     log('I', logTag, 'VehicleSpawn: player=' .. tostring(packet.player_id) .. ' vid=' .. tostring(packet.vehicle_id))
     if packet.player_id == M._playerId then
