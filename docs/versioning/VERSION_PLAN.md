@@ -1168,6 +1168,12 @@ Ideas for future development (not committed):
 
 ## Recent Release Notes
 
+### v0.8.1-dev.8 — 2026-04-03 (draft)
+- **IPC state file path fix (critical):** Launcher now writes `highbeam-launcher.json` to the version-specific `userdata/` directory (e.g. `0.38/userdata/`) instead of the userfolder root. Fixes the client never finding the IPC state file, which prevented the proxy relay from being used.
+- **Proxy DNS resolution:** `proxy::start()` now uses `ToSocketAddrs` instead of `SocketAddr::parse()`, enabling hostname resolution for server addresses.
+- **Reconnect counter fix:** Reconnection attempts now properly increment instead of resetting to 1/5 on every retry.
+- Version bumped to `0.8.1-dev.8`.
+
 ### v0.8.1-dev.6 — 2026-04-03 (draft)
 - **Client connect diagnostics:** direct-connect fallback now surfaces real connection failures and timeouts instead of masking them behind launcher availability messaging.
 - **Server GUI tray reliability:** tray Show/Hide, Quit, and double-click restore now execute reliably after hiding to tray.
