@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-04-03
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.1-dev.8 (protocol v2)
+> **Current version:** v0.8.1-dev.9 (protocol v2)
 > **Status:** v0.8.0 released | v0.8.1 in development
 
 ---
@@ -1167,6 +1167,21 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.1-dev.9 — 2026-04-04 (draft)
+- **Vehicle sync overhaul (critical):** Complete rewrite of client-side vehicle synchronization.
+  - Wired `onVehicleSpawned`, `onVehicleDestroyed`, `onVehicleResetted` BeamNG lifecycle hooks — the primary blocker preventing players from seeing each other's vehicles.
+  - Replaced fragile FIFO spawn queue with request-ID based mapping for unambiguous server↔client vehicle ID resolution.
+  - Cubic Hermite spline interpolation for smooth remote vehicle movement (replaces linear lerp).
+  - Quaternion shortest-path fix for rotation interpolation.
+  - UDP out-of-order packet rejection via monotonic simTime check.
+  - Vehicle config capture at spawn time (JBeam model, partConfig, color).
+  - Remote vehicle config/reset/damage application (previously stub-only).
+  - Model availability fallback to "pickup" when requested model unavailable.
+- **Damage sync:** New `vehicle_damage` TCP packet type for beam breaks and deform group sync between players.
+- **Distance-based LOD:** Server skips UDP position relay to players >1000m away, reducing bandwidth for spread-out sessions.
+- **VehicleReset server state:** Server now updates world position on vehicle reset events.
+- Version bumped to `0.8.1-dev.9`.
 
 ### v0.8.1-dev.8 — 2026-04-03 (draft)
 - **IPC state file path fix (critical):** Launcher now writes `highbeam-launcher.json` to the version-specific `userdata/` directory (e.g. `0.38/userdata/`) instead of the userfolder root. Fixes the client never finding the IPC state file, which prevented the proxy relay from being used.

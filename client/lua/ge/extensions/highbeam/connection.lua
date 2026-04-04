@@ -615,7 +615,7 @@ M._handlePacket = function(jsonStr)
     if packet.player_id == M._playerId then
       -- Server assigned ID for our vehicle
       if state then
-        state.onLocalVehicleSpawned(packet.vehicle_id, packet.data)
+        state.onLocalVehicleSpawned(packet.vehicle_id, packet.data, packet.spawn_request_id)
       end
     else
       if vehicles then
@@ -633,6 +633,10 @@ M._handlePacket = function(jsonStr)
   elseif ptype == "vehicle_reset" then
     if vehicles and packet.player_id ~= M._playerId then
       vehicles.resetRemote(packet.player_id, packet.vehicle_id, packet.data)
+    end
+  elseif ptype == "vehicle_damage" then
+    if vehicles and packet.player_id ~= M._playerId then
+      vehicles.applyDamage(packet.player_id, packet.vehicle_id, packet.data)
     end
   elseif ptype == "server_message" then
     log('I', logTag, 'Server message: ' .. tostring(packet.text))

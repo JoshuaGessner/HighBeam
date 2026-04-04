@@ -174,6 +174,53 @@ M.onPreRender = function(dtReal, dtSim, dtRaw)
   end
 end
 
+-- ──────────────────── BeamNG vehicle lifecycle hooks ─────────────────────────
+
+M.onVehicleSpawned = function(gameVehicleId)
+  if not state or not connection then return end
+  if connection.getState() ~= connection.STATE_CONNECTED then return end
+  -- Ignore remote vehicles we spawned ourselves
+  if vehicles and vehicles.isRemote(gameVehicleId) then return end
+
+  local veh = be:getObjectByID(gameVehicleId)
+  if not veh then return end
+
+  -- Build config JSON from the vehicle object
+  local configData = state.captureVehicleConfig(veh)
+  log('I', logTag, 'Local vehicle spawned: gameVid=' .. tostring(gameVehicleId) .. ' model=' .. tostring(veh:getField('JBeam', '0')))
+  state.requestSpawn(gameVehicleId, configData)
+end
+
+M.onVehicleDestroyed = function(gameVehicleId)
+  if not state or not connection then return end
+  if connection.getState() ~= connection.STATE_CONNECTED then return end
+  -- Ignore remote vehicles
+  if vehicles and vehicles.isRemote(gameVehicleId) then return end
+
+  state.requestDelete(gameVehicleId)
+end
+
+M.onVehicleResetted = function(gameVehicleId)
+  if not state or not connection then return end
+  if connection.getState() ~= connection.STATE_CONNECTED then return end
+  if vehicles and vehicles.isRemote(gameVehicleId) then return end
+
+  local serverVid = state.localVehicles[gameVehicleId]
+  if not serverVid then return end
+
+  local veh = be:getObjectByID(gameVehicleId)
+  if not veh then return end
+
+  local pos = veh:getPosition()
+  local rot = quatFromDir(veh:getDirectionVector(), veh:getDirectionVectorUp())
+  local resetData = '{"pos":[' .. pos.x .. ',' .. pos.y .. ',' .. pos.z .. '],"rot":[' .. rot.x .. ',' .. rot.y .. ',' .. rot.z .. ',' .. rot.w .. ']}'
+  connection._sendPacket({
+    type = "vehicle_reset",
+    vehicle_id = serverVid,
+    data = resetData,
+  })
+end
+
 -- ──────────────────── Public API (callable from GE Lua console) ──────────────
 
 -- Open the server browser window

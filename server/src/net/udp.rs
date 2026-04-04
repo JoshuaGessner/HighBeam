@@ -189,8 +189,20 @@ pub async fn start_udp(
                 if let Some(metrics) = metrics::global() {
                     metrics.record_udp_tx(relay_targets);
                 }
+
+                // Use distance-based LOD: skip relaying to players > 1000m away
+                const LOD_DISTANCE: f32 = 1000.0;
+                let lod_distance_sq = LOD_DISTANCE * LOD_DISTANCE;
+                let world_ref = &world;
                 sessions
-                    .broadcast_udp(&socket, &relay, Some(player_id))
+                    .broadcast_udp_lod(
+                        &socket,
+                        &relay,
+                        player_id,
+                        pos,
+                        lod_distance_sq,
+                        |pid| world_ref.player_centroid(pid),
+                    )
                     .await;
             }
 

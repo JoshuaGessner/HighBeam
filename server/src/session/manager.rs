@@ -214,6 +214,41 @@ impl SessionManager {
             }
         }
     }
+
+    /// Broadcast a UDP packet to all players except the sender, but skip
+    /// players whose centroid is farther than `lod_distance` from `sender_pos`.
+    /// `get_centroid` resolves a player_id to their centroid position.
+    pub async fn broadcast_udp_lod(
+        &self,
+        socket: &UdpSocket,
+        data: &[u8],
+        exclude: u32,
+        sender_pos: [f32; 3],
+        lod_distance_sq: f32,
+        get_centroid: impl Fn(u32) -> Option<[f32; 3]>,
+    ) {
+        for entry in self.players.iter() {
+            let player = entry.value();
+            if player.id == exclude {
+                continue;
+            }
+            if let Some(addr) = player.udp_addr {
+                // Distance check: skip if receiver is too far
+                if let Some(recv_pos) = get_centroid(player.id) {
+                    let dx = sender_pos[0] - recv_pos[0];
+                    let dy = sender_pos[1] - recv_pos[1];
+                    let dz = sender_pos[2] - recv_pos[2];
+                    let dist_sq = dx * dx + dy * dy + dz * dz;
+                    if dist_sq > lod_distance_sq {
+                        continue;
+                    }
+                }
+                if let Err(e) = socket.send_to(data, addr).await {
+                    tracing::warn!(player_id = player.id, %addr, "UDP send failed: {e}");
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

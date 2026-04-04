@@ -98,6 +98,8 @@ pub enum TcpPacket {
         player_id: Option<u32>,
         vehicle_id: u16,
         data: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        spawn_request_id: Option<u32>,
     },
 
     /// A vehicle's config was edited.
@@ -120,6 +122,15 @@ pub enum TcpPacket {
     /// A vehicle was reset (respawned at a position).
     #[serde(rename = "vehicle_reset")]
     VehicleReset {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        player_id: Option<u32>,
+        vehicle_id: u16,
+        data: String,
+    },
+
+    /// Damage/deformation data for a vehicle.
+    #[serde(rename = "vehicle_damage")]
+    VehicleDamage {
         #[serde(skip_serializing_if = "Option::is_none")]
         player_id: Option<u32>,
         vehicle_id: u16,
@@ -324,6 +335,26 @@ mod tests {
             player_id: Some(1),
             vehicle_id: 5,
             data: r#"{"model":"pickup"}"#.into(),
+            spawn_request_id: None,
+        });
+    }
+
+    #[test]
+    fn test_vehicle_spawn_with_request_id_round_trip() {
+        round_trip(&TcpPacket::VehicleSpawn {
+            player_id: Some(1),
+            vehicle_id: 5,
+            data: r#"{"model":"pickup"}"#.into(),
+            spawn_request_id: Some(42),
+        });
+    }
+
+    #[test]
+    fn test_vehicle_damage_round_trip() {
+        round_trip(&TcpPacket::VehicleDamage {
+            player_id: Some(1),
+            vehicle_id: 3,
+            data: r#"{"beams":[1,2,3]}"#.into(),
         });
     }
 
