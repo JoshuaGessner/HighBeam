@@ -22,6 +22,7 @@ local overlay      -- highbeam/overlay.lua
 local MENU_ENTRY_ID = "highbeam.multiplayer"
 local OVERLAY_MENU_ENTRY_ID = "highbeam.overlay"
 local _menuRegistered = false
+local _lastLocalResetSentAt = {} -- [gameVehicleId] = os.clock()
 
 local function _safeRequire(moduleName)
   local ok, mod = pcall(require, moduleName)
@@ -268,6 +269,22 @@ M.onVehicleResetted = function(gameVehicleId)
   if not state or not connection then return end
   if connection.getState() ~= connection.STATE_CONNECTED then return end
   if vehicles and vehicles.isRemote(gameVehicleId) then return end
+
+  local now = os.clock()
+  local debounceSec = 0.75
+  if config and config.get then
+    debounceSec = config.get("localResetDebounceSec") or debounceSec
+  end
+  local lastSent = _lastLocalResetSentAt[gameVehicleId]
+  if lastSent and (now - lastSent) < debounceSec then
+    if config and config.get and config.get("verboseSyncLogging") == true then
+      log('D', logTag, 'Suppressed local reset packet gameVid=' .. tostring(gameVehicleId)
+        .. ' dt=' .. string.format('%.3f', now - lastSent)
+        .. 's')
+    end
+    return
+  end
+  _lastLocalResetSentAt[gameVehicleId] = now
 
   local serverVid = state.localVehicles[gameVehicleId]
   if not serverVid then return end

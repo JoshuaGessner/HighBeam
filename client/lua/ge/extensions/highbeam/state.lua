@@ -62,6 +62,7 @@ local POS_SEND_DELTA_SQ = 0.01 * 0.01
 local ROT_SEND_DELTA_RAD = math.rad(0.5)
 local VEL_SEND_DELTA_SQ = 0.05 * 0.05
 local INPUT_SEND_DELTA = 0.005
+local ABSOLUTE_SEND_RATE_CAP = 45
 
 local function _rotErrorRad(a, b)
   if not a or not b then return math.huge end
@@ -256,6 +257,15 @@ M.tick = function(dt)
     else
       updateRate = maxAdaptiveSendRate
     end
+  end
+
+  -- Hard cap protects runtime from malformed/legacy saved config values.
+  updateRate = math.max(5, math.min(ABSOLUTE_SEND_RATE_CAP, math.floor(updateRate + 0.5)))
+
+  -- If TCP is connected but inbound UDP isn't confirmed yet, run in a
+  -- conservative mode to reduce encode/send overhead while bind settles.
+  if connection and connection._udpBindConfirmed == false then
+    updateRate = math.min(updateRate, 10)
   end
 
   local updateInterval = 1.0 / updateRate
@@ -560,9 +570,6 @@ M._pollElectrics = function(gameVid, serverVid)
       .. 's.highbeams = e.highbeam or 0 '
       .. 's.gear = e.gear_A or 0 '
       .. 's.parkingbrake = (e.parkingbrake and e.parkingbrake > 0.5) and 1 or 0 '
-      .. 's.rpm = e.rpm or 0 '
-      .. 's.wheelspeed = e.wheelspeed or 0 '
-      .. 's.clutch = e.clutch or 0 '
       .. 's.ignition = e.ignitionLevel or 0 '
       .. 'obj:queueGameEngineLua("extensions.highbeam.onElectricsReport(' .. gameVid .. ', \'" .. (jsonEncode and jsonEncode(s) or "{}") .. "\')")'
     )

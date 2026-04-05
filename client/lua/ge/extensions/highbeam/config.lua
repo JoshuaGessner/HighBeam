@@ -30,9 +30,13 @@ M.defaults = {
   lodDistanceFar = 500,              -- P3.4: Reduced-rate update distance (m)
   directSteering = true,             -- P4.1: Use direct electrics instead of input.event
   verboseSyncLogging = false,        -- Enable detailed sync diagnostics in logs
+  persistRemoteDamageOnReset = true, -- Keep remote damage after reset packets
+  localResetDebounceSec = 0.75,      -- Debounce local reset packet emission
+  remoteResetMinIntervalSec = 0.5,   -- Suppress duplicate inbound reset bursts
 }
 
 M.current = {}
+M._loadClampCount = 0
 
 -- ──────────────────────── File helpers ───────────────────────────────
 
@@ -129,9 +133,81 @@ local function _jsonDecode(s)
   return nil
 end
 
+local function _sanitizeNumber(key, value)
+  if type(value) ~= "number" then return value, false end
+
+  if key == "updateRate" then
+    local out = math.max(5, math.min(60, math.floor(value + 0.5)))
+    return out, out ~= value
+  end
+  if key == "interpolationDelayMs" then
+    local out = math.max(0, math.min(500, math.floor(value + 0.5)))
+    return out, out ~= value
+  end
+  if key == "extrapolationMs" then
+    local out = math.max(0, math.min(500, math.floor(value + 0.5)))
+    return out, out ~= value
+  end
+  if key == "jitterBufferSnapshots" then
+    local out = math.max(2, math.min(20, math.floor(value + 0.5)))
+    return out, out ~= value
+  end
+  if key == "directConnectPort" then
+    local out = math.max(1, math.min(65535, math.floor(value + 0.5)))
+    return out, out ~= value
+  end
+  if key == "maxAdaptiveSendRate" then
+    local out = math.max(20, math.min(60, math.floor(value + 0.5)))
+    return out, out ~= value
+  end
+  if key == "inputPollIntervalSec" then
+    local out = math.max(0.05, math.min(0.5, value))
+    return out, out ~= value
+  end
+  if key == "electricsPollIntervalSec" then
+    local out = math.max(0.2, math.min(2.0, value))
+    return out, out ~= value
+  end
+  if key == "damageFallbackPollSec" then
+    local out = math.max(2.0, math.min(20.0, value))
+    return out, out ~= value
+  end
+  if key == "correctionBlendFactor" then
+    local out = math.max(0.01, math.min(1.0, value))
+    return out, out ~= value
+  end
+  if key == "correctionTeleportDist" then
+    local out = math.max(1.0, math.min(100.0, value))
+    return out, out ~= value
+  end
+  if key == "lodDistanceNear" then
+    local out = math.max(25, math.min(2000, math.floor(value + 0.5)))
+    return out, out ~= value
+  end
+  if key == "lodDistanceFar" then
+    local out = math.max(50, math.min(5000, math.floor(value + 0.5)))
+    return out, out ~= value
+  end
+  if key == "overlayRefreshHz" then
+    local out = math.max(1, math.min(60, math.floor(value + 0.5)))
+    return out, out ~= value
+  end
+  if key == "localResetDebounceSec" then
+    local out = math.max(0.1, math.min(3.0, value))
+    return out, out ~= value
+  end
+  if key == "remoteResetMinIntervalSec" then
+    local out = math.max(0.0, math.min(3.0, value))
+    return out, out ~= value
+  end
+
+  return value, false
+end
+
 -- ──────────────────────── Load / Save ────────────────────────────────
 
 M.load = function()
+  M._loadClampCount = 0
   -- Start from defaults
   for k, v in pairs(M.defaults) do
     M.current[k] = v
@@ -145,10 +221,19 @@ M.load = function()
       for k, default in pairs(M.defaults) do
         local sv = saved[k]
         if sv ~= nil and type(sv) == type(default) then
-          M.current[k] = sv
+          if type(default) == "number" then
+            local sanitized, clamped = _sanitizeNumber(k, sv)
+            M.current[k] = sanitized
+            if clamped then
+              M._loadClampCount = M._loadClampCount + 1
+            end
+          else
+            M.current[k] = sv
+          end
         end
       end
-      log('I', logTag, 'Loaded saved config from disk')
+      log('I', logTag, 'Loaded saved config from disk'
+        .. (M._loadClampCount > 0 and (' (clamped=' .. tostring(M._loadClampCount) .. ')') or ''))
     end
   else
     log('I', logTag, 'No saved config found; using defaults')
@@ -246,8 +331,33 @@ M.set = function(key, value)
     return true
   end
 
+  if key == "persistRemoteDamageOnReset" then
+    M.current.persistRemoteDamageOnReset = value and true or false
+    return true
+  end
+
+  if key == "localResetDebounceSec" then
+    local numeric = tonumber(value)
+    if not numeric then return false end
+    M.current.localResetDebounceSec = math.max(0.1, math.min(3.0, numeric))
+    return true
+  end
+
+  if key == "remoteResetMinIntervalSec" then
+    local numeric = tonumber(value)
+    if not numeric then return false end
+    M.current.remoteResetMinIntervalSec = math.max(0.0, math.min(3.0, numeric))
+    return true
+  end
+
   M.current[key] = value
   return true
+end
+
+M.getDiagnostics = function()
+  return {
+    loadClampCount = M._loadClampCount or 0,
+  }
 end
 
 M.getUiSettings = function()

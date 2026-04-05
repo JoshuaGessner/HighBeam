@@ -490,18 +490,25 @@ M.resetRemote = function(playerId, vehicleId, data)
   local veh, rv, key = _withRemoteVehicle(playerId, vehicleId, "reset")
   if not veh then return end
 
+  local now = os.clock()
+  local resetMinInterval = math.max(0.0, math.min(3.0, _getConfigNumber("remoteResetMinIntervalSec", 0.5)))
+  local resetUnchanged = (rv._lastResetPayload ~= nil and rv._lastResetPayload == data)
+  if rv._lastResetAt and (now - rv._lastResetAt) < resetMinInterval and resetUnchanged then
+    _bumpApplyStat("reset_suppressed")
+    if _verboseSyncLoggingEnabled() then
+      log('D', logTag, 'Reset suppressed key=' .. key
+        .. ' dt=' .. string.format('%.3f', now - rv._lastResetAt)
+        .. 's')
+    end
+    return
+  end
+  rv._lastResetAt = now
+  rv._lastResetPayload = data
+
   local cfg = _decodeJson(data)
   if not cfg then
     _bumpApplyStat("reset_drop_decode")
     return
-  end
-
-  -- Reset physics state (clears deformation/damage) then teleport to position
-  local okReset = pcall(function()
-    veh:queueLuaCommand('obj:requestReset(RESET_PHYSICS)')
-  end)
-  if not okReset then
-    _bumpApplyStat("reset_error_reset")
   end
 
   if cfg.pos and cfg.rot then
@@ -522,14 +529,24 @@ M.resetRemote = function(playerId, vehicleId, data)
   rv.snapshots = {}
   rv.lastSeqTime = -1
 
+  -- Keep damage persistent across resets by re-applying last known damage payload.
+  local persistDamage = config and config.get and config.get("persistRemoteDamageOnReset")
+  if persistDamage ~= false and rv._lastDamageData and rv._lastDamageData ~= '' then
+    M.applyDamage(playerId, vehicleId, rv._lastDamageData)
+    _bumpApplyStat("damage_reapplied_after_reset")
+  end
+
   _bumpApplyStat("reset_applied")
   log('D', logTag, 'Reset remote vehicle: ' .. key)
 end
 
 -- Apply damage data to a remote vehicle
 M.applyDamage = function(playerId, vehicleId, damageData)
-  local veh, _, key = _withRemoteVehicle(playerId, vehicleId, "damage")
+  local veh, rv, key = _withRemoteVehicle(playerId, vehicleId, "damage")
   if not veh then return end
+
+  rv._lastDamageData = damageData
+  rv._lastDamageAt = os.clock()
 
   local dmg = _decodeJson(damageData)
   if not dmg then

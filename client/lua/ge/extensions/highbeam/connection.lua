@@ -710,6 +710,10 @@ M._sendPacket = function(packetTable)
   local sent, sendErr = tcp:send(header .. jsonStr)
   if not sent then
     M._reportError('W', 'send_packet', 'TCP send failed: ' .. tostring(sendErr))
+    local errStr = tostring(sendErr or ''):lower()
+    if M.state == M.STATE_CONNECTED and (errStr:find('closed', 1, true) or errStr:find('not connected', 1, true)) then
+      M._onDisconnect('TCP send failed: ' .. tostring(sendErr))
+    end
     return false
   end
   _bumpCounter(M._tcpTxTypeCounts, packetTable and packetTable.type)
