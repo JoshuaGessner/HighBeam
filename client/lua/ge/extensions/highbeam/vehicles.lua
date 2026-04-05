@@ -26,6 +26,41 @@ local _correctionPosSum = 0
 local _correctionRotSum = 0
 local _correctionCount = 0
 local _teleportCount = 0
+local _componentApplyStats = {}
+local makeKey
+
+local function _verboseSyncLoggingEnabled()
+  return config and config.get and config.get("verboseSyncLogging") == true
+end
+
+local function _bumpApplyStat(name)
+  local key = tostring(name)
+  _componentApplyStats[key] = (_componentApplyStats[key] or 0) + 1
+end
+
+local function _withRemoteVehicle(playerId, vehicleId, stage)
+  local key = makeKey(playerId, vehicleId)
+  local rv = M.remoteVehicles[key]
+  if not rv then
+    _bumpApplyStat(stage .. "_drop_no_remote")
+    if _verboseSyncLoggingEnabled() then
+      log('D', logTag, stage .. ' drop no remote key=' .. key)
+    end
+    return nil, nil, key
+  end
+
+  local veh = rv.gameVehicle or (rv.gameVehicleId and scenetree.findObjectById(rv.gameVehicleId))
+  if not veh then
+    _bumpApplyStat(stage .. "_drop_no_game_vehicle")
+    if _verboseSyncLoggingEnabled() then
+      log('D', logTag, stage .. ' drop no game vehicle key=' .. key
+        .. ' gameVehicleId=' .. tostring(rv.gameVehicleId))
+    end
+    return nil, rv, key
+  end
+
+  return veh, rv, key
+end
 
 local function _quatNormalize(q)
   return interpolationMath.normalizeQuat(q)
@@ -137,7 +172,7 @@ local function _isDirectSteering()
   return value ~= false  -- default true
 end
 
-local function makeKey(playerId, vehicleId)
+makeKey = function(playerId, vehicleId)
   return tostring(playerId) .. "_" .. tostring(vehicleId)
 end
 
@@ -403,94 +438,130 @@ M.updateRemote = function(decoded)
 end
 
 M.updateRemoteConfig = function(playerId, vehicleId, configData)
-  local key = makeKey(playerId, vehicleId)
-  local rv = M.remoteVehicles[key]
-  if not rv then return end
+  local veh, rv, key = _withRemoteVehicle(playerId, vehicleId, "config")
+  if not veh then return end
 
   local cfg = _decodeJson(configData)
-  if not cfg then return end
+  if not cfg then
+    _bumpApplyStat("config_drop_decode")
+    if _verboseSyncLoggingEnabled() then
+      log('D', logTag, 'config drop decode key=' .. key)
+    end
+    return
+  end
+
+  local commandsApplied = 0
 
   -- Apply part config change to existing vehicle
   if rv.gameVehicleId and cfg.partConfig and cfg.partConfig ~= '' then
-    local veh = rv.gameVehicle or scenetree.findObjectById(rv.gameVehicleId)
-    if veh then
-      pcall(function()
-        veh:setField('partConfig', '0', cfg.partConfig)
-      end)
+    local ok = pcall(function()
+      veh:setField('partConfig', '0', cfg.partConfig)
+    end)
+    if ok then
+      commandsApplied = commandsApplied + 1
+    else
+      _bumpApplyStat("config_error_part")
     end
   end
 
   -- Apply color change
   if rv.gameVehicleId and cfg.color then
-    local veh = rv.gameVehicle or scenetree.findObjectById(rv.gameVehicleId)
-    if veh then
-      pcall(function()
-        veh:setField('color', '0', cfg.color)
-      end)
+    local ok = pcall(function()
+      veh:setField('color', '0', cfg.color)
+    end)
+    if ok then
+      commandsApplied = commandsApplied + 1
+    else
+      _bumpApplyStat("config_error_color")
     end
   end
 
-  log('D', logTag, 'Config update applied for remote vehicle: ' .. key)
+  if commandsApplied == 0 then
+    _bumpApplyStat("config_noop")
+  else
+    _bumpApplyStat("config_applied")
+    if _verboseSyncLoggingEnabled() then
+      log('D', logTag, 'config applied key=' .. key .. ' commands=' .. tostring(commandsApplied))
+    end
+  end
 end
 
 M.resetRemote = function(playerId, vehicleId, data)
-  local key = makeKey(playerId, vehicleId)
-  local rv = M.remoteVehicles[key]
-  if not rv then return end
-
-  local cfg = _decodeJson(data)
-  if not cfg then return end
-
-  local veh = rv.gameVehicle or (rv.gameVehicleId and scenetree.findObjectById(rv.gameVehicleId))
+  local veh, rv, key = _withRemoteVehicle(playerId, vehicleId, "reset")
   if not veh then return end
 
+  local cfg = _decodeJson(data)
+  if not cfg then
+    _bumpApplyStat("reset_drop_decode")
+    return
+  end
+
   -- Reset physics state (clears deformation/damage) then teleport to position
-  pcall(function()
+  local okReset = pcall(function()
     veh:queueLuaCommand('obj:requestReset(RESET_PHYSICS)')
   end)
+  if not okReset then
+    _bumpApplyStat("reset_error_reset")
+  end
 
   if cfg.pos and cfg.rot then
-    pcall(function()
+    local okPos = pcall(function()
       veh:setPositionRotation(
         cfg.pos[1], cfg.pos[2], cfg.pos[3],
         cfg.rot[1], cfg.rot[2], cfg.rot[3], cfg.rot[4]
       )
     end)
+    if not okPos then
+      _bumpApplyStat("reset_error_pose")
+    end
+  else
+    _bumpApplyStat("reset_no_pose")
   end
 
   -- Clear snapshots so interpolation restarts from the new position
   rv.snapshots = {}
   rv.lastSeqTime = -1
 
+  _bumpApplyStat("reset_applied")
   log('D', logTag, 'Reset remote vehicle: ' .. key)
 end
 
 -- Apply damage data to a remote vehicle
 M.applyDamage = function(playerId, vehicleId, damageData)
-  local key = makeKey(playerId, vehicleId)
-  local rv = M.remoteVehicles[key]
-  if not rv then return end
-
-  local veh = rv.gameVehicle or (rv.gameVehicleId and scenetree.findObjectById(rv.gameVehicleId))
+  local veh, _, key = _withRemoteVehicle(playerId, vehicleId, "damage")
   if not veh then return end
 
   local dmg = _decodeJson(damageData)
-  if not dmg then return end
+  if not dmg then
+    _bumpApplyStat("damage_drop_decode")
+    return
+  end
+
+  local commandsQueued = 0
 
   -- Apply beam deformation data via queueLuaCommand
   if dmg.deformGroup then
-    pcall(function()
+    local ok = pcall(function()
       veh:queueLuaCommand('obj:applyClusterVelocityScaleAdd(' .. tostring(dmg.deformGroup) .. ', 0, 0, 0, ' .. tostring(dmg.deformScale or 1) .. ')')
     end)
+    if ok then
+      commandsQueued = commandsQueued + 1
+    else
+      _bumpApplyStat("damage_error_deform_group")
+    end
   end
 
   -- Apply beam breaks (sender field name is 'broken')
   if dmg.broken then
-    pcall(function()
+    local ok = pcall(function()
       for _, beamId in ipairs(dmg.broken) do
         veh:queueLuaCommand('obj:breakBeam(' .. tostring(beamId) .. ')')
+        commandsQueued = commandsQueued + 1
       end
     end)
+    if not ok then
+      _bumpApplyStat("damage_error_break")
+    end
   end
 
   -- Apply beam deformation (sender field name is 'deform')
@@ -499,36 +570,52 @@ M.applyDamage = function(playerId, vehicleId, damageData)
   -- NOTE: beamstate.beamDeformed() does not exist in BeamNG's vlua —
   -- obj:setBeamLength() alone handles the visual + physical deformation.
   if dmg.deform then
-    pcall(function()
+    local ok = pcall(function()
       for beamIdStr, val in pairs(dmg.deform) do
         local cid = tostring(beamIdStr)
         if type(val) == 'table' and val[2] then
           -- New format: {deformation, restLength}
           veh:queueLuaCommand('obj:setBeamLength(' .. cid .. ', ' .. tostring(val[2]) .. ')')
+          commandsQueued = commandsQueued + 1
         end
         -- Legacy format (plain number) had no restLength, so we cannot call
         -- setBeamLength.  The deformation is purely cosmetic tracking and was
         -- using the non-existent beamstate.beamDeformed() — skip silently.
       end
     end)
+    if not ok then
+      _bumpApplyStat("damage_error_deform")
+    end
+  end
+
+  if commandsQueued == 0 then
+    _bumpApplyStat("damage_noop")
+  else
+    _bumpApplyStat("damage_applied")
+    if _verboseSyncLoggingEnabled() then
+      log('D', logTag, 'damage applied key=' .. key
+        .. ' queued=' .. tostring(commandsQueued)
+        .. ' broken=' .. tostring(dmg.broken and #dmg.broken or 0)
+        .. ' deform=' .. tostring(dmg.deform and 1 or 0))
+    end
   end
 end
 
 -- Apply electrics state update to a remote vehicle
 M.applyElectrics = function(playerId, vehicleId, electricsData)
-  local key = makeKey(playerId, vehicleId)
-  local rv = M.remoteVehicles[key]
-  if not rv then return end
-
-  local veh = rv.gameVehicle or (rv.gameVehicleId and scenetree.findObjectById(rv.gameVehicleId))
+  local veh, _, key = _withRemoteVehicle(playerId, vehicleId, "electrics")
   if not veh then return end
 
   local elec = _decodeJson(electricsData)
-  if not elec then return end
+  if not elec then
+    _bumpApplyStat("electrics_drop_decode")
+    return
+  end
 
   -- Apply electrics via vehicle-side Lua
   -- P4.3: Added gear and parking brake
-  pcall(function()
+  local commandCount = 0
+  local ok = pcall(function()
     local cmds = {}
     if elec.lights ~= nil then
       table.insert(cmds, 'electrics.values.lights_state = ' .. tostring(elec.lights))
@@ -570,9 +657,23 @@ M.applyElectrics = function(playerId, vehicleId, electricsData)
       table.insert(cmds, 'electrics.values.ignitionLevel = ' .. tostring(elec.ignition))
     end
     if #cmds > 0 then
+      commandCount = #cmds
       veh:queueLuaCommand(table.concat(cmds, ' '))
     end
   end)
+  if not ok then
+    _bumpApplyStat("electrics_error_apply")
+    return
+  end
+
+  if commandCount == 0 then
+    _bumpApplyStat("electrics_noop")
+  else
+    _bumpApplyStat("electrics_applied")
+    if _verboseSyncLoggingEnabled() then
+      log('D', logTag, 'electrics applied key=' .. key .. ' cmds=' .. tostring(commandCount))
+    end
+  end
 end
 
 -- Apply coupling/trailer state
@@ -590,24 +691,40 @@ M.applyCoupling = function(playerId, vehicleId, targetVehicleId, coupled, nodeId
     end
   end
 
-  if not sourceRv or not targetRv then return end
+  if not sourceRv or not targetRv then
+    _bumpApplyStat("coupling_drop_missing_remote")
+    return
+  end
   local sourceVeh = sourceRv.gameVehicle or (sourceRv.gameVehicleId and scenetree.findObjectById(sourceRv.gameVehicleId))
   local targetVeh = targetRv.gameVehicle or (targetRv.gameVehicleId and scenetree.findObjectById(targetRv.gameVehicleId))
-  if not sourceVeh or not targetVeh then return end
+  if not sourceVeh or not targetVeh then
+    _bumpApplyStat("coupling_drop_missing_game_vehicle")
+    return
+  end
 
   if coupled then
-    pcall(function()
+    local ok = pcall(function()
       sourceVeh:queueLuaCommand(
         'beamstate.attachCouplerByNodeId(' .. tostring(nodeId or 0) .. ', '
         .. tostring(targetRv.gameVehicleId) .. ', '
         .. tostring(targetNodeId or 0) .. ')'
       )
     end)
+    if ok then
+      _bumpApplyStat("coupling_applied")
+    else
+      _bumpApplyStat("coupling_error_apply")
+    end
     log('D', logTag, 'Applied coupling: ' .. tostring(sourceRv.gameVehicleId) .. ' -> ' .. tostring(targetRv.gameVehicleId))
   else
-    pcall(function()
+    local ok = pcall(function()
       sourceVeh:queueLuaCommand('beamstate.detachCoupler(' .. tostring(nodeId or 0) .. ')')
     end)
+    if ok then
+      _bumpApplyStat("coupling_applied")
+    else
+      _bumpApplyStat("coupling_error_apply")
+    end
     log('D', logTag, 'Applied decoupling: ' .. tostring(sourceRv.gameVehicleId))
   end
 end
@@ -979,6 +1096,20 @@ M.tick = function(dt)
       teleportCount = _teleportCount,
       staleDrops = _staleDropCount,
     }
+
+    if next(_componentApplyStats) then
+      log('I', logTag, 'Component apply diag=' .. (function()
+        local parts = {}
+        for k, v in pairs(_componentApplyStats) do
+          if v and v > 0 then
+            table.insert(parts, k .. '=' .. tostring(v))
+          end
+        end
+        table.sort(parts)
+        return #parts > 0 and table.concat(parts, ',') or 'none'
+      end)())
+      _componentApplyStats = {}
+    end
 
     _correctionPosSum = 0
     _correctionRotSum = 0
