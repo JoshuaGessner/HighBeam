@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-04-05
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.2-dev.13 (protocol v2)
+> **Current version:** v0.8.2-dev.14 (protocol v2)
 > **Status:** v0.8.1 released | v0.8.2 in development
 
 ---
@@ -1202,6 +1202,12 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.2-dev.14 — 2026-04-05 (draft)
+- **Sync release roll-up:** includes all latest player-sync diagnostics and runtime tuning now merged on `main`.
+- **Component sync observability:** carries detailed client/server counters for `vehicle_damage`, `vehicle_electrics`, `vehicle_edit`, `vehicle_reset`, and `vehicle_coupling` to isolate non-movement sync drops quickly.
+- **Runtime smoothness improvements:** keeps reduced Lua polling pressure and adaptive send caps to mitigate frame drops during multiplayer sessions.
+- **CI formatting follow-up included:** includes rustfmt workflow fixes in server sync handling paths.
 
 ### v0.8.2-dev.13 — 2026-04-05 (draft)
 - **Verbose sync diagnostics (client):** added structured component TX/RX/apply counters for `vehicle_damage`, `vehicle_electrics`, `vehicle_edit`, `vehicle_reset`, and `vehicle_coupling` to pinpoint where non-movement sync drops occur.
