@@ -30,7 +30,7 @@ impl PersistedState {
 pub fn load_state(
     path: &str,
     control: &Arc<ControlPlane>,
-    world: &Arc<WorldState>,
+    _world: &Arc<WorldState>,
 ) -> Result<bool> {
     let state_path = Path::new(path);
     if !state_path.exists() {
@@ -52,16 +52,18 @@ pub fn load_state(
         return Ok(false);
     }
 
-    world.restore_vehicle_snapshot(&state.vehicles);
+    // Restore map selection but NOT vehicles. At boot no players are connected,
+    // so restored vehicles would be orphaned (owned by stale player IDs) and
+    // sent to new joiners in WorldState, making them see ghost players/vehicles.
     if let Err(e) = control.set_active_map(state.active_map.clone()) {
         tracing::warn!(error = %e, "Failed to restore active map from state file");
     }
 
     tracing::info!(
         path = %state_path.display(),
-        vehicles = state.vehicles.len(),
+        skipped_vehicles = state.vehicles.len(),
         players = state.players.len(),
-        "State restored"
+        "State restored (vehicles skipped — no connected players to own them)"
     );
 
     Ok(true)
@@ -109,7 +111,7 @@ mod tests {
     use crate::session::manager::SessionManager;
 
     #[test]
-    fn save_and_load_round_trip_restores_world_and_map() {
+    fn save_and_load_round_trip_restores_map_but_not_vehicles() {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -137,7 +139,8 @@ mod tests {
         let loaded = load_state(&path_str, &control, &world).expect("load should succeed");
         assert!(loaded);
         assert_eq!(control.get_active_map(), "/levels/west_coast_usa/info.json");
-        assert_eq!(world.vehicle_count(), 1);
+        // Vehicles are NOT restored at boot — they'd be orphaned without sessions
+        assert_eq!(world.vehicle_count(), 0);
 
         let _ = std::fs::remove_file(path);
     }
