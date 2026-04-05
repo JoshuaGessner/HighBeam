@@ -67,6 +67,11 @@ M._tcpTxTypeCounts = {}
 M._diagTimer = 0
 M._diagIntervalSec = 5.0
 
+-- P0.3: Sliding window packet rate (packets/sec over last 1s)
+M._udpRxTimestamps = {}      -- circular buffer of receive timestamps
+M._udpRxTsIdx = 0
+M._udpRxRateHz = 0           -- computed packets/sec
+
 local function _bumpCounter(map, key)
   if not map then return end
   local k = tostring(key or "unknown")
@@ -452,6 +457,9 @@ M.disconnect = function()
   M._udpPerPlayerRx = {}
   M._tcpRxTypeCounts = {}
   M._tcpTxTypeCounts = {}
+  M._udpRxTimestamps = {}
+  M._udpRxTsIdx = 0
+  M._udpRxRateHz = 0
   M._diagTimer = 0
   M._setState(M.STATE_DISCONNECTED, "disconnect_complete")
   M._notifyStatus("disconnected")
@@ -568,6 +576,17 @@ M.tick = function(dt)
     M._diagTimer = M._diagTimer + dt
     if M._diagTimer >= M._diagIntervalSec then
       M._diagTimer = 0
+
+      -- P0.3: Compute sliding window packet rate (packets in last 1 second)
+      local rateNow = os.clock()
+      local rateCount = 0
+      for _, ts in ipairs(M._udpRxTimestamps) do
+        if (rateNow - ts) <= 1.0 then
+          rateCount = rateCount + 1
+        end
+      end
+      M._udpRxRateHz = rateCount
+
       local deferredCount = M._pendingWorldVehicles and #M._pendingWorldVehicles or 0
       local tcpSince = M._lastServerPacketTime and (os.clock() - M._lastServerPacketTime) or -1
       local reconnectHost = M._reconnectCredentials and M._reconnectCredentials.host or 'none'
@@ -1050,6 +1069,11 @@ M._tickUdp = function()
       break
     end
     M._udpRxCount = M._udpRxCount + 1
+
+    -- P0.3: Record receive timestamp for sliding window rate calculation
+    local rxNow = os.clock()
+    M._udpRxTsIdx = (M._udpRxTsIdx % 200) + 1
+    M._udpRxTimestamps[M._udpRxTsIdx] = rxNow
     if not M._udpBindConfirmed then
       M._udpBindConfirmed = true
       log('I', logTag, 'UDP bind confirmed — first inbound packet received'

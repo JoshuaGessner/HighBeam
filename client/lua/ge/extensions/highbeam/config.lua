@@ -4,9 +4,9 @@ local logTag = "HighBeam.Config"
 M.defaults = {
   updateRate = 20,
   interpolation = true,
-  interpolationDelayMs = 50,
+  interpolationDelayMs = 100,       -- P2.1: was 50; 100ms = 2 packets at 20Hz
   extrapolationMs = 120,
-  jitterBufferSnapshots = 5,
+  jitterBufferSnapshots = 8,         -- P2.1: was 5; more headroom for jitter
   directConnectHost = "",
   directConnectPort = 18860,
   username = "",
@@ -17,6 +17,14 @@ M.defaults = {
   nametagRenderDistance = 200,
   nametagFadeNear = 30,
   nametagFontScale = 1.0,
+  -- P0/P2/P3/P4: Sync optimization defaults
+  debugOverlay = false,              -- P0: Show sync debug panel in overlay
+  correctionBlendFactor = 0.15,      -- P2.2: Fraction of error corrected per frame
+  correctionTeleportDist = 10.0,     -- P2.2: Distance (m) threshold for instant teleport
+  adaptiveSendRate = true,           -- P3.1: Enable speed-based send rate
+  lodDistanceNear = 200,             -- P3.4: Full-rate update distance (m)
+  lodDistanceFar = 500,              -- P3.4: Reduced-rate update distance (m)
+  directSteering = true,             -- P4.1: Use direct electrics instead of input.event
 }
 
 M.current = {}

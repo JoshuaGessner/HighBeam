@@ -52,7 +52,7 @@ M.hermiteVec3 = function(posA, velA, posB, velB, duration, t)
 end
 
 M.slerpQuat = function(a, b, t)
-  -- Use normalized lerp for stability in BeamNG update cadence.
+  -- P1.3: True spherical linear interpolation with nlerp fallback for small angles.
   t = clamp01(t)
 
   -- Ensure shortest path: flip b if dot product is negative
@@ -60,24 +60,69 @@ M.slerpQuat = function(a, b, t)
   local b1, b2, b3, b4 = b[1], b[2], b[3], b[4]
   if dot < 0 then
     b1, b2, b3, b4 = -b1, -b2, -b3, -b4
+    dot = -dot
   end
 
-  local r = {
-    a[1] + (b1 - a[1]) * t,
-    a[2] + (b2 - a[2]) * t,
-    a[3] + (b3 - a[3]) * t,
-    a[4] + (b4 - a[4]) * t,
+  -- For very small angles (dot > 0.9995 ≈ <~1.8°), use normalized lerp for stability
+  if dot > 0.9995 then
+    local r = {
+      a[1] + (b1 - a[1]) * t,
+      a[2] + (b2 - a[2]) * t,
+      a[3] + (b3 - a[3]) * t,
+      a[4] + (b4 - a[4]) * t,
+    }
+    local len = math.sqrt(r[1]*r[1] + r[2]*r[2] + r[3]*r[3] + r[4]*r[4])
+    if len > 0.0001 then
+      r[1] = r[1] / len
+      r[2] = r[2] / len
+      r[3] = r[3] / len
+      r[4] = r[4] / len
+    end
+    return r
+  end
+
+  -- True spherical interpolation for larger angular differences
+  local theta = math.acos(math.min(1, math.max(-1, dot)))
+  local sinTheta = math.sin(theta)
+  if sinTheta < 0.0001 then
+    -- Degenerate case: quaternions are nearly opposite, just return a
+    return { a[1], a[2], a[3], a[4] }
+  end
+  local wa = math.sin((1 - t) * theta) / sinTheta
+  local wb = math.sin(t * theta) / sinTheta
+  return {
+    wa * a[1] + wb * b1,
+    wa * a[2] + wb * b2,
+    wa * a[3] + wb * b3,
+    wa * a[4] + wb * b4,
   }
+end
 
-  local len = math.sqrt(r[1] * r[1] + r[2] * r[2] + r[3] * r[3] + r[4] * r[4])
-  if len > 0.0001 then
-    r[1] = r[1] / len
-    r[2] = r[2] / len
-    r[3] = r[3] / len
-    r[4] = r[4] / len
-  end
+-- P1.1: Normalize a quaternion to unit length.
+M.normalizeQuat = function(q)
+  local len = math.sqrt(q[1]*q[1] + q[2]*q[2] + q[3]*q[3] + q[4]*q[4])
+  if len < 0.0001 then return { 0, 0, 0, 1 } end
+  return { q[1]/len, q[2]/len, q[3]/len, q[4]/len }
+end
 
-  return r
+-- P1.2: Compute angular velocity from quaternion delta between two orientations.
+-- Returns {wx, wy, wz} in rad/s, or {0,0,0} for degenerate cases.
+-- Uses the small-angle approximation: angVel ≈ 2 * deltaQ.xyz / dt
+-- where deltaQ = rotB * conjugate(rotA).
+M.angularVelocityFromQuats = function(rotA, rotB, dt)
+  if dt < 0.0001 then return { 0, 0, 0 } end
+  -- conjugate(rotA) = {-x, -y, -z, w}
+  local cax, cay, caz, caw = -rotA[1], -rotA[2], -rotA[3], rotA[4]
+  -- Hamilton product: deltaQ = rotB * conjugate(rotA)
+  local bx, by, bz, bw = rotB[1], rotB[2], rotB[3], rotB[4]
+  local dw = bw*caw - bx*cax - by*cay - bz*caz
+  local dx = bw*cax + bx*caw + by*caz - bz*cay
+  local dy = bw*cay - bx*caz + by*caw + bz*cax
+  local dz = bw*caz + bx*cay - by*cax + bz*caw
+  -- Ensure shortest path (dw >= 0)
+  if dw < 0 then dx, dy, dz = -dx, -dy, -dz end
+  -- Small-angle approximation: angVel ≈ 2 * (dx, dy, dz) / dt
+  return { 2*dx/dt, 2*dy/dt, 2*dz/dt }
 end
 
 return M
