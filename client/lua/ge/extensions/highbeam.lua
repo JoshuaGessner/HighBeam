@@ -173,7 +173,7 @@ M.onExtensionLoaded = function()
   end
 
   if overlay then
-    overlay.load(connection, vehicles, chat, config)
+    overlay.load(connection, vehicles, state, chat, config)
   end
 
   _registerMenuEntry()
@@ -302,9 +302,9 @@ M.onElectricsReport = function(gameVid, electricsJson)
 end
 
 -- Called from vehicle-side queueGameEngineLua with input values
-M.onInputsReport = function(gameVid, steer, throttle, brake)
+M.onInputsReport = function(gameVid, steer, throttle, brake, gear, handbrake)
   if state and state.onInputsReport then
-    state.onInputsReport(gameVid, steer, throttle, brake)
+    state.onInputsReport(gameVid, steer, throttle, brake, gear, handbrake)
   end
 end
 

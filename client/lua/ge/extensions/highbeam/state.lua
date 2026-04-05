@@ -1,5 +1,6 @@
 local M = {}
 local logTag = "HighBeam.State"
+local syncMath = require("highbeam/math")
 
 M.localVehicles = {}  -- [gameVehicleId] = serverVehicleId
 M.playerId = nil
@@ -21,7 +22,16 @@ local _inputsTimer = 0     -- timer for input polling (decoupled from electrics)
 local _lastElectrics = {}  -- [gameVehicleId] = last sent electrics state string
 M._cachedInputs = {}  -- [gameVehicleId] = {steer, throttle, brake} from vlua callback
 M._cachedVluaRot = {} -- [gameVehicleId] = {x, y, z, w} rotation from vlua physics
+M._cachedVluaRotTime = {} -- [gameVehicleId] = os.clock timestamp for cached rotation
+M._cachedAngVel = {}  -- [gameVehicleId] = {x, y, z} angular velocity (rad/s) from quat delta
 M._damageDirty = {}   -- P3.2: [gameVehicleId] = true when damage event fires
+M._lastSentState = {} -- [gameVehicleId] = {pos={x,y,z}, rot={x,y,z,w}, vel={x,y,z}, inputs={...}, sentAt=time}
+M._debugStats = {
+  sendRateHz = 20,
+  skippedUnchanged = 0,
+  sentPackets = 0,
+  avgSendSpeed = 0,
+}
 local _lastUdpErrorLogAt = -math.huge
 local _udpErrorLogCooldown = 2.0
 local _pendingSpawnTimeoutSec = 8.0
@@ -30,6 +40,80 @@ local _diagLogTimer = 0
 local _udpSentCount = 0
 local _udpEncodeErrorCount = 0
 local _udpSendErrorCount = 0
+local _udpSkippedUnchangedCount = 0
+local _sendSpeedAccum = 0
+local _sendSpeedSamples = 0
+
+local POS_SEND_DELTA_SQ = 0.01 * 0.01
+local ROT_SEND_DELTA_RAD = math.rad(0.5)
+local VEL_SEND_DELTA_SQ = 0.05 * 0.05
+local INPUT_SEND_DELTA = 0.005
+
+local function _rotErrorRad(a, b)
+  if not a or not b then return math.huge end
+  local dot = a[1]*b[1] + a[2]*b[2] + a[3]*b[3] + a[4]*b[4]
+  dot = math.abs(dot)
+  if dot > 1 then dot = 1 end
+  return 2 * math.acos(dot)
+end
+
+local function _inputsChanged(lastInputs, inputs)
+  if (not lastInputs) and inputs then return true end
+  if lastInputs and (not inputs) then return true end
+  if not lastInputs and not inputs then return false end
+
+  local function changed(k)
+    local a = tonumber(lastInputs[k] or 0) or 0
+    local b = tonumber(inputs[k] or 0) or 0
+    return math.abs(a - b) > INPUT_SEND_DELTA
+  end
+
+  return changed("steer")
+    or changed("throttle")
+    or changed("brake")
+    or changed("gear")
+    or changed("handbrake")
+end
+
+local function _shouldSendDelta(gameVid, posArr, rotArr, velArr, inputs)
+  local last = M._lastSentState[gameVid]
+  if not last then return true end
+
+  local dx = posArr[1] - last.pos[1]
+  local dy = posArr[2] - last.pos[2]
+  local dz = posArr[3] - last.pos[3]
+  local posDeltaSq = dx*dx + dy*dy + dz*dz
+  if posDeltaSq > POS_SEND_DELTA_SQ then return true end
+
+  local dvx = velArr[1] - last.vel[1]
+  local dvy = velArr[2] - last.vel[2]
+  local dvz = velArr[3] - last.vel[3]
+  local velDeltaSq = dvx*dvx + dvy*dvy + dvz*dvz
+  if velDeltaSq > VEL_SEND_DELTA_SQ then return true end
+
+  local rotDelta = _rotErrorRad(rotArr, last.rot)
+  if rotDelta > ROT_SEND_DELTA_RAD then return true end
+
+  if _inputsChanged(last.inputs, inputs) then return true end
+
+  return false
+end
+
+local function _cacheSentState(gameVid, posArr, rotArr, velArr, inputs, now)
+  M._lastSentState[gameVid] = {
+    pos = { posArr[1], posArr[2], posArr[3] },
+    rot = { rotArr[1], rotArr[2], rotArr[3], rotArr[4] },
+    vel = { velArr[1], velArr[2], velArr[3] },
+    inputs = inputs and {
+      steer = inputs.steer or 0,
+      throttle = inputs.throttle or 0,
+      brake = inputs.brake or 0,
+      gear = inputs.gear or 0,
+      handbrake = inputs.handbrake or 0,
+    } or nil,
+    sentAt = now,
+  }
+end
 
 local function _countPendingSpawns()
   local count = 0
@@ -122,9 +206,8 @@ M.tick = function(dt)
 
   local updateRate = (config and config.get("updateRate")) or 20
 
-  -- P3.1: Adaptive send rate — increase update rate when vehicle is moving fast.
-  -- At rest or slow speeds: use configured updateRate.
-  -- At high speed (>20 m/s ≈ 72 km/h): double the rate.
+  -- Adaptive send rate with strict tiers for smoothness vs bandwidth:
+  -- <1 m/s = 15Hz, 1-20 m/s = 30Hz, >=20 m/s = 60Hz.
   local adaptiveSendRate = config and config.get("adaptiveSendRate")
   if adaptiveSendRate ~= false then
     local maxSpeedSq = 0
@@ -138,11 +221,13 @@ M.tick = function(dt)
         end
       end
     end
-    -- 20 m/s = 400 speedSq
-    if maxSpeedSq > 400 then
-      updateRate = math.min(60, updateRate * 2)
-    elseif maxSpeedSq > 100 then  -- 10 m/s
-      updateRate = math.min(60, math.floor(updateRate * 1.5))
+    local maxSpeed = math.sqrt(maxSpeedSq)
+    if maxSpeed < 1.0 then
+      updateRate = 15
+    elseif maxSpeed < 20.0 then
+      updateRate = 30
+    else
+      updateRate = 60
     end
   end
 
@@ -175,20 +260,31 @@ M.tick = function(dt)
         rot = { x = geRot.x, y = geRot.y, z = geRot.z, w = geRot.w }
       end
 
+      local posArr = { pos.x, pos.y, pos.z }
+      local rotArr = syncMath.normalizeQuat({ rot.x, rot.y, rot.z, rot.w })
+      local velArr = { vel.x, vel.y, vel.z }
+
       -- Capture input state for input-augmented extrapolation
       -- NOTE: electrics are in vlua context, so we read from cached data
       -- populated by _pollInputs via queueLuaCommand callback
       local inputs = M._cachedInputs and M._cachedInputs[gameVid] or nil
+      local angVel = M._cachedAngVel and M._cachedAngVel[gameVid] or nil
+
+      if not _shouldSendDelta(gameVid, posArr, rotArr, velArr, inputs) then
+        _udpSkippedUnchangedCount = _udpSkippedUnchangedCount + 1
+        goto continue_local_vehicle
+      end
 
       local okEncode, dataOrErr = pcall(
         protocol.encodePositionUpdate,
         sessionHash,
         serverVid,
-        { pos.x, pos.y, pos.z },
-        { rot.x, rot.y, rot.z, rot.w },
-        { vel.x, vel.y, vel.z },
+        posArr,
+        rotArr,
+        velArr,
         now,
-        inputs
+        inputs,
+        angVel
       )
 
       if not okEncode then
@@ -204,9 +300,14 @@ M.tick = function(dt)
           _logUdpErrorRateLimited('UDP send threw for vehicle ' .. tostring(serverVid) .. ': ' .. tostring(sendErr))
         else
           _udpSentCount = _udpSentCount + 1
+          local speed = math.sqrt(vel.x*vel.x + vel.y*vel.y + vel.z*vel.z)
+          _sendSpeedAccum = _sendSpeedAccum + speed
+          _sendSpeedSamples = _sendSpeedSamples + 1
+          _cacheSentState(gameVid, posArr, rotArr, velArr, inputs, now)
         end
       end
     end
+    ::continue_local_vehicle::
   end
 
   _diagLogTimer = _diagLogTimer + dt
@@ -216,12 +317,22 @@ M.tick = function(dt)
       'Sync stats locals=' .. tostring(_countLocalVehicles())
       .. ' pendingSpawns=' .. tostring(_countPendingSpawns())
       .. ' udpSent=' .. tostring(_udpSentCount)
+      .. ' udpSkippedUnchanged=' .. tostring(_udpSkippedUnchangedCount)
       .. ' udpEncodeErr=' .. tostring(_udpEncodeErrorCount)
       .. ' udpSendErr=' .. tostring(_udpSendErrorCount)
     )
+    M._debugStats = {
+      sendRateHz = updateRate,
+      skippedUnchanged = _udpSkippedUnchangedCount,
+      sentPackets = _udpSentCount,
+      avgSendSpeed = _sendSpeedSamples > 0 and (_sendSpeedAccum / _sendSpeedSamples) or 0,
+    }
     _udpSentCount = 0
+    _udpSkippedUnchangedCount = 0
     _udpEncodeErrorCount = 0
     _udpSendErrorCount = 0
+    _sendSpeedAccum = 0
+    _sendSpeedSamples = 0
   end
 
   -- ── Damage polling (every 1000ms) ─────────────────────────────────
@@ -428,17 +539,21 @@ M._pollInputs = function(gameVid)
       .. 'local st = e.steering_input or e.steering or 0 '
       .. 'local th = e.throttle_input or e.throttle or 0 '
       .. 'local br = e.brake_input or e.brake or 0 '
-      .. 'obj:queueGameEngineLua("extensions.highbeam.onInputsReport(' .. gameVid .. '," .. st .. "," .. th .. "," .. br .. ")")'
+      .. 'local ga = e.gear_A or 0 '
+      .. 'local hb = (e.parkingbrake and e.parkingbrake > 0.5) and 1 or 0 '
+      .. 'obj:queueGameEngineLua("extensions.highbeam.onInputsReport(' .. gameVid .. '," .. st .. "," .. th .. "," .. br .. "," .. ga .. "," .. hb .. ")")'
     )
   end)
 end
 
 -- Called back from vehicle-side Lua with input values
-M.onInputsReport = function(gameVid, steer, throttle, brake)
+M.onInputsReport = function(gameVid, steer, throttle, brake, gear, handbrake)
   M._cachedInputs[gameVid] = {
     steer = steer or 0,
     throttle = throttle or 0,
     brake = brake or 0,
+    gear = gear or 0,
+    handbrake = handbrake or 0,
   }
 end
 
@@ -460,7 +575,26 @@ end
 
 -- Called back from vehicle-side Lua with physics rotation quaternion
 M.onVluaRotationReport = function(gameVid, rx, ry, rz, rw)
-  M._cachedVluaRot[gameVid] = { x = rx or 0, y = ry or 0, z = rz or 0, w = rw or 1 }
+  local now = os.clock()
+  local current = { rx or 0, ry or 0, rz or 0, rw or 1 }
+  current = syncMath.normalizeQuat(current)
+
+  local prev = M._cachedVluaRot[gameVid]
+  local prevAt = M._cachedVluaRotTime[gameVid]
+  if prev and prevAt then
+    local dt = now - prevAt
+    if dt > 0.0001 then
+      local av = syncMath.angularVelocityFromQuats(
+        { prev.x or 0, prev.y or 0, prev.z or 0, prev.w or 1 },
+        current,
+        dt
+      )
+      M._cachedAngVel[gameVid] = { av[1] or 0, av[2] or 0, av[3] or 0 }
+    end
+  end
+
+  M._cachedVluaRot[gameVid] = { x = current[1], y = current[2], z = current[3], w = current[4] }
+  M._cachedVluaRotTime[gameVid] = now
 end
 
 -- P3.2: Mark a vehicle as needing a damage poll on the next cycle.
@@ -643,13 +777,20 @@ M.onDisconnect = function()
   _electricsTimer = 0
   _lastElectrics = {}
   M._cachedInputs = {}
+  M._cachedVluaRot = {}
+  M._cachedVluaRotTime = {}
+  M._cachedAngVel = {}
+  M._lastSentState = {}
   M._damageDirty = {}
   M._damageFullTimer = 0
   _lastUdpErrorLogAt = -math.huge
   _diagLogTimer = 0
   _udpSentCount = 0
+  _udpSkippedUnchangedCount = 0
   _udpEncodeErrorCount = 0
   _udpSendErrorCount = 0
+  _sendSpeedAccum = 0
+  _sendSpeedSamples = 0
 end
 
 return M
