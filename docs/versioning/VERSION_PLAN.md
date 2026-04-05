@@ -1420,7 +1420,7 @@ First patch release for v0.8.x. Fixes all vehicle synchronization bugs discovere
 
 ### v0.6.76 — 2026-04-02
 - **Payload zip rebuild:** Rebuilt `launcher/payload/highbeam.zip` with all v0.6.75 client fixes. Previous release edited source files but did not repackage the zip, so BeamNG was still running stale code.
-- **Agent instructions update:** Added "Client Mod Deployment" section to `.copilot-instructions.md` requiring payload zip rebuild after every client edit.
+- **Agent instructions update:** Added "Client Mod Deployment" section to `.github/copilot-instructions.md` requiring payload zip rebuild after every client edit.
 - Launcher version bumped to `0.6.76`; server remains `0.6.4`; protocol remains `v2`.
 
 ### v0.6.75 — 2026-04-02

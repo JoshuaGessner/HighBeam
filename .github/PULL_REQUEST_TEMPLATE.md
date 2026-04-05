@@ -33,7 +33,7 @@
 ## Checklist
 
 - [ ] I have read the architecture doc for the component(s) I changed
-- [ ] My code follows the project's coding standards (`.copilot-instructions.md`)
+- [ ] My code follows the project's coding standards (`.github/copilot-instructions.md`)
 - [ ] I've added tests for new functionality (server)
 - [ ] I've tested manually in BeamNG.drive (client)
 - [ ] I've updated `docs/versioning/VERSION_PLAN.md` (milestone checkboxes and Recent Release Notes)

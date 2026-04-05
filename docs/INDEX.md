@@ -14,14 +14,7 @@
 4. **When logging changes**, update [VERSION_PLAN.md](versioning/VERSION_PLAN.md) milestone checkboxes and Recent Release Notes.
 
 ### For Copilot / AI Assistants
-1. **Always read this INDEX.md first** when the user asks about project structure, architecture, or development procedures.
-2. **Before generating code**, read the architecture doc for the relevant component:
-   - Client mod work → [CLIENT.md](architecture/CLIENT.md)
-   - Server binary work → [SERVER.md](architecture/SERVER.md)
-   - Network/protocol work → [PROTOCOL.md](architecture/PROTOCOL.md)
-3. **Before suggesting version bumps or release steps**, read [VERSION_PLAN.md](versioning/VERSION_PLAN.md).
-4. **For BeamNG modding context**, read [BEAMNG_MODDING.md](reference/BEAMNG_MODDING.md).
-5. **After completing work**, remind the developer to update [VERSION_PLAN.md](versioning/VERSION_PLAN.md).
+Project-level agent workflow rules are maintained in [.github/copilot-instructions.md](../.github/copilot-instructions.md).
 
 ---
 
@@ -43,7 +36,7 @@
 | Document | Purpose | Read When... |
 |----------|---------|-------------|
 | [BUILD_GUIDE.md](BUILD_GUIDE.md) | Step-by-step implementation blueprint for every phase | Building any component — this is the master build plan |
-| [EXTENSION_BOOTSTRAP_FIX.md](EXTENSION_BOOTSTRAP_FIX.md) | Historical fix: how the client mod bootstrap issue was diagnosed and resolved | Debugging client mod loading issues in BeamNG |
+| [SYNC_FIX_PLAN.md](SYNC_FIX_PLAN.md) | Current sync troubleshooting and validation plan | Debugging ghost vehicles, bind timing, and sync lifecycle issues |
 
 ### Versioning (`docs/versioning/`)
 
@@ -79,6 +72,7 @@
 ```
 HighBeam/
 ├── .github/                    # GitHub templates and CI
+│   ├── copilot-instructions.md
 │   └── PULL_REQUEST_TEMPLATE.md
 ├── client/                     # BeamNG.drive mod (Lua)
 │   ├── lua/ge/extensions/      # BeamNG extension scripts
@@ -97,7 +91,6 @@ HighBeam/
 │   ├── architecture/           # System design docs
 │   ├── versioning/             # Version planning and changelog
 │   └── reference/              # Research and external references
-├── .copilot-instructions.md    # AI coding assistant instructions
 ├── .gitignore                  # Git ignore rules
 ├── LICENSE                     # Project license
 └── README.md                   # Project overview
