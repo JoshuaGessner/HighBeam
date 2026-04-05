@@ -1,8 +1,8 @@
 # HighBeam Version Plan
 
-> **Last updated:** 2026-04-04
+> **Last updated:** 2026-04-05
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.2-dev.11 (protocol v2)
+> **Current version:** v0.8.2-dev.12 (protocol v2)
 > **Status:** v0.8.1 released | v0.8.2 in development
 
 ---
@@ -1202,6 +1202,16 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.2-dev.12 — 2026-04-05 (draft)
+- **Production sync hardening (client):** strengthened motion sync pipeline for playability under real-world jitter and mixed vehicle counts.
+- **Adaptive send tiers:** local vehicle update cadence now follows strict speed bands (15/30/60 Hz) for bandwidth efficiency without sacrificing high-speed responsiveness.
+- **Delta suppression:** unchanged position/rotation/velocity/input states are skipped to reduce packet spam and CPU overhead.
+- **UDP payload extension (backward compatible):** extended position packet supports gear + handbrake and optional angular velocity while still decoding legacy 0x11 packets.
+- **Remote extrapolation quality:** rotation extrapolation now uses angular velocity when present, reducing visible heading stalls during gaps.
+- **Spawn transform reliability:** remote spawns now apply authoritative transform immediately after creation to avoid constructor rotation ambiguity.
+- **Sync diagnostics overlay:** added interpolation delay, send rate, sent/skipped counts, and average send speed metrics to in-game debug panel.
+- **Payload refreshed:** rebuilt launcher-bundled `highbeam.zip` with the updated client sync stack.
 
 ### v0.8.2-dev.10 — 2026-04-05 (draft)
 - **Updated SYNC_FIX_PLAN.md:** revised RC3 analysis (vlua velocity methods never worked), added RC4 (stale `getRotation()` source) and RC5 (non-existent vlua API table), marked F4 as revised with full dev.6→dev.9 history, updated implementation order table with completion status for all fixes.
