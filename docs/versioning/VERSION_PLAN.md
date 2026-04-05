@@ -1203,6 +1203,9 @@ Ideas for future development (not committed):
 
 ## Recent Release Notes
 
+### v0.8.2-dev.10 — 2026-04-05 (draft)
+- **Updated SYNC_FIX_PLAN.md:** revised RC3 analysis (vlua velocity methods never worked), added RC4 (stale `getRotation()` source) and RC5 (non-existent vlua API table), marked F4 as revised with full dev.6→dev.9 history, updated implementation order table with completion status for all fixes.
+
 ### v0.8.2-dev.9 — 2026-04-05 (draft)
 - **Fix FATAL vlua errors on every position update (critical):** removed `obj:setVelocity()` and `obj:setAngularVelocity()` calls from `_applyPosRot` — these methods do not exist in BeamNG's vehicle Lua (vlua) context. Every remote vehicle position update was throwing FATAL LUA ERROR, preventing velocity/angular velocity injection entirely. BeamMP solves this with per-node `obj:applyForceVector()` in a dedicated velocityVE extension; HighBeam now relies on GE-side `setPositionRotation()` interpolation until a force-based system is added.
 - **Fix stale rotation data (critical):** `veh:getRotation()` in the GE context returns the SceneObject transform rotation, which does NOT track physics orientation for soft-body vehicles — quaternion values were constant across all diagnostic windows (`avgRot=0.00000`). Replaced with vlua-sourced rotation using `quatFromDir(-obj:getDirectionVector(), obj:getDirectionVectorUp())` polled via `queueLuaCommand` → `queueGameEngineLua` callback (same approach as BeamMP's positionVE.lua).
