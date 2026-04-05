@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-04-05
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.2-dev.15 (protocol v2)
+> **Current version:** v0.8.2-dev.16 (protocol v2)
 > **Status:** v0.8.1 released | v0.8.2 in development
 
 ---
@@ -1202,6 +1202,11 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.2-dev.16 - 2026-04-05 (draft)
+- **Fix fatal GE callback spam (critical):** added missing `onInputsAndRotationReport` forwarder in `highbeam.lua` so vlua input+rotation polling callbacks resolve on the loaded extension table.
+- **Input/rotation polling restored:** combined steering/throttle/brake/gear/handbrake + physics rotation reports now flow into state cache without repeated `attempt to call field 'onInputsAndRotationReport'` errors.
+- **Payload refreshed:** rebuilt launcher-bundled `highbeam.zip` with the callback wiring fix.
 
 ### v0.8.2-dev.15 - 2026-04-05 (draft)
 - **Client load fix (critical):** corrected a Lua syntax error in sync diagnostics logging that aborted HighBeam startup while loading `highbeam/connection`.
