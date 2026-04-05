@@ -308,6 +308,13 @@ M.onInputsReport = function(gameVid, steer, throttle, brake, gear, handbrake)
   end
 end
 
+-- Called from vehicle-side queueGameEngineLua with input values and physics rotation
+M.onInputsAndRotationReport = function(gameVid, steer, throttle, brake, gear, handbrake, rx, ry, rz, rw)
+  if state and state.onInputsAndRotationReport then
+    state.onInputsAndRotationReport(gameVid, steer, throttle, brake, gear, handbrake, rx, ry, rz, rw)
+  end
+end
+
 -- Called from vehicle-side queueGameEngineLua with physics rotation quaternion
 M.onVluaRotationReport = function(gameVid, rx, ry, rz, rw)
   if state and state.onVluaRotationReport then
