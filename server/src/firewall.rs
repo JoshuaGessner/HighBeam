@@ -169,7 +169,7 @@ fn try_ufw(port: u16, proto: &str, label: &str) -> bool {
     let add = Command::new("sudo")
         .args(["ufw", "allow", &format!("{}/{}", port, proto)])
         .arg("comment")
-        .arg(&format!("HighBeam {}", label))
+        .arg(format!("HighBeam {}", label))
         .output();
 
     match add {
