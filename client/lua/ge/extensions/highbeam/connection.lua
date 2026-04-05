@@ -80,12 +80,12 @@ local function _bumpCounter(map, key)
   map[k] = (map[k] or 0) + 1
 end
 
+local function _syncVerboseLoggingEnabled()
+  local okCfg, cfg = pcall(require, "highbeam/config")
+  return okCfg and cfg and cfg.get and cfg.get("verboseSyncLogging") == true
+end
+
 local function _formatCounterMap(map)
-  local function _syncVerboseLoggingEnabled()
-    local okCfg, cfg = pcall(require, "highbeam/config")
-    return okCfg and cfg and cfg.get and cfg.get("verboseSyncLogging") == true
-  end
-  M._componentRxStats = {}
   local keys = {}
   for k, v in pairs(map or {}) do
     if v and v > 0 then
