@@ -6,7 +6,7 @@
     windows_subsystem = "windows"
 )]
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::io::BufRead;
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -254,6 +254,16 @@ async fn run_server(
         );
     }
 
+    // Fail fast with a clear message when another process already owns a required port.
+    // This commonly happens when a previous GUI instance is still running in the system tray.
+    preflight_port_availability(
+        config.general.port,
+        control_plane.active_mod_sync_port(),
+        community_status
+            .enabled
+            .then_some(community_status.listen_port),
+    )?;
+
     // Ensure firewall rules exist for all exposed ports.
     {
         let mut required = vec![firewall::RequiredPort {
@@ -477,5 +487,45 @@ async fn run_server(
     }
 
     tracing::info!("Server shut down complete");
+    Ok(())
+}
+
+fn preflight_port_availability(
+    gameplay_port: u16,
+    mod_sync_port: Option<u16>,
+    community_port: Option<u16>,
+) -> Result<()> {
+    let gameplay_addr = format!("0.0.0.0:{gameplay_port}");
+
+    std::net::TcpListener::bind(&gameplay_addr).with_context(|| {
+        format!(
+            "Port preflight failed: TCP {gameplay_addr} is already in use. Another HighBeam server instance may already be running (possibly minimized to tray)."
+        )
+    })?;
+
+    std::net::UdpSocket::bind(&gameplay_addr).with_context(|| {
+        format!(
+            "Port preflight failed: UDP {gameplay_addr} is already in use. Another HighBeam server instance may already be running (possibly minimized to tray)."
+        )
+    })?;
+
+    if let Some(port) = mod_sync_port {
+        let addr = format!("0.0.0.0:{port}");
+        std::net::TcpListener::bind(&addr).with_context(|| {
+            format!(
+                "Port preflight failed: mod sync listener TCP {addr} is already in use. Another HighBeam instance may still be active."
+            )
+        })?;
+    }
+
+    if let Some(port) = community_port {
+        let addr = format!("0.0.0.0:{port}");
+        std::net::TcpListener::bind(&addr).with_context(|| {
+            format!(
+                "Port preflight failed: community discovery TCP {addr} is already in use."
+            )
+        })?;
+    }
+
     Ok(())
 }
