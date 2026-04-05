@@ -19,8 +19,11 @@ local ffi = require("ffi")
 
 -- Position update: type 0x10 (legacy) / 0x11 (extended with inputs)
 -- Legacy layout: [vid:u16] [pos:3xf32] [rot:4xf32] [vel:3xf32] [time:f32]
--- Extended layout: [vid:u16] [pos:3xf32] [rot:4xf32] [vel:3xf32] [time:f32] [steer:f16] [throttle:f16] [brake:f16]
--- Legacy payload: 46 bytes  |  Extended payload: 52 bytes
+-- Extended layout: [vid:u16] [pos:3xf32] [rot:4xf32] [vel:3xf32] [time:f32]
+--                  [steer:f16] [throttle:f16] [brake:f16] [gear:f16] [handbrake:f16]
+--                  [angVel:3xf32]
+-- Legacy payload: 46 bytes  |  Extended payload: 52 bytes (3 inputs)
+-- New extended payload: 58 bytes (adds gear + handbrake), +12 when angVel is present
 
 -- float16 encode/decode helpers (IEEE 754 half-precision)
 local function f32_to_f16(val)
@@ -72,7 +75,7 @@ local function read_f32_le(data, offset)
   return tmp[0]
 end
 
-M.encodePositionUpdate = function(sessionHash, vehicleId, pos, rot, vel, simTime, inputs)
+M.encodePositionUpdate = function(sessionHash, vehicleId, pos, rot, vel, simTime, inputs, angVel)
   if type(sessionHash) ~= "string" or #sessionHash ~= 16 then
     log('E', logTag, 'encodePositionUpdate: invalid session hash (expected 16 bytes)')
     return nil
@@ -90,7 +93,14 @@ M.encodePositionUpdate = function(sessionHash, vehicleId, pos, rot, vel, simTime
     end
   end
 
-  local expectedSize = hasInputs and 69 or 63
+  local hasAngVel = type(angVel) == "table" and (angVel[1] ~= nil or angVel[2] ~= nil or angVel[3] ~= nil)
+  local expectedSize = 63
+  if hasInputs then
+    expectedSize = expectedSize + 10 -- steer/throttle/brake/gear/handbrake
+  end
+  if hasAngVel then
+    expectedSize = expectedSize + 12 -- 3xf32
+  end
   local buf = ffi.new("uint8_t[?]", expectedSize)
   ffi.copy(buf, sessionHash, 16)
   buf[16] = typeByte
@@ -118,6 +128,14 @@ M.encodePositionUpdate = function(sessionHash, vehicleId, pos, rot, vel, simTime
     write_u16_le(buf, o, f32_to_f16(inputs.steer or 0)); o = o + 2
     write_u16_le(buf, o, f32_to_f16(inputs.throttle or 0)); o = o + 2
     write_u16_le(buf, o, f32_to_f16(inputs.brake or 0)); o = o + 2
+    write_u16_le(buf, o, f32_to_f16(inputs.gear or 0)); o = o + 2
+    write_u16_le(buf, o, f32_to_f16(inputs.handbrake or 0)); o = o + 2
+  end
+
+  if hasAngVel then
+    write_f32_le(buf, o, angVel and angVel[1]); o = o + 4
+    write_f32_le(buf, o, angVel and angVel[2]); o = o + 4
+    write_f32_le(buf, o, angVel and angVel[3]); o = o + 4
   end
 
   local packet = ffi.string(buf, expectedSize)
@@ -133,7 +151,8 @@ end
 -- Decode relayed position update from server
 -- Server-relayed layout adds pid:u16 after type byte
 -- Type 0x10 -> 65 bytes total (legacy)
--- Type 0x11 -> 71 bytes total (extended with inputs)
+-- Type 0x11 -> 71 bytes minimum (legacy extended with 3 inputs),
+--              75 bytes with gear/handbrake, optionally 87 with angular velocity
 M.decodePositionUpdate = function(data)
   if #data < 65 then return nil end
   local typeByte = string.byte(data, 17)
@@ -171,16 +190,31 @@ M.decodePositionUpdate = function(data)
     result.rot = { r1/rlen, r2/rlen, r3/rlen, r4/rlen }
   end
 
-  -- Decode inputs if present (type 0x11, 71 bytes)
+  -- Decode inputs if present.
   if typeByte == 0x11 and #data >= 71 then
     local iSteer = read_u16_le(data, o); o = o + 2
     local iThrottle = read_u16_le(data, o); o = o + 2
     local iBrake = read_u16_le(data, o); o = o + 2
+    local iGear = 0
+    local iHandbrake = 0
+    if #data >= 75 then
+      iGear = read_u16_le(data, o); o = o + 2
+      iHandbrake = read_u16_le(data, o); o = o + 2
+    end
     result.inputs = {
       steer = f16_to_f32(iSteer),
       throttle = f16_to_f32(iThrottle),
       brake = f16_to_f32(iBrake),
+      gear = f16_to_f32(iGear),
+      handbrake = f16_to_f32(iHandbrake),
     }
+
+    if #data >= (o + 12) then
+      local avx = read_f32_le(data, o); o = o + 4
+      local avy = read_f32_le(data, o); o = o + 4
+      local avz = read_f32_le(data, o); o = o + 4
+      result.angVel = { avx, avy, avz }
+    end
   end
 
   return result

@@ -6,6 +6,7 @@ local _ffi = nil
 
 local _connection = nil
 local _vehicles = nil
+local _state = nil
 local _chat = nil
 local _config = nil
 
@@ -91,9 +92,10 @@ local function _sendChatFromInput()
   end
 end
 
-M.load = function(connectionRef, vehiclesRef, chatRef, configRef)
+M.load = function(connectionRef, vehiclesRef, stateRef, chatRef, configRef)
   _connection = connectionRef
   _vehicles = vehiclesRef
+  _state = stateRef
   _chat = chatRef
   _config = configRef
 
@@ -188,11 +190,18 @@ M.render = function()
     if debugOverlay then
       local stats = _vehicles and _vehicles._debugStats or {}
       local conn = _connection or {}
+      local stateStats = _state and _state._debugStats or {}
+      local interpDelay = _config and _config.get and _config.get("interpolationDelayMs") or 100
       _im.TextColored(_im.ImVec4(0.8, 0.8, 0.3, 1.0), "Sync Debug")
+      _im.Text("  InterpDelay: " .. tostring(interpDelay) .. " ms")
       _im.Text("  AvgCorrPos: " .. string.format("%.4f", stats.avgCorrectionPos or 0) .. " m")
       _im.Text("  AvgCorrRot: " .. string.format("%.5f", stats.avgCorrectionRot or 0))
       _im.Text("  Corrections: " .. tostring(stats.correctionCount or 0)
         .. "  Teleports: " .. tostring(stats.teleportCount or 0))
+      _im.Text("  SendRate: " .. tostring(stateStats.sendRateHz or 0) .. " Hz"
+        .. "  Sent: " .. tostring(stateStats.sentPackets or 0)
+        .. "  Skipped: " .. tostring(stateStats.skippedUnchanged or 0))
+      _im.Text("  AvgSendSpeed: " .. string.format("%.2f", stateStats.avgSendSpeed or 0) .. " m/s")
       _im.Text("  UDP RxRate: " .. tostring(conn._udpRxRateHz or 0) .. " pkt/s"
         .. "  TotalRx: " .. tostring(conn._udpRxCount or 0))
       _im.Separator()

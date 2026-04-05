@@ -13,6 +13,8 @@ use crate::session::manager::SessionManager;
 use crate::state::world::WorldState;
 
 const DISCOVERY_QUERY_PACKET: u8 = 0x7A;
+const UDP_BIND_PACKET: u8 = 0x01;
+const UDP_BIND_ACK_PACKET: u8 = 0x02;
 
 #[derive(Serialize)]
 struct DiscoveryResponse {
@@ -55,7 +57,7 @@ pub async fn start_udp(
 
     let mut buf = vec![0u8; 65535];
     let relay_interval = Duration::from_secs_f64(1.0 / tick_rate.max(1) as f64);
-    let mut last_relay_at = std::collections::HashMap::<u32, Instant>::new();
+    let mut last_relay_at = std::collections::HashMap::<(u32, u16), Instant>::new();
     let mut diag_last = Instant::now();
     let diag_interval = Duration::from_secs(5);
     let mut diag_discovery_rx: u64 = 0;
@@ -170,9 +172,17 @@ pub async fn start_udp(
 
         match packet_type {
             // UdpBind: register this addr for the player
-            0x01 => {
+            UDP_BIND_PACKET => {
                 sessions.register_udp_addr(player_id, addr);
                 diag_bind_count += 1;
+
+                // Immediate bind ACK helps clients confirm bidirectional UDP
+                // path without waiting for first relayed position update.
+                let mut ack = Vec::with_capacity(18);
+                ack.extend_from_slice(&session_hash);
+                ack.push(UDP_BIND_ACK_PACKET);
+                ack.push(0x01); // status: ok
+                let _ = socket.send_to(&ack, addr).await;
             }
 
             // Position update (0x10 legacy / 0x11 extended with inputs)
@@ -206,8 +216,9 @@ pub async fn start_udp(
                 world.update_position(player_id, vid, pos, rot, vel);
 
                 let now = Instant::now();
+                let throttle_key = (player_id, vid);
                 let should_relay = last_relay_at
-                    .get(&player_id)
+                    .get(&throttle_key)
                     .map(|last| now.duration_since(*last) >= relay_interval)
                     .unwrap_or(true);
 
@@ -215,7 +226,7 @@ pub async fn start_udp(
                     diag_pos_throttled += 1;
                     continue;
                 }
-                last_relay_at.insert(player_id, now);
+                last_relay_at.insert(throttle_key, now);
 
                 // Build relay packet: insert player_id (u16 LE) after type byte
                 let relay_capacity = if packet_type == 0x11 { 71 } else { 65 };

@@ -27,6 +27,37 @@ local _correctionRotSum = 0
 local _correctionCount = 0
 local _teleportCount = 0
 
+local function _quatNormalize(q)
+  return interpolationMath.normalizeQuat(q)
+end
+
+local function _quatFromAngularVelocity(baseRot, angVel, dt)
+  if not baseRot or not angVel or dt <= 0 then return baseRot end
+  local wx = angVel[1] or 0
+  local wy = angVel[2] or 0
+  local wz = angVel[3] or 0
+  local speed = math.sqrt(wx*wx + wy*wy + wz*wz)
+  if speed < 0.0001 then return baseRot end
+
+  local half = 0.5 * speed * dt
+  local s = math.sin(half)
+  local c = math.cos(half)
+  local ax = wx / speed
+  local ay = wy / speed
+  local az = wz / speed
+  local dq = { ax * s, ay * s, az * s, c }
+
+  local bx, by, bz, bw = baseRot[1], baseRot[2], baseRot[3], baseRot[4]
+  local dx, dy, dz, dw = dq[1], dq[2], dq[3], dq[4]
+  local out = {
+    dw*bx + dx*bw + dy*bz - dz*by,
+    dw*by - dx*bz + dy*bw + dz*bx,
+    dw*bz + dx*by - dy*bx + dz*bw,
+    dw*bw - dx*bx - dy*by - dz*bz,
+  }
+  return _quatNormalize(out)
+end
+
 local function _shouldApplyPosRot(rv, pos, rot)
   if not rv._lastAppliedPos then return true end
   local lp = rv._lastAppliedPos
@@ -45,8 +76,8 @@ end
 
 local function _applyPosRot(rv, pos, rot)
   rv.gameVehicle:setPositionRotation(pos[1], pos[2], pos[3], rot[1], rot[2], rot[3], rot[4])
-  rv._lastAppliedPos = pos
-  rv._lastAppliedRot = rot
+  rv._lastAppliedPos = { pos[1], pos[2], pos[3] }
+  rv._lastAppliedRot = { rot[1], rot[2], rot[3], rot[4] }
   -- NOTE: obj:setVelocity() and obj:setAngularVelocity() do not exist in
   -- BeamNG's vlua context.  BeamMP works around this with per-node
   -- obj:applyForceVector() in a dedicated velocityVE extension.  For now
@@ -158,7 +189,7 @@ local function _spawnGameVehicle(spec)
     vehObj = core_vehicles.spawnNewVehicle(spec.model, {
       config = spec.partCfg,
       pos = vec3(spec.pos[1], spec.pos[2], spec.pos[3]),
-      rot = quat(spec.rot[1], spec.rot[2], spec.rot[3], spec.rot[4]),
+      rot = quat(0, 0, 0, 1),
       autoEnterVehicle = false,
       cling = true,
     })
@@ -175,7 +206,7 @@ local function _spawnGameVehicle(spec)
     ok2, err = pcall(function()
       vehObj = core_vehicles.spawnNewVehicle("pickup", {
         pos = vec3(spec.pos[1], spec.pos[2], spec.pos[3]),
-        rot = quat(spec.rot[1], spec.rot[2], spec.rot[3], spec.rot[4]),
+        rot = quat(0, 0, 0, 1),
         autoEnterVehicle = false,
         cling = true,
       })
@@ -210,6 +241,16 @@ local function _spawnGameVehicle(spec)
   if not vid then
     return nil, nil, "spawnNewVehicle returned unexpected type: " .. type(vehObj)
   end
+
+  -- Apply authoritative transform after spawn to avoid constructor ordering ambiguity.
+  pcall(function()
+    if vehObj and spec and spec.pos and spec.rot then
+      vehObj:setPositionRotation(
+        spec.pos[1], spec.pos[2], spec.pos[3],
+        spec.rot[1], spec.rot[2], spec.rot[3], spec.rot[4]
+      )
+    end
+  end)
 
   return vid, vehObj
 end
@@ -257,6 +298,7 @@ M.spawnRemote = function(playerId, vehicleId, configData, snapshot)
       time = (spec.snapshotTimeMs or 0) / 1000.0,
       received = os.clock(),
       inputs = nil,
+      angVel = nil,
     })
   end
 
@@ -351,6 +393,7 @@ M.updateRemote = function(decoded)
     time = decoded.time,
     received = recvTime,
     inputs = decoded.inputs,  -- nil for legacy 0x10 packets
+    angVel = decoded.angVel,
   })
 
   local maxSnapshots = _getMaxSnapshots()
@@ -513,6 +556,18 @@ M.applyElectrics = function(playerId, vehicleId, electricsData)
     end
     if elec.parkingbrake ~= nil then
       table.insert(cmds, 'electrics.values.parkingbrake = ' .. tostring(elec.parkingbrake))
+    end
+    if elec.rpm ~= nil then
+      table.insert(cmds, 'electrics.values.rpm = ' .. tostring(elec.rpm))
+    end
+    if elec.wheelspeed ~= nil then
+      table.insert(cmds, 'electrics.values.wheelspeed = ' .. tostring(elec.wheelspeed))
+    end
+    if elec.clutch ~= nil then
+      table.insert(cmds, 'electrics.values.clutch = ' .. tostring(elec.clutch))
+    end
+    if elec.ignition ~= nil then
+      table.insert(cmds, 'electrics.values.ignitionLevel = ' .. tostring(elec.ignition))
     end
     if #cmds > 0 then
       veh:queueLuaCommand(table.concat(cmds, ' '))
@@ -747,7 +802,7 @@ M.tick = function(dt)
           s2.pos[2] + vy * extraT,
           s2.pos[3] + vz * extraT,
         }
-        targetRot = s2.rot
+        targetRot = _quatFromAngularVelocity(s2.rot, s2.angVel, extraT)
       end
 
       -- P2.2: Smooth correction blending instead of instant teleport.
@@ -852,6 +907,25 @@ M.tick = function(dt)
           if not lastBrake or math.abs(newBrake - lastBrake) > 0.002 then
             rv._lastAppliedBrake = newBrake
             inputCmds[#inputCmds+1] = 'input.event("brake", ' .. tostring(newBrake) .. ', 1)'
+          end
+        end
+
+        if inp.handbrake ~= nil then
+          local lastHandbrake = rv._lastAppliedHandbrake
+          local newHandbrake = inp.handbrake
+          if lastHandbrake == nil or math.abs(newHandbrake - lastHandbrake) > 0.01 then
+            rv._lastAppliedHandbrake = newHandbrake
+            inputCmds[#inputCmds+1] = 'input.event("parkingbrake", ' .. tostring(newHandbrake) .. ', 1)'
+            inputCmds[#inputCmds+1] = 'electrics.values.parkingbrake = ' .. tostring(newHandbrake)
+          end
+        end
+
+        if inp.gear ~= nil then
+          local lastGear = rv._lastAppliedGear
+          local newGear = inp.gear
+          if lastGear == nil or math.abs(newGear - lastGear) > 0.01 then
+            rv._lastAppliedGear = newGear
+            inputCmds[#inputCmds+1] = 'electrics.values.gear_A = ' .. tostring(newGear)
           end
         end
 

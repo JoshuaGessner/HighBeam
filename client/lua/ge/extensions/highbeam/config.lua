@@ -19,7 +19,7 @@ M.defaults = {
   nametagFontScale = 1.0,
   -- P0/P2/P3/P4: Sync optimization defaults
   debugOverlay = false,              -- P0: Show sync debug panel in overlay
-  correctionBlendFactor = 0.15,      -- P2.2: Fraction of error corrected per frame
+  correctionBlendFactor = 0.10,      -- Fraction of error corrected per frame (smooth anti-jitter)
   correctionTeleportDist = 10.0,     -- P2.2: Distance (m) threshold for instant teleport
   adaptiveSendRate = true,           -- P3.1: Enable speed-based send rate
   lodDistanceNear = 200,             -- P3.4: Full-rate update distance (m)
