@@ -514,6 +514,18 @@ M.applyElectrics = function(playerId, vehicleId, electricsData)
     if elec.parkingbrake ~= nil then
       table.insert(cmds, 'electrics.values.parkingbrake = ' .. tostring(elec.parkingbrake))
     end
+    if elec.rpm ~= nil then
+      table.insert(cmds, 'electrics.values.rpm = ' .. tostring(elec.rpm))
+    end
+    if elec.wheelspeed ~= nil then
+      table.insert(cmds, 'electrics.values.wheelspeed = ' .. tostring(elec.wheelspeed))
+    end
+    if elec.clutch ~= nil then
+      table.insert(cmds, 'electrics.values.clutch = ' .. tostring(elec.clutch))
+    end
+    if elec.ignition ~= nil then
+      table.insert(cmds, 'electrics.values.ignitionLevel = ' .. tostring(elec.ignition))
+    end
     if #cmds > 0 then
       veh:queueLuaCommand(table.concat(cmds, ' '))
     end

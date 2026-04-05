@@ -243,6 +243,14 @@ M.onVehicleSpawned = function(gameVehicleId)
 
   -- Build config JSON from the vehicle object
   local configData = state.captureVehicleConfig(veh)
+  if state.canRequestSpawn then
+    local allowed, reason = state.canRequestSpawn(gameVehicleId)
+    if not allowed then
+      log('D', logTag, 'Skipping local spawn registration gameVid=' .. tostring(gameVehicleId)
+        .. ' reason=' .. tostring(reason))
+      return
+    end
+  end
   log('I', logTag, 'Local vehicle spawned: gameVid=' .. tostring(gameVehicleId) .. ' model=' .. tostring(veh:getField('JBeam', '0')))
   state.requestSpawn(gameVehicleId, configData)
 end

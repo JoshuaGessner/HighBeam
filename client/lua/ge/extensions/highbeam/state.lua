@@ -5,6 +5,7 @@ M.localVehicles = {}  -- [gameVehicleId] = serverVehicleId
 M.playerId = nil
 M.sessionToken = nil
 M._pendingSpawns = {}  -- [requestId] = { gameVid = number, sentAt = number }
+M._inflightByGameVid = {} -- [gameVehicleId] = requestId
 M._nextSpawnRequestId = 1
 
 local sendTimer = 0
@@ -105,6 +106,7 @@ M.tick = function(dt)
       log('W', logTag, 'Spawn request timed out reqId=' .. tostring(requestId)
         .. ' gameVid=' .. tostring(gameVid))
       M._pendingSpawns[requestId] = nil
+      M._inflightByGameVid[gameVid] = nil
       -- Tell the server to clean up the vehicle it may have spawned for us.
       -- Without this, a late server confirmation creates a phantom vehicle
       -- that receives no position updates from us.
@@ -389,6 +391,10 @@ M._pollElectrics = function(gameVid, serverVid)
       .. 's.highbeams = e.highbeam or 0 '
       .. 's.gear = e.gear_A or 0 '
       .. 's.parkingbrake = (e.parkingbrake and e.parkingbrake > 0.5) and 1 or 0 '
+      .. 's.rpm = e.rpm or 0 '
+      .. 's.wheelspeed = e.wheelspeed or 0 '
+      .. 's.clutch = e.clutch or 0 '
+      .. 's.ignition = e.ignitionLevel or 0 '
       .. 'obj:queueGameEngineLua("extensions.highbeam.onElectricsReport(' .. gameVid .. ', \'" .. (jsonEncode and jsonEncode(s) or "{}") .. "\')")'
     )
   end)
@@ -475,9 +481,24 @@ M.onLocalVehicleSpawned = function(serverVehicleId, configData, spawnRequestId)
     local pending = M._pendingSpawns[spawnRequestId]
     gameVid = type(pending) == "table" and pending.gameVid or pending
     M._pendingSpawns[spawnRequestId] = nil
+    M._inflightByGameVid[gameVid] = nil
   end
 
   if gameVid then
+    local previousServerVid = M.localVehicles[gameVid]
+    if previousServerVid and previousServerVid ~= serverVehicleId then
+      log('W', logTag, 'Superseding local map game=' .. tostring(gameVid)
+        .. ' oldServer=' .. tostring(previousServerVid)
+        .. ' newServer=' .. tostring(serverVehicleId)
+        .. ' reqId=' .. tostring(spawnRequestId)
+        .. ' — deleting old server vehicle')
+      if connection and connection.getState() == connection.STATE_CONNECTED then
+        connection._sendPacket({
+          type = "vehicle_delete",
+          vehicle_id = previousServerVid,
+        })
+      end
+    end
     M.localVehicles[gameVid] = serverVehicleId
     log('I', logTag, 'Local vehicle mapped: game=' .. tostring(gameVid) .. ' server=' .. tostring(serverVehicleId) .. ' reqId=' .. tostring(spawnRequestId))
   else
@@ -504,6 +525,7 @@ M.onLocalVehicleSpawnRejected = function(spawnRequestId, reason)
   if pending then
     local gameVid = type(pending) == "table" and pending.gameVid or pending
     M._pendingSpawns[spawnRequestId] = nil
+    M._inflightByGameVid[gameVid] = nil
     log('W', logTag, 'Spawn rejected reqId=' .. tostring(spawnRequestId)
       .. ' gameVid=' .. tostring(gameVid) .. ' reason=' .. tostring(reason))
   else
@@ -512,14 +534,53 @@ M.onLocalVehicleSpawnRejected = function(spawnRequestId, reason)
   end
 end
 
+M.isSpawnInFlight = function(gameVehicleId)
+  return M._inflightByGameVid[gameVehicleId] ~= nil
+end
+
+M.canRequestSpawn = function(gameVehicleId)
+  if M.localVehicles[gameVehicleId] then
+    return false, "already_mapped"
+  end
+  if M._inflightByGameVid[gameVehicleId] then
+    return false, "in_flight"
+  end
+
+  if connection and connection.getServerMaxCars then
+    local maxCars = connection.getServerMaxCars()
+    if maxCars and maxCars > 0 then
+      local mappedCount = 0
+      for _, _ in pairs(M.localVehicles) do
+        mappedCount = mappedCount + 1
+      end
+      local inflightCount = 0
+      for _, _ in pairs(M._inflightByGameVid) do
+        inflightCount = inflightCount + 1
+      end
+      if (mappedCount + inflightCount) >= maxCars then
+        return false, "max_cars_reached"
+      end
+    end
+  end
+
+  return true
+end
+
 M.requestSpawn = function(gameVehicleId, configData)
   if not connection or connection.getState() ~= connection.STATE_CONNECTED then return end
+  local allowed, reason = M.canRequestSpawn(gameVehicleId)
+  if not allowed then
+    log('D', logTag, 'Skipping spawn request gameVid=' .. tostring(gameVehicleId)
+      .. ' reason=' .. tostring(reason))
+    return
+  end
   local requestId = M._nextSpawnRequestId
   M._nextSpawnRequestId = M._nextSpawnRequestId + 1
   M._pendingSpawns[requestId] = {
     gameVid = gameVehicleId,
     sentAt = os.clock(),
   }
+  M._inflightByGameVid[gameVehicleId] = requestId
   local sent = connection._sendPacket({
     type = "vehicle_spawn",
     vehicle_id = 0,  -- Server will assign
@@ -528,6 +589,7 @@ M.requestSpawn = function(gameVehicleId, configData)
   })
   if not sent then
     M._pendingSpawns[requestId] = nil
+    M._inflightByGameVid[gameVehicleId] = nil
     log('W', logTag, 'Failed to send spawn request reqId=' .. tostring(requestId)
       .. ' gameVid=' .. tostring(gameVehicleId))
   end
@@ -543,6 +605,7 @@ M.requestDelete = function(gameVehicleId)
     })
     M.localVehicles[gameVehicleId] = nil
   end
+  M._inflightByGameVid[gameVehicleId] = nil
 end
 
 -- Send damage state for a local vehicle (called on collision events)
@@ -567,6 +630,7 @@ M.onDisconnect = function()
   log('I', logTag, 'Clearing local vehicle state on disconnect')
   M.localVehicles = {}
   M._pendingSpawns = {}
+  M._inflightByGameVid = {}
   M._nextSpawnRequestId = 1
   M.playerId = nil
   M.sessionToken = nil

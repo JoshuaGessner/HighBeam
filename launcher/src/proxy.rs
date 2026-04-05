@@ -391,6 +391,11 @@ fn relay_udp_c2s(
     let mut last_diag = std::time::Instant::now();
     let diag_interval = Duration::from_secs(10);
     let mut diag_packets: u64 = 0;
+    let mut diag_timeouts: u64 = 0;
+    let mut diag_send_errors: u64 = 0;
+    let mut first_packet_logged = false;
+    let server_local_addr = server.local_addr().ok();
+    tracing::info!(local_addr = ?server_local_addr, %remote, "Proxy UDP c2s: server socket info");
 
     loop {
         if shutdown.load(Ordering::SeqCst) {
@@ -401,16 +406,24 @@ fn relay_udp_c2s(
         if now_diag.duration_since(last_diag) >= diag_interval {
             tracing::info!(
                 packets = diag_packets,
+                timeouts = diag_timeouts,
+                send_errors = diag_send_errors,
                 client_addr = ?client_addr,
                 "Proxy UDP c2s diag"
             );
             diag_packets = 0;
+            diag_timeouts = 0;
+            diag_send_errors = 0;
             last_diag = now_diag;
         }
         match local.recv_from(&mut buf) {
             Ok((n, addr)) => {
                 if client_addr.is_none() {
                     tracing::info!(%addr, bytes = n, "Proxy UDP c2s: learned client address");
+                }
+                if !first_packet_logged {
+                    tracing::info!(bytes = n, %remote, "Proxy UDP c2s: first packet to server");
+                    first_packet_logged = true;
                 }
                 client_addr = Some(addr);
                 if let Ok(mut slot) = client_addr_shared.lock() {
@@ -419,11 +432,14 @@ fn relay_udp_c2s(
                 packet_counter.fetch_add(1, Ordering::Relaxed);
                 byte_counter.fetch_add(n as u64, Ordering::Relaxed);
                 diag_packets += 1;
-                let _ = server.send_to(&buf[..n], remote);
+                if server.send_to(&buf[..n], remote).is_err() {
+                    diag_send_errors += 1;
+                }
             }
             Err(ref e)
                 if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
             {
+                diag_timeouts += 1;
                 continue;
             }
             Err(_) => break,

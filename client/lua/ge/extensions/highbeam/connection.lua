@@ -42,6 +42,7 @@ M._autoReconnect = false  -- Whether we should attempt reconnection
 M._players = {}  -- player_id -> { name = "..." }
 M._serverEventHandlers = {}  -- event_name -> callback(payload)
 M._serverMap = nil  -- map path from ServerHello
+M._serverMaxCars = nil
 
 -- Error tracking for diagnostics (Phase 2.4)
 M._errorCount = 0
@@ -61,6 +62,7 @@ M._udpRecvPollCount = 0     -- how many times _tickUdp polled receive()
 M._udpBindConfirmed = false  -- true once we receive the first inbound UDP packet
 M._udpBindRetryTimer = 0     -- timer for UdpBind retry
 M._udpBindRetrySent = 0      -- how many UdpBind retries sent
+M._udpBindAckCount = 0       -- count of bind ACK packets received in current diag interval
 M._udpPerPlayerRx = {}       -- [playerId] = count of inbound UDP packets
 M._tcpRxTypeCounts = {}
 M._tcpTxTypeCounts = {}
@@ -224,8 +226,9 @@ local function _reRegisterLocalVehicles()
       local gameVid = veh:getID()
       -- Skip remote vehicles (already tracked from WorldState)
       if not (vehicles and vehicles.isRemote(gameVid)) then
-        -- Skip if already registered
-        if not state.localVehicles[gameVid] then
+        -- Skip if already registered or awaiting a spawn acknowledgement.
+        local inFlight = state.isSpawnInFlight and state.isSpawnInFlight(gameVid)
+        if not state.localVehicles[gameVid] and not inFlight then
           local configData = state.captureVehicleConfig(veh)
           log('I', logTag, 'Re-registering local vehicle after reconnect: gameVid=' .. tostring(gameVid))
           state.requestSpawn(gameVid, configData)
@@ -253,6 +256,10 @@ end
 
 M.getPlayers = function()
   return M._players
+end
+
+M.getServerMaxCars = function()
+  return M._serverMaxCars
 end
 
 M.onServerEvent = function(eventName, callback)
@@ -442,6 +449,7 @@ M.disconnect = function()
   M._lastPingTime = nil
   M._connectStartTime = nil
   M._serverMap = nil
+  M._serverMaxCars = nil
   M._players = {}
   M._pendingWorldVehicles = nil
   M._pendingWorldStateDeadline = nil
@@ -454,6 +462,7 @@ M.disconnect = function()
   M._udpBindConfirmed = false
   M._udpBindRetryTimer = 0
   M._udpBindRetrySent = 0
+  M._udpBindAckCount = 0
   M._udpPerPlayerRx = {}
   M._tcpRxTypeCounts = {}
   M._tcpTxTypeCounts = {}
@@ -604,6 +613,7 @@ M.tick = function(dt)
         .. ' tcpIdle=' .. string.format('%.2f', tcpSince)
         .. ' udpRx=' .. tostring(M._udpRxCount)
         .. ' udpPos=' .. tostring(M._udpPositionRxCount)
+        .. ' udpBindAck=' .. tostring(M._udpBindAckCount)
         .. ' udpDecodeErr=' .. tostring(M._udpDecodeErrorCount)
         .. ' udpUnexpected=' .. tostring(M._udpUnexpectedCount)
         .. ' udpSock=' .. udpStatus
@@ -619,6 +629,7 @@ M.tick = function(dt)
         .. ' reconnectHost=' .. tostring(reconnectHost))
       M._udpRxCount = 0
       M._udpPositionRxCount = 0
+      M._udpBindAckCount = 0
       M._udpDecodeErrorCount = 0
       M._udpUnexpectedCount = 0
       M._udpRecvPollCount = 0
@@ -753,6 +764,7 @@ M._handlePacket = function(jsonStr)
   if ptype == "server_hello" then
     log('I', logTag, 'Received ServerHello: ' .. tostring(packet.name) .. ' map=' .. tostring(packet.map))
     M._serverMap = packet.map
+    M._serverMaxCars = tonumber(packet.max_cars)
     -- Validate protocol version
     if packet.version ~= 1 and packet.version ~= 2 then
       log('E', logTag, 'Protocol version mismatch: ' .. tostring(packet.version))
@@ -1074,13 +1086,23 @@ M._tickUdp = function()
     local rxNow = os.clock()
     M._udpRxTsIdx = (M._udpRxTsIdx % 200) + 1
     M._udpRxTimestamps[M._udpRxTsIdx] = rxNow
-    if not M._udpBindConfirmed then
-      M._udpBindConfirmed = true
-      log('I', logTag, 'UDP bind confirmed — first inbound packet received'
-        .. ' (retries=' .. tostring(M._udpBindRetrySent) .. ')')
-    end
-    if #data >= 65 and (data:byte(17) == 0x10 or data:byte(17) == 0x11) then
+    local packetType = (#data >= 17) and data:byte(17) or nil
+
+    -- UdpBindAck format: [16B hash][0x02][1B status]
+    if #data >= 18 and packetType == 0x02 then
+      M._udpBindAckCount = M._udpBindAckCount + 1
+      if not M._udpBindConfirmed then
+        M._udpBindConfirmed = true
+        log('I', logTag, 'UDP bind confirmed — bind ACK received'
+          .. ' (retries=' .. tostring(M._udpBindRetrySent) .. ')')
+      end
+    elseif #data >= 65 and (packetType == 0x10 or packetType == 0x11) then
       -- Binary position update (0x10 legacy / 0x11 extended) — decode and dispatch
+      if not M._udpBindConfirmed then
+        M._udpBindConfirmed = true
+        log('I', logTag, 'UDP bind confirmed — first inbound position packet received'
+          .. ' (retries=' .. tostring(M._udpBindRetrySent) .. ')')
+      end
       local decoded = protocol.decodePositionUpdate(data)
       if decoded and vehicles then
         M._udpPositionRxCount = M._udpPositionRxCount + 1
