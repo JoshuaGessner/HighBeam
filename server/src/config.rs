@@ -196,7 +196,7 @@ fn default_auth_timeout() -> u64 {
     30
 }
 fn default_tick_rate() -> u32 {
-    20
+    60
 }
 fn default_udp_buffer() -> usize {
     65535
@@ -300,7 +300,7 @@ impl Default for ServerConfig {
                 allowlist: None,
             },
             network: NetworkConfig {
-                tick_rate: 20,
+                tick_rate: 60,
                 udp_buffer_size: 65535,
                 udp_relay_distance_meters: default_udp_relay_distance_meters(),
                 tcp_keepalive_sec: 15,

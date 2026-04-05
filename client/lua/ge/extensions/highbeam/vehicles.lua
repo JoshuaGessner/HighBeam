@@ -36,10 +36,25 @@ local function _shouldApplyPosRot(rv, pos, rot)
   return false
 end
 
-local function _applyPosRot(rv, pos, rot)
+local function _applyPosRot(rv, pos, rot, vel)
   rv.gameVehicle:setPositionRotation(pos[1], pos[2], pos[3], rot[1], rot[2], rot[3], rot[4])
   rv._lastAppliedPos = pos
   rv._lastAppliedRot = rot
+
+  -- Set velocity to match the remote vehicle, reducing physics fighting.
+  -- The engine will apply this velocity instead of fighting the teleport.
+  if vel then
+    local vx = vel[1] or 0
+    local vy = vel[2] or 0
+    local vz = vel[3] or 0
+    if (vx*vx + vy*vy + vz*vz) > 0.0001 then
+      pcall(function()
+        rv.gameVehicle:queueLuaCommand(
+          'obj:setVelocity(float3(' .. tostring(vx) .. ',' .. tostring(vy) .. ',' .. tostring(vz) .. '))'
+        )
+      end)
+    end
+  end
 end
 
 local function _countPendingSpawnRetries()
@@ -241,12 +256,27 @@ M.updateRemote = function(decoded)
     rv.lastSeqTime = decoded.time
   end
 
+  -- Compute smoothed time offset between local clock and sender's simTime.
+  -- This lets us translate sender timestamps to local time for interpolation,
+  -- removing network jitter from the timeline.
+  local recvTime = os.clock()
+  if decoded.time then
+    local instantOffset = recvTime - decoded.time
+    if not rv.timeOffset then
+      rv.timeOffset = instantOffset
+    else
+      -- Exponential moving average (alpha ~0.1 → smooth over ~10 packets)
+      local alpha = 0.1
+      rv.timeOffset = rv.timeOffset + alpha * (instantOffset - rv.timeOffset)
+    end
+  end
+
   table.insert(rv.snapshots, {
     pos = decoded.pos,
     rot = decoded.rot,
     vel = decoded.vel,
     time = decoded.time,
-    received = os.clock(),
+    received = recvTime,
     inputs = decoded.inputs,  -- nil for legacy 0x10 packets
   })
 
@@ -298,7 +328,11 @@ M.resetRemote = function(playerId, vehicleId, data)
   local veh = rv.gameVehicle or (rv.gameVehicleId and scenetree.findObjectById(rv.gameVehicleId))
   if not veh then return end
 
-  -- Teleport to reset position
+  -- Reset physics state (clears deformation/damage) then teleport to position
+  pcall(function()
+    veh:queueLuaCommand('obj:requestReset(RESET_PHYSICS)')
+  end)
+
   if cfg.pos and cfg.rot then
     pcall(function()
       veh:setPositionRotation(
@@ -307,11 +341,6 @@ M.resetRemote = function(playerId, vehicleId, data)
       )
     end)
   end
-
-  -- Clear damage/deformation state on the remote vehicle
-  pcall(function()
-    veh:queueLuaCommand('recovery.startRecovering()')
-  end)
 
   -- Clear snapshots so interpolation restarts from the new position
   rv.snapshots = {}
@@ -349,10 +378,19 @@ M.applyDamage = function(playerId, vehicleId, damageData)
   end
 
   -- Apply beam deformation (sender field name is 'deform')
+  -- Each entry is {deformVal, restLength} or a plain number (legacy).
+  -- We use obj:setBeamLength + beamstate.beamDeformed which are valid vlua APIs.
   if dmg.deform then
     pcall(function()
-      for beamIdStr, deformVal in pairs(dmg.deform) do
-        veh:queueLuaCommand('obj:setBeamDeformation(' .. tostring(beamIdStr) .. ', ' .. tostring(deformVal) .. ')')
+      for beamIdStr, val in pairs(dmg.deform) do
+        local cid = tostring(beamIdStr)
+        if type(val) == 'table' and val[2] then
+          -- New format: {deformation, restLength}
+          veh:queueLuaCommand('obj:setBeamLength(' .. cid .. ', ' .. tostring(val[2]) .. ') beamstate.beamDeformed(' .. cid .. ', ' .. tostring(val[1]) .. ')')
+        elseif type(val) == 'number' then
+          -- Legacy format: just deformation value, notify beamstate
+          veh:queueLuaCommand('beamstate.beamDeformed(' .. cid .. ', ' .. tostring(val) .. ')')
+        end
       end
     end)
   end
@@ -537,10 +575,18 @@ M.tick = function(dt)
       local s1 = nil
       local s2 = nil
 
+      -- Use sender timestamps (translated to local time) for interpolation.
+      -- This removes network jitter from the timeline.
+      local timeOffset = rv.timeOffset or 0
+      local localRenderTime = renderTime
+
       for i = 1, #rv.snapshots - 1 do
         local a = rv.snapshots[i]
         local b = rv.snapshots[i + 1]
-        if a.received <= renderTime and b.received >= renderTime then
+        -- Convert sender time to local time using smoothed offset
+        local aLocal = (a.time or a.received) + timeOffset
+        local bLocal = (b.time or b.received) + timeOffset
+        if aLocal <= localRenderTime and bLocal >= localRenderTime then
           s1 = a
           s2 = b
           break
@@ -552,10 +598,13 @@ M.tick = function(dt)
         s2 = rv.snapshots[#rv.snapshots]
       end
 
-      local span = s2.received - s1.received
+      -- Compute span and t using sender timestamps for jitter-free timeline
+      local s1Local = (s1.time or s1.received) + timeOffset
+      local s2Local = (s2.time or s2.received) + timeOffset
+      local span = s2Local - s1Local
       local t = 1
       if span > 0.0001 then
-        t = (renderTime - s1.received) / span
+        t = (localRenderTime - s1Local) / span
       end
 
       local pos = nil
@@ -567,7 +616,7 @@ M.tick = function(dt)
         rot = interpolationMath.slerpQuat(s1.rot, s2.rot, t)
       else
         -- Extrapolate using latest velocity + input-augmented arc
-        local extraT = math.min((renderTime - s2.received), extrapolationWindow)
+        local extraT = math.min((localRenderTime - s2Local), extrapolationWindow)
         local vx = s2.vel[1] or 0
         local vy = s2.vel[2] or 0
         local vz = s2.vel[3] or 0
@@ -585,14 +634,14 @@ M.tick = function(dt)
       end
 
       if _shouldApplyPosRot(rv, pos, rot) then
-        _applyPosRot(rv, pos, rot)
+        _applyPosRot(rv, pos, rot, s2.vel)
       end
     elseif rv.gameVehicle and #rv.snapshots >= 1 then
       local latest = rv.snapshots[#rv.snapshots]
       local latestPos = latest.pos
       local latestRot = latest.rot
       if _shouldApplyPosRot(rv, latestPos, latestRot) then
-        _applyPosRot(rv, latestPos, latestRot)
+        _applyPosRot(rv, latestPos, latestRot, latest.vel)
       end
     end
 
