@@ -158,15 +158,51 @@ local function _currentLevelNormalized()
   return _normalizeLevelId(getCurrentLevelIdentifier())
 end
 
+-- Subsystem references (set by highbeam.lua after loading)
+-- MUST be declared before any local function that references them.
+local vehicles = nil
+local state = nil
+
+M.setSubsystems = function(v, s)
+  vehicles = v
+  state = s
+end
+
 local function _spawnWorldVehicles(vehiclesList)
-  if not vehicles or not vehiclesList then return end
+  log('I', logTag, '_spawnWorldVehicles called: vehicles=' .. tostring(vehicles ~= nil)
+    .. ' vehiclesList=' .. tostring(vehiclesList ~= nil)
+    .. ' listLen=' .. tostring(vehiclesList and #vehiclesList or 'N/A')
+    .. ' listType=' .. type(vehiclesList))
+  if not vehicles then
+    log('E', logTag, '_spawnWorldVehicles: ABORT — vehicles subsystem is nil!')
+    return
+  end
+  if not vehiclesList then
+    log('E', logTag, '_spawnWorldVehicles: ABORT — vehiclesList is nil!')
+    return
+  end
+  local iterCount = 0
   for _, v in ipairs(vehiclesList) do
+    iterCount = iterCount + 1
+    log('I', logTag, '_spawnWorldVehicles: spawning item #' .. iterCount
+      .. ' player_id=' .. tostring(v.player_id)
+      .. ' vehicle_id=' .. tostring(v.vehicle_id)
+      .. ' hasData=' .. tostring(v.data ~= nil)
+      .. ' hasPos=' .. tostring(v.position ~= nil)
+      .. ' hasFn=' .. tostring(vehicles.spawnRemoteFromSnapshot ~= nil))
     if vehicles.spawnRemoteFromSnapshot then
       vehicles.spawnRemoteFromSnapshot(v)
     else
       vehicles.spawnRemote(v.player_id, v.vehicle_id, v.data)
     end
   end
+  if iterCount == 0 then
+    log('W', logTag, '_spawnWorldVehicles: ipairs yielded 0 iterations! Dumping keys:')
+    for k, _ in pairs(vehiclesList) do
+      log('W', logTag, '  key=' .. tostring(k) .. ' type=' .. type(k))
+    end
+  end
+  log('I', logTag, '_spawnWorldVehicles: done, iterated ' .. iterCount .. ' vehicles')
 end
 
 -- After reconnect to the same map, re-register existing local vehicles
@@ -242,15 +278,6 @@ M._reportError = function(level, context, message)
   end
 end
 
-
--- Subsystem references (set by highbeam.lua after loading)
-local vehicles = nil
-local state = nil
-
-M.setSubsystems = function(v, s)
-  vehicles = v
-  state = s
-end
 
 -- State diagram:
 -- DISCONNECTED -> CONNECTING -> AUTHENTICATING -> CONNECTED -> DISCONNECTING -> DISCONNECTED

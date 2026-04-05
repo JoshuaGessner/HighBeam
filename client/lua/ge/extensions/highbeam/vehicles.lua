@@ -55,6 +55,14 @@ local function _applyPosRot(rv, pos, rot, vel)
       end)
     end
   end
+
+  -- Zero angular velocity to prevent the physics engine from fighting the
+  -- rotation we just set.  Without this, the soft-body simulation immediately
+  -- recomputes orientation from wheel contact / suspension / gravity and the
+  -- remote vehicle appears to ignore rotation updates.
+  pcall(function()
+    rv.gameVehicle:queueLuaCommand('obj:setAngularVelocity(float3(0,0,0))')
+  end)
 end
 
 local function _countPendingSpawnRetries()
@@ -127,6 +135,11 @@ end
 local function _spawnGameVehicle(spec)
   local vehObj = nil
   M._spawningRemote = true
+  log('I', logTag, '_spawnGameVehicle: model=' .. tostring(spec.model)
+    .. ' partCfg=' .. tostring(spec.partCfg and string.sub(spec.partCfg, 1, 60) or 'nil')
+    .. ' pos=' .. tostring(spec.pos and spec.pos[1])
+    .. ' core_vehicles=' .. tostring(core_vehicles ~= nil)
+    .. ' spawnNewVehicle=' .. tostring(core_vehicles and core_vehicles.spawnNewVehicle ~= nil))
 
   -- Save the player's current vehicle so we can restore focus after spawn
   local savedPlayerVeh = be and be:getPlayerVehicle(0) or nil
@@ -141,9 +154,14 @@ local function _spawnGameVehicle(spec)
     })
   end)
 
+  log('I', logTag, '_spawnGameVehicle: primary pcall ok=' .. tostring(ok)
+    .. ' vehObj=' .. tostring(vehObj) .. ' type=' .. type(vehObj)
+    .. ' err=' .. tostring(err))
+
   if not ok or not vehObj then
     local firstErr = err
     local ok2
+    log('I', logTag, '_spawnGameVehicle: primary failed, trying fallback pickup')
     ok2, err = pcall(function()
       vehObj = core_vehicles.spawnNewVehicle("pickup", {
         pos = vec3(spec.pos[1], spec.pos[2], spec.pos[3]),
@@ -152,6 +170,9 @@ local function _spawnGameVehicle(spec)
         cling = true,
       })
     end)
+    log('I', logTag, '_spawnGameVehicle: fallback pcall ok2=' .. tostring(ok2)
+      .. ' vehObj=' .. tostring(vehObj) .. ' type=' .. type(vehObj)
+      .. ' err=' .. tostring(err))
     if not ok2 or not vehObj then
       M._spawningRemote = false
       return nil, nil, tostring(firstErr or err)
@@ -173,6 +194,9 @@ local function _spawnGameVehicle(spec)
     vehObj = scenetree.findObjectById(vid)
   end
 
+  log('I', logTag, '_spawnGameVehicle: extracted vid=' .. tostring(vid)
+    .. ' vehObjType=' .. type(vehObj))
+
   if not vid then
     return nil, nil, "spawnNewVehicle returned unexpected type: " .. type(vehObj)
   end
@@ -187,6 +211,11 @@ end
 
 M.spawnRemote = function(playerId, vehicleId, configData, snapshot)
   local key = makeKey(playerId, vehicleId)
+  log('I', logTag, 'spawnRemote: key=' .. key
+    .. ' playerId=' .. tostring(playerId)
+    .. ' vehicleId=' .. tostring(vehicleId)
+    .. ' hasConfig=' .. tostring(configData ~= nil)
+    .. ' hasSnapshot=' .. tostring(snapshot ~= nil))
   if M.remoteVehicles[key] then
     log('W', logTag, 'Remote vehicle already exists: ' .. key)
     return
@@ -234,7 +263,15 @@ M.spawnRemote = function(playerId, vehicleId, configData, snapshot)
 end
 
 M.spawnRemoteFromSnapshot = function(vehicle)
-  if not vehicle then return end
+  log('I', logTag, 'spawnRemoteFromSnapshot called: vehicle=' .. tostring(vehicle ~= nil)
+    .. ' type=' .. type(vehicle))
+  if not vehicle then
+    log('E', logTag, 'spawnRemoteFromSnapshot: vehicle is nil/false!')
+    return
+  end
+  log('I', logTag, 'spawnRemoteFromSnapshot: player_id=' .. tostring(vehicle.player_id)
+    .. ' vehicle_id=' .. tostring(vehicle.vehicle_id)
+    .. ' data=' .. tostring(vehicle.data and string.sub(vehicle.data, 1, 80) or 'nil'))
   M.spawnRemote(vehicle.player_id, vehicle.vehicle_id, vehicle.data, {
     position = vehicle.position,
     rotation = vehicle.rotation,
