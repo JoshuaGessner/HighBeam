@@ -197,12 +197,9 @@ fn try_ufw(port: u16, proto: &str, label: &str) -> bool {
 #[cfg(target_os = "linux")]
 fn try_firewalld(port: u16, proto: &str, label: &str) -> bool {
     // Check if firewall-cmd is available.
-    let check = match Command::new("firewall-cmd").arg("--state").output() {
-        Ok(o) if o.status.success() => true,
+    match Command::new("firewall-cmd").arg("--state").output() {
+        Ok(o) if o.status.success() => {}
         _ => return false,
-    };
-    if !check {
-        return false;
     }
 
     // Check if the port is already open.
