@@ -9,9 +9,9 @@
 //!
 //! Platform behaviour:
 //! - **Windows** — creates an outbound allow rule for the launcher executable
-//!                  via `netsh` if one does not already exist.
+//!   via `netsh` if one does not already exist.
 //! - **macOS/Linux** — outbound connections are allowed by default on standard
-//!                      firewall configurations; we just log for awareness.
+//!   firewall configurations; we just log for awareness.
 
 #[cfg(target_os = "windows")]
 use std::process::Command;
@@ -53,7 +53,10 @@ fn ensure_outbound_impl() {
             return;
         }
         Ok(_) => {
-            tracing::info!(rule = rule_name, "Launcher firewall rule missing, attempting to add");
+            tracing::info!(
+                rule = rule_name,
+                "Launcher firewall rule missing, attempting to add"
+            );
         }
         Err(e) => {
             tracing::warn!(error = %e, "Could not query Windows Firewall; skipping rule check");
@@ -77,7 +80,10 @@ fn ensure_outbound_impl() {
 
     match add {
         Ok(output) if output.status.success() => {
-            tracing::info!(rule = rule_name, "Launcher firewall rule added successfully");
+            tracing::info!(
+                rule = rule_name,
+                "Launcher firewall rule added successfully"
+            );
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);

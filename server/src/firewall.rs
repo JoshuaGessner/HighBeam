@@ -8,7 +8,7 @@
 //! Platform behaviour:
 //! - **Windows** — queries/creates Windows Firewall rules via `netsh`.
 //! - **macOS**   — the application firewall auto-prompts on first listen;
-//!                  we just log the required ports.
+//!   we just log the required ports.
 //! - **Linux**   — detects `ufw` or `firewalld` and adds allow rules.
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]
@@ -212,7 +212,12 @@ fn try_firewalld(port: u16, proto: &str, label: &str) -> bool {
 
     if let Ok(output) = query {
         if output.status.success() {
-            tracing::debug!(port, protocol = proto, label, "firewalld rule already exists");
+            tracing::debug!(
+                port,
+                protocol = proto,
+                label,
+                "firewalld rule already exists"
+            );
             return true;
         }
     }
@@ -233,7 +238,12 @@ fn try_firewalld(port: u16, proto: &str, label: &str) -> bool {
             let _ = Command::new("sudo")
                 .args(["firewall-cmd", "--reload"])
                 .output();
-            tracing::info!(port, protocol = proto, label, "firewalld rule added successfully");
+            tracing::info!(
+                port,
+                protocol = proto,
+                label,
+                "firewalld rule added successfully"
+            );
             true
         }
         Ok(output) => {
