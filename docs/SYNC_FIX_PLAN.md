@@ -1,8 +1,9 @@
-# Sync Fix Plan — v0.8.2-dev.6
+# Sync Fix Plan — v0.8.2-dev.6 → dev.9
 
 > **Created:** 2025-07-18
-> **Status:** Ready to implement
-> **Affected version:** v0.8.2-dev.5 → v0.8.2-dev.6
+> **Last updated:** 2026-04-05
+> **Status:** Fixes F1–F7 implemented. F4 revised in dev.9 (see below).
+> **Affected version:** v0.8.2-dev.5 → v0.8.2-dev.6 (initial), dev.8/dev.9 (vlua fixes)
 > **Symptom:** "Rotation not updating, only locations syncing. Damage, rotation, wheel spinning — none of this is syncing."
 
 ---
@@ -94,11 +95,27 @@ Server (192.168.1.254:18860)
 Even after RC1 and RC2 are fixed, rotation may still appear "laggy" or "stuck" because:
 
 - `setPositionRotation(x, y, z, rx, ry, rz, rw)` sets the **rigid body transform**, but BeamNG's soft-body physics immediately recomputes the orientation from wheel contact, suspension, and gravity.
-- Position survives because the velocity injection (`obj:setVelocity`) pushes the vehicle in the right direction.
-- Rotation has no equivalent angular velocity injection — the physics engine "fights" the set orientation.
+- ~~Position survives because the velocity injection (`obj:setVelocity`) pushes the vehicle in the right direction.~~ **REVISED in dev.9:** `obj:setVelocity()` does NOT exist in BeamNG's vlua context — it was throwing FATAL LUA ERROR on every call. Velocity injection never actually worked. BeamMP uses per-node `obj:applyForceVector()` in a dedicated `velocityVE` extension.
+- ~~Rotation has no equivalent angular velocity injection — the physics engine "fights" the set orientation.~~ **REVISED in dev.9:** `obj:setAngularVelocity()` also does not exist in vlua. The dev.6 fix that "zeroed" angular velocity was silently failing.
 - Additionally, `setPositionRotation` operates on the chassis, but visual elements (wheels, steering) are driven by electrics/input state, not transform.
 
-**Action items → Fix F4 (angular velocity injection) and verify input.event already syncs wheel spin/steering.**
+### RC4: Stale Rotation Source (discovered in dev.8 testing)
+
+`veh:getRotation()` in the GE context returns the **SceneObject transform rotation**, which does NOT track physics orientation for soft-body vehicles. Log analysis showed `avgRot=0.00000` across all diagnostic windows — the quaternion was constant. The correct approach (used by BeamMP) is to poll from vlua: `quatFromDir(-vec3(obj:getDirectionVector()), vec3(obj:getDirectionVectorUp()))`.
+
+**Fixed in dev.9** — rotation is now polled from vlua via `queueLuaCommand` → `queueGameEngineLua` callback.
+
+### RC5: Non-existent vlua API calls (discovered in dev.8 testing)
+
+Three vlua API calls used in the client do not exist in BeamNG's vehicle Lua:
+
+| Bad Call | Error | Fix (dev.9) |
+|----------|-------|-------------|
+| `obj:setVelocity()` | FATAL LUA ERROR: attempt to call method 'setVelocity' (a nil value) | Removed. Use GE-side `setPositionRotation()` only. |
+| `obj:setAngularVelocity()` | FATAL LUA ERROR: attempt to call method 'setAngularVelocity' (a nil value) | Removed. Future: per-node `obj:applyForceVector()`. |
+| `beamstate.beamDeformed()` | FATAL LUA ERROR: attempt to call field 'beamDeformed' (a nil value) | Removed. `obj:setBeamLength()` handles deformation. |
+
+**Action items → ~~Fix F4 (angular velocity injection)~~ SUPERSEDED — see revised F4 below.**
 
 ---
 
@@ -230,30 +247,32 @@ Additionally, for the **same-host** case: detect if the server is running on loc
 
 ### F4: Angular Velocity Injection for Rotation Sync
 
-**File:** `client/lua/ge/extensions/highbeam/vehicles.lua`
+**Status:** ~~Original plan~~ → **REVISED in dev.9**
 
-**Current:** Only linear velocity is injected:
+**Original plan (dev.6):** Inject angular velocity via `obj:setAngularVelocity(float3(0,0,0))` in vlua.
+
+**What actually happened:**
+- dev.6: Added `obj:setAngularVelocity(float3(0,0,0))` — **silently failed** (method doesn't exist in vlua, threw FATAL LUA ERROR caught by pcall)
+- dev.8: Added `obj:setVelocity()` and `obj:setAngularVelocity()` with actual values — **same FATAL errors**, now confirmed in log analysis
+- dev.9: **Removed all broken vlua velocity calls.** `_applyPosRot` now uses only GE-side `setPositionRotation()`.
+
+**Current state (dev.9):**
 ```lua
-rv.gameVehicle:queueLuaCommand('obj:setVelocity(float3(...))')
-```
-
-**Fix:** Also inject angular velocity derived from rotation deltas:
-
-```lua
--- In _applyPosRot, after setting velocity:
--- Compute angular velocity from rotation difference
-if rv._lastAppliedRot and rot then
-    -- Approximate angular velocity from quaternion delta
-    -- deltaQ = rot * inverse(lastRot)
-    -- angVel ≈ 2 * deltaQ.xyz / dt (small angle approximation)
-    -- For now, just set angular velocity to zero to prevent physics fighting
-    pcall(function()
-        rv.gameVehicle:queueLuaCommand('obj:setAngularVelocity(float3(0,0,0))')
-    end)
+local function _applyPosRot(rv, pos, rot)
+  rv.gameVehicle:setPositionRotation(pos[1], pos[2], pos[3], rot[1], rot[2], rot[3], rot[4])
+  rv._lastAppliedPos = pos
+  rv._lastAppliedRot = rot
+  -- NOTE: obj:setVelocity() and obj:setAngularVelocity() do not exist in
+  -- BeamNG's vlua context.  BeamMP works around this with per-node
+  -- obj:applyForceVector() in a dedicated velocityVE extension.
 end
 ```
 
-A more sophisticated approach computes the actual angular velocity from the quaternion rate of change, but zeroing it prevents the physics engine from fighting the set orientation. We can refine later.
+**Future improvement:** Implement a force-based velocity system using per-node `obj:applyForceVector()`, similar to BeamMP's `velocityVE.lua`. This computes per-node forces to achieve a target velocity/angular velocity without using non-existent methods.
+
+**Also fixed in dev.9:**
+- **Rotation source:** Replaced `veh:getRotation()` (stale SceneObject transform) with vlua-sourced `quatFromDir(-obj:getDirectionVector(), obj:getDirectionVectorUp())` polled via callback
+- **beamDeformed:** Removed non-existent `beamstate.beamDeformed()` calls; `obj:setBeamLength()` alone handles deformation
 
 ---
 
@@ -303,15 +322,17 @@ BeamNG's `setPositionRotation(x, y, z, rx, ry, rz, rw)` expects XYZW. ✅
 
 ## Implementation Order
 
-| Priority | Fix | Effort | Notes |
-|----------|-----|--------|-------|
-| **P0** | F1 — Deep diagnostic logging | Small | Deploy immediately to get definitive root cause for RC1 |
-| **P0** | F3 — NAT hairpin bypass | Medium | Fixes RC2 for host player |
-| **P1** | F2 — Loud spawn guards | Included in F1 | |
-| **P1** | F4 — Angular velocity injection | Small | Only matters after RC1/RC2 are fixed |
-| **P2** | F5 — Extended server log | Operational | Next test session |
-| **P2** | F6 — Quaternion convention | None | Already verified ✅ |
-| **P2** | F7 — Damage/electrics/wheels | None | Blocked by RC1/RC2 |
+| Priority | Fix | Effort | Status |
+|----------|-----|--------|--------|
+| **P0** | F1 — Deep diagnostic logging | Small | ✅ Done (dev.6) |
+| **P0** | F3 — NAT hairpin bypass | Medium | ✅ Done (dev.6) |
+| **P1** | F2 — Loud spawn guards | Included in F1 | ✅ Done (dev.6) |
+| **P1** | F4 — Angular velocity injection | Small | ✅ Revised in dev.9 — removed broken vlua calls, GE-only for now |
+| **P2** | F5 — Extended server log | Operational | ✅ Done (dev.8 testing) |
+| **P2** | F6 — Quaternion convention | None | ✅ Already verified |
+| **P2** | F7 — Damage/electrics/wheels | None | ✅ Unblocked by RC1/RC2 fixes |
+| **NEW** | Vlua rotation source fix | Small | ✅ Done (dev.9) — `getRotation()` → vlua `quatFromDir` |
+| **NEW** | beamDeformed removal | Small | ✅ Done (dev.9) — removed non-existent vlua call |
 
 ---
 
