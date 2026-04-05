@@ -16,6 +16,7 @@ mod community_node;
 mod config;
 mod control;
 mod discovery_relay;
+mod firewall;
 mod gui;
 mod log_rotation;
 mod metrics;
@@ -251,6 +252,30 @@ async fn run_server(
         tracing::warn!(
             "Community node is enabled but PublicAddr is not configured; this server will not advertise itself in the discovery mesh"
         );
+    }
+
+    // Ensure firewall rules exist for all exposed ports.
+    {
+        let mut required = vec![firewall::RequiredPort {
+            port: config.general.port,
+            protocols: &["tcp", "udp"],
+            label: "Gameplay",
+        }];
+        if let Some(mod_sync_port) = control_plane.active_mod_sync_port() {
+            required.push(firewall::RequiredPort {
+                port: mod_sync_port,
+                protocols: &["tcp"],
+                label: "Mod Sync",
+            });
+        }
+        if community_status.enabled {
+            required.push(firewall::RequiredPort {
+                port: community_status.listen_port,
+                protocols: &["tcp"],
+                label: "Community Node Discovery",
+            });
+        }
+        firewall::ensure_firewall_rules(&required);
     }
 
     metrics::spawn_metrics_logger(
