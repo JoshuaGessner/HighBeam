@@ -11,7 +11,7 @@
 //! negligible latency (one extra memcpy over the loopback interface).
 
 use std::io::{self, Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -59,6 +59,21 @@ impl Drop for ProxyHandle {
 
 // ──────────────────────────────────────────── Entry point ───────────────────
 
+/// Check whether a socket address is assigned to a local network interface.
+///
+/// If `addr.ip()` is a loopback address, returns true immediately.
+/// Otherwise, tries to bind a UDP socket to that IP (port 0) — success means
+/// the address belongs to this machine.  This lets us detect same-host servers
+/// without pulling in platform-specific network-interface crates.
+fn is_local_address(addr: &SocketAddr) -> bool {
+    if addr.ip().is_loopback() {
+        return true;
+    }
+    // Attempt to bind to the specific IP.  If the OS accepts it, the address
+    // is assigned to a local interface.
+    UdpSocket::bind(SocketAddr::new(addr.ip(), 0)).is_ok()
+}
+
 /// Start a transparent TCP+UDP proxy to `remote_addr`.
 ///
 /// Returns a [`ProxyHandle`] with the local ports the in-game client should
@@ -71,6 +86,21 @@ pub fn start(remote_addr: &str) -> anyhow::Result<ProxyHandle> {
         .next()
         .ok_or_else(|| anyhow::anyhow!("No addresses found for '{}'", remote_addr))?;
 
+    // Detect same-host / same-LAN servers to avoid NAT hairpin.
+    // Many consumer routers silently drop UDP loopback (LAN → WAN → LAN),
+    // which prevents the host player from receiving relay packets.
+    let effective_remote = if is_local_address(&remote) {
+        let loopback = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), remote.port());
+        tracing::info!(
+            resolved = %remote,
+            effective = %loopback,
+            "Server is on this machine — using loopback to avoid NAT hairpin"
+        );
+        loopback
+    } else {
+        remote
+    };
+
     let shutdown = Arc::new(AtomicBool::new(false));
     let mut threads = Vec::new();
 
@@ -79,14 +109,15 @@ pub fn start(remote_addr: &str) -> anyhow::Result<ProxyHandle> {
     let tcp_port = tcp_listener.local_addr()?.port();
     tcp_listener.set_nonblocking(false)?;
 
-    tracing::info!(tcp_port, %remote, "Proxy TCP listener bound");
+    tracing::info!(tcp_port, %effective_remote, "Proxy TCP listener bound");
 
     let sd = shutdown.clone();
+    let tcp_target = effective_remote;
     threads.push(
         thread::Builder::new()
             .name("proxy-tcp".into())
             .spawn(move || {
-                if let Err(e) = run_tcp_proxy(tcp_listener, remote, sd) {
+                if let Err(e) = run_tcp_proxy(tcp_listener, tcp_target, sd) {
                     tracing::warn!(error = %e, "Proxy TCP relay ended with error");
                 }
             })?,
@@ -96,14 +127,15 @@ pub fn start(remote_addr: &str) -> anyhow::Result<ProxyHandle> {
     let udp_local = UdpSocket::bind("127.0.0.1:0")?;
     let udp_port = udp_local.local_addr()?.port();
 
-    tracing::info!(udp_port, %remote, "Proxy UDP listener bound");
+    tracing::info!(udp_port, %effective_remote, "Proxy UDP listener bound");
 
     let sd = shutdown.clone();
+    let udp_target = effective_remote;
     threads.push(
         thread::Builder::new()
             .name("proxy-udp".into())
             .spawn(move || {
-                if let Err(e) = run_udp_proxy(udp_local, remote, sd) {
+                if let Err(e) = run_udp_proxy(udp_local, udp_target, sd) {
                     tracing::warn!(error = %e, "Proxy UDP relay ended with error");
                 }
             })?,
