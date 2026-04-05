@@ -521,9 +521,7 @@ fn preflight_port_availability(
     if let Some(port) = community_port {
         let addr = format!("0.0.0.0:{port}");
         std::net::TcpListener::bind(&addr).with_context(|| {
-            format!(
-                "Port preflight failed: community discovery TCP {addr} is already in use."
-            )
+            format!("Port preflight failed: community discovery TCP {addr} is already in use.")
         })?;
     }
 

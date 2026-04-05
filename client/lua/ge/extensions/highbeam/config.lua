@@ -22,9 +22,14 @@ M.defaults = {
   correctionBlendFactor = 0.10,      -- Fraction of error corrected per frame (smooth anti-jitter)
   correctionTeleportDist = 10.0,     -- P2.2: Distance (m) threshold for instant teleport
   adaptiveSendRate = true,           -- P3.1: Enable speed-based send rate
+  maxAdaptiveSendRate = 45,          -- Cap adaptive update rate to reduce script load
+  inputPollIntervalSec = 0.15,       -- Combined inputs + rotation poll interval
+  electricsPollIntervalSec = 0.75,   -- Electrics poll interval
+  damageFallbackPollSec = 8.0,       -- Sparse fallback damage scan interval
   lodDistanceNear = 200,             -- P3.4: Full-rate update distance (m)
   lodDistanceFar = 500,              -- P3.4: Reduced-rate update distance (m)
   directSteering = true,             -- P4.1: Use direct electrics instead of input.event
+  verboseSyncLogging = false,        -- Enable detailed sync diagnostics in logs
 }
 
 M.current = {}
@@ -205,6 +210,39 @@ M.set = function(key, value)
     local numeric = tonumber(value)
     if not numeric then return false end
     M.current.directConnectPort = math.max(1, math.min(65535, math.floor(numeric + 0.5)))
+    return true
+  end
+
+  if key == "maxAdaptiveSendRate" then
+    local numeric = tonumber(value)
+    if not numeric then return false end
+    M.current.maxAdaptiveSendRate = math.max(20, math.min(60, math.floor(numeric + 0.5)))
+    return true
+  end
+
+  if key == "inputPollIntervalSec" then
+    local numeric = tonumber(value)
+    if not numeric then return false end
+    M.current.inputPollIntervalSec = math.max(0.05, math.min(0.5, numeric))
+    return true
+  end
+
+  if key == "electricsPollIntervalSec" then
+    local numeric = tonumber(value)
+    if not numeric then return false end
+    M.current.electricsPollIntervalSec = math.max(0.2, math.min(2.0, numeric))
+    return true
+  end
+
+  if key == "damageFallbackPollSec" then
+    local numeric = tonumber(value)
+    if not numeric then return false end
+    M.current.damageFallbackPollSec = math.max(2.0, math.min(20.0, numeric))
+    return true
+  end
+
+  if key == "verboseSyncLogging" then
+    M.current.verboseSyncLogging = value and true or false
     return true
   end
 

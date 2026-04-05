@@ -43,6 +43,20 @@ local _udpSendErrorCount = 0
 local _udpSkippedUnchangedCount = 0
 local _sendSpeedAccum = 0
 local _sendSpeedSamples = 0
+local _componentTxStats = {
+  damage_sent = 0,
+  damage_throttled = 0,
+  damage_no_server_vid = 0,
+  damage_send_failed = 0,
+  electrics_sent = 0,
+  electrics_unchanged = 0,
+  electrics_no_server_vid = 0,
+  electrics_send_failed = 0,
+}
+local _pollLuaCommandCount = 0
+local _pollLuaCommandErrorCount = 0
+local _damageFallbackTimer = 0
+local _damageFallbackCursor = 0
 
 local POS_SEND_DELTA_SQ = 0.01 * 0.01
 local ROT_SEND_DELTA_RAD = math.rad(0.5)
@@ -131,6 +145,18 @@ local function _countLocalVehicles()
   return count
 end
 
+local function _verboseSyncLoggingEnabled()
+  return config and config.get and config.get("verboseSyncLogging") == true
+end
+
+local function _getConfigNumber(key, fallback)
+  local value = config and config.get and config.get(key)
+  if type(value) == "number" then
+    return value
+  end
+  return fallback
+end
+
 local function _logUdpErrorRateLimited(message)
   local now = os.clock()
   if (now - _lastUdpErrorLogAt) >= _udpErrorLogCooldown then
@@ -206,9 +232,10 @@ M.tick = function(dt)
 
   local updateRate = (config and config.get("updateRate")) or 20
 
-  -- Adaptive send rate with strict tiers for smoothness vs bandwidth:
-  -- <1 m/s = 15Hz, 1-20 m/s = 30Hz, >=20 m/s = 60Hz.
+  -- Adaptive send rate with conservative caps to reduce script + network load.
+  -- <1 m/s = 12Hz, 1-20 m/s = 24Hz, >=20 m/s = maxAdaptiveSendRate (default 45Hz).
   local adaptiveSendRate = config and config.get("adaptiveSendRate")
+  local maxAdaptiveSendRate = math.max(20, math.min(60, math.floor(_getConfigNumber("maxAdaptiveSendRate", 45))))
   if adaptiveSendRate ~= false then
     local maxSpeedSq = 0
     for gameVid, _ in pairs(M.localVehicles) do
@@ -223,11 +250,11 @@ M.tick = function(dt)
     end
     local maxSpeed = math.sqrt(maxSpeedSq)
     if maxSpeed < 1.0 then
-      updateRate = 15
+      updateRate = 12
     elseif maxSpeed < 20.0 then
-      updateRate = 30
+      updateRate = 24
     else
-      updateRate = 60
+      updateRate = maxAdaptiveSendRate
     end
   end
 
@@ -320,6 +347,14 @@ M.tick = function(dt)
       .. ' udpSkippedUnchanged=' .. tostring(_udpSkippedUnchangedCount)
       .. ' udpEncodeErr=' .. tostring(_udpEncodeErrorCount)
       .. ' udpSendErr=' .. tostring(_udpSendErrorCount)
+      .. ' pollLuaCmd=' .. tostring(_pollLuaCommandCount)
+      .. ' pollLuaErr=' .. tostring(_pollLuaCommandErrorCount)
+      .. ' dmgSent=' .. tostring(_componentTxStats.damage_sent)
+      .. ' dmgThr=' .. tostring(_componentTxStats.damage_throttled)
+      .. ' dmgNoMap=' .. tostring(_componentTxStats.damage_no_server_vid)
+      .. ' elecSent=' .. tostring(_componentTxStats.electrics_sent)
+      .. ' elecUnchanged=' .. tostring(_componentTxStats.electrics_unchanged)
+      .. ' elecNoMap=' .. tostring(_componentTxStats.electrics_no_server_vid)
     )
     M._debugStats = {
       sendRateHz = updateRate,
@@ -333,9 +368,21 @@ M.tick = function(dt)
     _udpSendErrorCount = 0
     _sendSpeedAccum = 0
     _sendSpeedSamples = 0
+    _pollLuaCommandCount = 0
+    _pollLuaCommandErrorCount = 0
+    _componentTxStats = {
+      damage_sent = 0,
+      damage_throttled = 0,
+      damage_no_server_vid = 0,
+      damage_send_failed = 0,
+      electrics_sent = 0,
+      electrics_unchanged = 0,
+      electrics_no_server_vid = 0,
+      electrics_send_failed = 0,
+    }
   end
 
-  -- ── Damage polling (every 1000ms) ─────────────────────────────────
+  -- ── Damage polling (every 1000ms on dirty vehicles) ───────────────
   -- P3.2: Only poll damage for vehicles that have recently had a collision.
   -- We track a per-vehicle "dirty" flag that is set by onBeamBroke / manual triggers.
   -- Fallback: poll at a reduced rate (every 3s) to catch missed events.
@@ -351,13 +398,19 @@ M.tick = function(dt)
     end
   end
 
-  -- P3.2: Fallback full damage poll every 3s for vehicles with no dirty flag
-  if not M._damageFullTimer then M._damageFullTimer = 0 end
-  M._damageFullTimer = M._damageFullTimer + dt
-  if M._damageFullTimer >= 3.0 then
-    M._damageFullTimer = 0
-    for gameVid, serverVid in pairs(M.localVehicles) do
-      M._pollDamage(gameVid)
+  -- Fallback damage polling runs sparsely and round-robin to avoid frame spikes.
+  local damageFallbackInterval = math.max(2.0, math.min(20.0, _getConfigNumber("damageFallbackPollSec", 8.0)))
+  _damageFallbackTimer = _damageFallbackTimer + dt
+  if _damageFallbackTimer >= damageFallbackInterval then
+    _damageFallbackTimer = 0
+    local localIds = {}
+    for gameVid, _ in pairs(M.localVehicles) do
+      table.insert(localIds, gameVid)
+    end
+    table.sort(localIds)
+    if #localIds > 0 then
+      _damageFallbackCursor = (_damageFallbackCursor % #localIds) + 1
+      M._pollDamage(localIds[_damageFallbackCursor])
     end
   end
 
@@ -370,22 +423,23 @@ M.tick = function(dt)
     end
   end
 
-  -- ── Electrics polling (every 500ms) ───────────────────────────────
+  -- ── Electrics polling (default every 750ms) ───────────────────────
+  local electricsInterval = math.max(0.2, math.min(2.0, _getConfigNumber("electricsPollIntervalSec", 0.75)))
   _electricsTimer = _electricsTimer + dt
-  if _electricsTimer >= 0.5 then
+  if _electricsTimer >= electricsInterval then
     _electricsTimer = 0
     for gameVid, serverVid in pairs(M.localVehicles) do
       M._pollElectrics(gameVid, serverVid)
     end
   end
 
-  -- ── Input polling (every 100ms) ───────────────────────────────────
+  -- ── Input + vlua rotation polling (single command, default 150ms) ─
+  local inputPollInterval = math.max(0.05, math.min(0.5, _getConfigNumber("inputPollIntervalSec", 0.15)))
   _inputsTimer = _inputsTimer + dt
-  if _inputsTimer >= 0.1 then
+  if _inputsTimer >= inputPollInterval then
     _inputsTimer = 0
     for gameVid, _ in pairs(M.localVehicles) do
-      M._pollInputs(gameVid)
-      M._pollVluaRotation(gameVid)
+      M._pollInputsAndRotation(gameVid)
     end
   end
 end
@@ -401,7 +455,7 @@ M._pollDamage = function(gameVid)
 
   -- Request the vehicle Lua to report damage state back to GE.
   -- The vehicle-side callback will fire our GE extension event.
-  pcall(function()
+  local ok = pcall(function()
     veh:queueLuaCommand(
       'local d = {} '
       .. 'd.broken = {} '
@@ -421,6 +475,10 @@ M._pollDamage = function(gameVid)
       .. 'obj:queueGameEngineLua("extensions.highbeam.onVehicleDamageReport(' .. gameVid .. ', \'" .. (jsonEncode and jsonEncode(d) or "{}") .. "\')")'
     )
   end)
+  _pollLuaCommandCount = _pollLuaCommandCount + 1
+  if not ok then
+    _pollLuaCommandErrorCount = _pollLuaCommandErrorCount + 1
+  end
 end
 
 -- Called back from vehicle-side Lua with damage state JSON
@@ -489,7 +547,7 @@ M._pollElectrics = function(gameVid, serverVid)
 
   -- Query electrics via vehicle-side Lua and report back to GE
   -- P4.3: Added gear and parking brake for full drivetrain sync
-  pcall(function()
+  local ok = pcall(function()
     veh:queueLuaCommand(
       'local e = electrics.values '
       .. 'local s = {} '
@@ -509,31 +567,54 @@ M._pollElectrics = function(gameVid, serverVid)
       .. 'obj:queueGameEngineLua("extensions.highbeam.onElectricsReport(' .. gameVid .. ', \'" .. (jsonEncode and jsonEncode(s) or "{}") .. "\')")'
     )
   end)
+  _pollLuaCommandCount = _pollLuaCommandCount + 1
+  if not ok then
+    _pollLuaCommandErrorCount = _pollLuaCommandErrorCount + 1
+  end
 end
 
 -- Called back from vehicle-side Lua with electrics state
 M.onElectricsReport = function(gameVid, electricsJson)
   local serverVid = M.localVehicles[gameVid]
-  if not serverVid then return end
+  if not serverVid then
+    _componentTxStats.electrics_no_server_vid = _componentTxStats.electrics_no_server_vid + 1
+    if _verboseSyncLoggingEnabled() then
+      log('D', logTag, 'Electrics drop: no server mapping for gameVid=' .. tostring(gameVid))
+    end
+    return
+  end
 
   -- Delta detection: only send if state changed
-  if _lastElectrics[gameVid] == electricsJson then return end
+  if _lastElectrics[gameVid] == electricsJson then
+    _componentTxStats.electrics_unchanged = _componentTxStats.electrics_unchanged + 1
+    return
+  end
   _lastElectrics[gameVid] = electricsJson
 
-  connection._sendPacket({
+  local sent = connection._sendPacket({
     type = "vehicle_electrics",
     vehicle_id = serverVid,
     data = electricsJson,
   })
+  if sent then
+    _componentTxStats.electrics_sent = _componentTxStats.electrics_sent + 1
+    if _verboseSyncLoggingEnabled() then
+      log('D', logTag, 'Electrics sent gameVid=' .. tostring(gameVid)
+        .. ' serverVid=' .. tostring(serverVid)
+        .. ' payloadBytes=' .. tostring(#(electricsJson or '')))
+    end
+  else
+    _componentTxStats.electrics_send_failed = _componentTxStats.electrics_send_failed + 1
+  end
 end
 
 -- ── Input polling (for input-augmented extrapolation) ───────────────
 -- Fetches steering/throttle/brake from vlua electrics and caches in GE.
-M._pollInputs = function(gameVid)
+M._pollInputsAndRotation = function(gameVid)
   local veh = scenetree.findObjectById(gameVid)
   if not veh then return end
 
-  pcall(function()
+  local ok = pcall(function()
     veh:queueLuaCommand(
       'local e = electrics.values '
       .. 'local st = e.steering_input or e.steering or 0 '
@@ -541,10 +622,17 @@ M._pollInputs = function(gameVid)
       .. 'local br = e.brake_input or e.brake or 0 '
       .. 'local ga = e.gear_A or 0 '
       .. 'local hb = (e.parkingbrake and e.parkingbrake > 0.5) and 1 or 0 '
-      .. 'obj:queueGameEngineLua("extensions.highbeam.onInputsReport(' .. gameVid .. '," .. st .. "," .. th .. "," .. br .. "," .. ga .. "," .. hb .. ")")'
+      .. 'local r = quatFromDir(-vec3(obj:getDirectionVector()), vec3(obj:getDirectionVectorUp())) '
+      .. 'obj:queueGameEngineLua("extensions.highbeam.onInputsAndRotationReport(' .. gameVid .. '," .. st .. "," .. th .. "," .. br .. "," .. ga .. "," .. hb .. "," .. r.x .. "," .. r.y .. "," .. r.z .. "," .. r.w .. ")")'
     )
   end)
+  _pollLuaCommandCount = _pollLuaCommandCount + 1
+  if not ok then
+    _pollLuaCommandErrorCount = _pollLuaCommandErrorCount + 1
+  end
 end
+
+M._pollInputs = M._pollInputsAndRotation
 
 -- Called back from vehicle-side Lua with input values
 M.onInputsReport = function(gameVid, steer, throttle, brake, gear, handbrake)
@@ -562,15 +650,12 @@ end
 -- track physics orientation on soft-body vehicles.  This polls the actual
 -- physics rotation from vlua using direction vectors (same as BeamMP).
 M._pollVluaRotation = function(gameVid)
-  local veh = scenetree.findObjectById(gameVid)
-  if not veh then return end
+  M._pollInputsAndRotation(gameVid)
+end
 
-  pcall(function()
-    veh:queueLuaCommand(
-      'local r = quatFromDir(-vec3(obj:getDirectionVector()), vec3(obj:getDirectionVectorUp())) '
-      .. 'obj:queueGameEngineLua("extensions.highbeam.onVluaRotationReport(' .. gameVid .. '," .. r.x .. "," .. r.y .. "," .. r.z .. "," .. r.w .. ")")'
-    )
-  end)
+M.onInputsAndRotationReport = function(gameVid, steer, throttle, brake, gear, handbrake, rx, ry, rz, rw)
+  M.onInputsReport(gameVid, steer, throttle, brake, gear, handbrake)
+  M.onVluaRotationReport(gameVid, rx, ry, rz, rw)
 end
 
 -- Called back from vehicle-side Lua with physics rotation quaternion
@@ -744,20 +829,36 @@ end
 
 -- Send damage state for a local vehicle (called on collision events)
 M.sendDamage = function(gameVehicleId, damageData)
-  if not connection or connection.getState() ~= connection.STATE_CONNECTED then return end
+  if not connection or connection.getState() ~= connection.STATE_CONNECTED then
+    return
+  end
   local serverVid = M.localVehicles[gameVehicleId]
-  if not serverVid then return end
+  if not serverVid then
+    _componentTxStats.damage_no_server_vid = _componentTxStats.damage_no_server_vid + 1
+    if _verboseSyncLoggingEnabled() then
+      log('D', logTag, 'Damage drop: no server mapping for gameVid=' .. tostring(gameVehicleId))
+    end
+    return
+  end
 
   -- Throttle damage sends: at most once per 200ms per vehicle
   local now = os.clock()
-  if _damageTimers[gameVehicleId] and (now - _damageTimers[gameVehicleId]) < 0.2 then return end
+  if _damageTimers[gameVehicleId] and (now - _damageTimers[gameVehicleId]) < 0.2 then
+    _componentTxStats.damage_throttled = _componentTxStats.damage_throttled + 1
+    return
+  end
   _damageTimers[gameVehicleId] = now
 
-  connection._sendPacket({
+  local sent = connection._sendPacket({
     type = "vehicle_damage",
     vehicle_id = serverVid,
     data = damageData,
   })
+  if sent then
+    _componentTxStats.damage_sent = _componentTxStats.damage_sent + 1
+  else
+    _componentTxStats.damage_send_failed = _componentTxStats.damage_send_failed + 1
+  end
 end
 
 M.onDisconnect = function()
@@ -791,6 +892,20 @@ M.onDisconnect = function()
   _udpSendErrorCount = 0
   _sendSpeedAccum = 0
   _sendSpeedSamples = 0
+  _componentTxStats = {
+    damage_sent = 0,
+    damage_throttled = 0,
+    damage_no_server_vid = 0,
+    damage_send_failed = 0,
+    electrics_sent = 0,
+    electrics_unchanged = 0,
+    electrics_no_server_vid = 0,
+    electrics_send_failed = 0,
+  }
+  _pollLuaCommandCount = 0
+  _pollLuaCommandErrorCount = 0
+  _damageFallbackTimer = 0
+  _damageFallbackCursor = 0
 end
 
 return M

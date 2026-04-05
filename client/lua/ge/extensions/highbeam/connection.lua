@@ -81,6 +81,11 @@ local function _bumpCounter(map, key)
 end
 
 local function _formatCounterMap(map)
+  local function _syncVerboseLoggingEnabled()
+    local okCfg, cfg = pcall(require, "highbeam/config")
+    return okCfg and cfg and cfg.get and cfg.get("verboseSyncLogging") == true
+  end
+  M._componentRxStats = {}
   local keys = {}
   for k, v in pairs(map or {}) do
     if v and v > 0 then
@@ -464,6 +469,7 @@ M.disconnect = function()
   M._udpBindRetrySent = 0
   M._udpBindAckCount = 0
   M._udpPerPlayerRx = {}
+    M._componentRxStats = {}
   M._tcpRxTypeCounts = {}
   M._tcpTxTypeCounts = {}
   M._udpRxTimestamps = {}
@@ -625,6 +631,8 @@ M.tick = function(dt)
       log('I', logTag, 'Sync diag tcpRxTypes=' .. _formatCounterMap(M._tcpRxTypeCounts)
         .. ' tcpTxTypes=' .. _formatCounterMap(M._tcpTxTypeCounts)
         .. ' udpPerPlayer=' .. _formatCounterMap(M._udpPerPlayerRx)
+          .. ' componentRx=' .. _formatCounterMap(M._componentRxStats)
+          M._componentRxStats = {}
         .. ' reconnectAttempt=' .. tostring(M._reconnectAttempt)
         .. ' reconnectHost=' .. tostring(reconnectHost))
       M._udpRxCount = 0
@@ -893,7 +901,17 @@ M._handlePacket = function(jsonStr)
       state.onLocalVehicleSpawnRejected(packet.spawn_request_id, packet.reason)
     end
   elseif ptype == "vehicle_edit" then
-    if vehicles and packet.player_id ~= M._playerId then
+    if not vehicles then
+      _bumpCounter(M._componentRxStats, "edit_drop_no_vehicles")
+    elseif packet.player_id == M._playerId then
+      _bumpCounter(M._componentRxStats, "edit_skip_self")
+    else
+      _bumpCounter(M._componentRxStats, "edit_dispatch")
+      if _syncVerboseLoggingEnabled() then
+        log('D', logTag, 'Dispatch vehicle_edit from=' .. tostring(packet.player_id)
+          .. ' vehicle=' .. tostring(packet.vehicle_id)
+          .. ' bytes=' .. tostring(#(packet.data or '')))
+      end
       vehicles.updateRemoteConfig(packet.player_id, packet.vehicle_id, packet.data)
     end
   elseif ptype == "vehicle_delete" then
@@ -901,19 +919,60 @@ M._handlePacket = function(jsonStr)
       vehicles.removeRemote(packet.player_id, packet.vehicle_id)
     end
   elseif ptype == "vehicle_reset" then
-    if vehicles and packet.player_id ~= M._playerId then
+    if not vehicles then
+      _bumpCounter(M._componentRxStats, "reset_drop_no_vehicles")
+    elseif packet.player_id == M._playerId then
+      _bumpCounter(M._componentRxStats, "reset_skip_self")
+    else
+      _bumpCounter(M._componentRxStats, "reset_dispatch")
+      if _syncVerboseLoggingEnabled() then
+        log('D', logTag, 'Dispatch vehicle_reset from=' .. tostring(packet.player_id)
+          .. ' vehicle=' .. tostring(packet.vehicle_id)
+          .. ' bytes=' .. tostring(#(packet.data or '')))
+      end
       vehicles.resetRemote(packet.player_id, packet.vehicle_id, packet.data)
     end
   elseif ptype == "vehicle_damage" then
-    if vehicles and packet.player_id ~= M._playerId then
+    if not vehicles then
+      _bumpCounter(M._componentRxStats, "damage_drop_no_vehicles")
+    elseif packet.player_id == M._playerId then
+      _bumpCounter(M._componentRxStats, "damage_skip_self")
+    else
+      _bumpCounter(M._componentRxStats, "damage_dispatch")
+      if _syncVerboseLoggingEnabled() then
+        log('D', logTag, 'Dispatch vehicle_damage from=' .. tostring(packet.player_id)
+          .. ' vehicle=' .. tostring(packet.vehicle_id)
+          .. ' bytes=' .. tostring(#(packet.data or '')))
+      end
       vehicles.applyDamage(packet.player_id, packet.vehicle_id, packet.data)
     end
   elseif ptype == "vehicle_electrics" then
-    if vehicles and packet.player_id ~= M._playerId then
+    if not vehicles then
+      _bumpCounter(M._componentRxStats, "electrics_drop_no_vehicles")
+    elseif packet.player_id == M._playerId then
+      _bumpCounter(M._componentRxStats, "electrics_skip_self")
+    else
+      _bumpCounter(M._componentRxStats, "electrics_dispatch")
+      if _syncVerboseLoggingEnabled() then
+        log('D', logTag, 'Dispatch vehicle_electrics from=' .. tostring(packet.player_id)
+          .. ' vehicle=' .. tostring(packet.vehicle_id)
+          .. ' bytes=' .. tostring(#(packet.data or '')))
+      end
       vehicles.applyElectrics(packet.player_id, packet.vehicle_id, packet.data)
     end
   elseif ptype == "vehicle_coupling" then
-    if vehicles and packet.player_id ~= M._playerId then
+    if not vehicles then
+      _bumpCounter(M._componentRxStats, "coupling_drop_no_vehicles")
+    elseif packet.player_id == M._playerId then
+      _bumpCounter(M._componentRxStats, "coupling_skip_self")
+    else
+      _bumpCounter(M._componentRxStats, "coupling_dispatch")
+      if _syncVerboseLoggingEnabled() then
+        log('D', logTag, 'Dispatch vehicle_coupling from=' .. tostring(packet.player_id)
+          .. ' vehicle=' .. tostring(packet.vehicle_id)
+          .. ' target=' .. tostring(packet.target_vehicle_id)
+          .. ' coupled=' .. tostring(packet.coupled))
+      end
       vehicles.applyCoupling(packet.player_id, packet.vehicle_id, packet.target_vehicle_id, packet.coupled, packet.node_id, packet.target_node_id)
     end
   elseif ptype == "server_message" then

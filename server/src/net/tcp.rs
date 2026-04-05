@@ -509,8 +509,47 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
 ) -> Result<()> {
     let idle_timeout = Duration::from_secs(60); // 60-second idle timeout
     let mut last_activity = Instant::now();
+    let mut component_diag_last = Instant::now();
+    let component_diag_interval = Duration::from_secs(5);
+    let mut diag_component_rx: u64 = 0;
+    let mut diag_component_relay: u64 = 0;
+    let mut diag_component_reject_owner: u64 = 0;
+    let mut diag_component_reject_validation: u64 = 0;
+    let mut diag_edit_rx: u64 = 0;
+    let mut diag_reset_rx: u64 = 0;
+    let mut diag_damage_rx: u64 = 0;
+    let mut diag_electrics_rx: u64 = 0;
+    let mut diag_coupling_rx: u64 = 0;
 
     loop {
+        if component_diag_last.elapsed() >= component_diag_interval {
+            tracing::info!(
+                player_id,
+                component_rx = diag_component_rx,
+                component_relay = diag_component_relay,
+                reject_owner = diag_component_reject_owner,
+                reject_validation = diag_component_reject_validation,
+                edit_rx = diag_edit_rx,
+                reset_rx = diag_reset_rx,
+                damage_rx = diag_damage_rx,
+                electrics_rx = diag_electrics_rx,
+                coupling_rx = diag_coupling_rx,
+                world_vehicle_count = world.vehicle_count(),
+                player_vehicle_count = world.vehicle_count_for_player(player_id),
+                "TCP component diagnostics"
+            );
+            component_diag_last = Instant::now();
+            diag_component_rx = 0;
+            diag_component_relay = 0;
+            diag_component_reject_owner = 0;
+            diag_component_reject_validation = 0;
+            diag_edit_rx = 0;
+            diag_reset_rx = 0;
+            diag_damage_rx = 0;
+            diag_electrics_rx = 0;
+            diag_coupling_rx = 0;
+        }
+
         // Check for idle timeout
         if last_activity.elapsed() > idle_timeout {
             anyhow::bail!("Connection idle for too long");
@@ -610,17 +649,22 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
             TcpPacket::VehicleEdit {
                 vehicle_id, data, ..
             } => {
+                diag_component_rx += 1;
+                diag_edit_rx += 1;
                 // Validate vehicle ID and config
                 if let Err(e) = crate::validation::validate_vehicle_id(vehicle_id) {
+                    diag_component_reject_validation += 1;
                     tracing::warn!(player_id, video_id = vehicle_id, error = %e, "VehicleEdit: invalid vehicle ID");
                     continue;
                 }
                 if let Err(e) = crate::validation::validate_vehicle_config_size(&data) {
+                    diag_component_reject_validation += 1;
                     tracing::warn!(player_id, error = %e, "VehicleEdit: invalid config");
                     continue;
                 }
 
                 if world.is_owner(player_id, vehicle_id) {
+                    let payload_bytes = data.len();
                     world.update_config(player_id, vehicle_id, data.clone());
                     sessions.broadcast(
                         TcpPacket::VehicleEdit {
@@ -630,8 +674,17 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                         },
                         Some(player_id),
                     );
+                    diag_component_relay += 1;
+                    tracing::debug!(player_id, vehicle_id, payload_bytes, "Relayed VehicleEdit");
                 } else {
-                    tracing::warn!(player_id, vehicle_id, "VehicleEdit for unowned vehicle");
+                    diag_component_reject_owner += 1;
+                    tracing::warn!(
+                        player_id,
+                        vehicle_id,
+                        player_vehicle_count = world.vehicle_count_for_player(player_id),
+                        world_vehicle_count = world.vehicle_count(),
+                        "VehicleEdit for unowned vehicle"
+                    );
                 }
             }
             TcpPacket::VehicleDelete { vehicle_id, .. } => {
@@ -656,16 +709,21 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
             TcpPacket::VehicleReset {
                 vehicle_id, data, ..
             } => {
+                diag_component_rx += 1;
+                diag_reset_rx += 1;
                 if let Err(e) = crate::validation::validate_vehicle_id(vehicle_id) {
+                    diag_component_reject_validation += 1;
                     tracing::warn!(player_id, vehicle_id, error = %e, "VehicleReset: invalid vehicle ID");
                     continue;
                 }
                 if let Err(e) = crate::validation::validate_vehicle_config_size(&data) {
+                    diag_component_reject_validation += 1;
                     tracing::warn!(player_id, error = %e, "VehicleReset: invalid config");
                     continue;
                 }
 
                 if world.is_owner(player_id, vehicle_id) {
+                    let payload_bytes = data.len();
                     world.update_reset_position(player_id, vehicle_id, &data);
                     sessions.broadcast(
                         TcpPacket::VehicleReset {
@@ -675,23 +733,37 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                         },
                         Some(player_id),
                     );
+                    diag_component_relay += 1;
+                    tracing::debug!(player_id, vehicle_id, payload_bytes, "Relayed VehicleReset");
                 } else {
-                    tracing::warn!(player_id, vehicle_id, "VehicleReset for unowned vehicle");
+                    diag_component_reject_owner += 1;
+                    tracing::warn!(
+                        player_id,
+                        vehicle_id,
+                        player_vehicle_count = world.vehicle_count_for_player(player_id),
+                        world_vehicle_count = world.vehicle_count(),
+                        "VehicleReset for unowned vehicle"
+                    );
                 }
             }
             TcpPacket::VehicleDamage {
                 vehicle_id, data, ..
             } => {
+                diag_component_rx += 1;
+                diag_damage_rx += 1;
                 if let Err(e) = crate::validation::validate_vehicle_id(vehicle_id) {
+                    diag_component_reject_validation += 1;
                     tracing::warn!(player_id, vehicle_id, error = %e, "VehicleDamage: invalid vehicle ID");
                     continue;
                 }
                 if let Err(e) = crate::validation::validate_vehicle_config_size(&data) {
+                    diag_component_reject_validation += 1;
                     tracing::warn!(player_id, error = %e, "VehicleDamage: invalid payload");
                     continue;
                 }
 
                 if world.is_owner(player_id, vehicle_id) {
+                    let payload_bytes = data.len();
                     sessions.broadcast(
                         TcpPacket::VehicleDamage {
                             player_id: Some(player_id),
@@ -700,19 +772,42 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                         },
                         Some(player_id),
                     );
+                    diag_component_relay += 1;
+                    tracing::debug!(
+                        player_id,
+                        vehicle_id,
+                        payload_bytes,
+                        "Relayed VehicleDamage"
+                    );
                 } else {
-                    tracing::warn!(player_id, vehicle_id, "VehicleDamage for unowned vehicle");
+                    diag_component_reject_owner += 1;
+                    tracing::warn!(
+                        player_id,
+                        vehicle_id,
+                        player_vehicle_count = world.vehicle_count_for_player(player_id),
+                        world_vehicle_count = world.vehicle_count(),
+                        "VehicleDamage for unowned vehicle"
+                    );
                 }
             }
             TcpPacket::VehicleElectrics {
                 vehicle_id, data, ..
             } => {
+                diag_component_rx += 1;
+                diag_electrics_rx += 1;
                 if let Err(e) = crate::validation::validate_vehicle_id(vehicle_id) {
+                    diag_component_reject_validation += 1;
                     tracing::warn!(player_id, vehicle_id, error = %e, "VehicleElectrics: invalid vehicle ID");
+                    continue;
+                }
+                if let Err(e) = crate::validation::validate_vehicle_config_size(&data) {
+                    diag_component_reject_validation += 1;
+                    tracing::warn!(player_id, error = %e, "VehicleElectrics: invalid payload");
                     continue;
                 }
 
                 if world.is_owner(player_id, vehicle_id) {
+                    let payload_bytes = data.len();
                     sessions.broadcast(
                         TcpPacket::VehicleElectrics {
                             player_id: Some(player_id),
@@ -721,10 +816,20 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                         },
                         Some(player_id),
                     );
+                    diag_component_relay += 1;
+                    tracing::debug!(
+                        player_id,
+                        vehicle_id,
+                        payload_bytes,
+                        "Relayed VehicleElectrics"
+                    );
                 } else {
+                    diag_component_reject_owner += 1;
                     tracing::warn!(
                         player_id,
                         vehicle_id,
+                        player_vehicle_count = world.vehicle_count_for_player(player_id),
+                        world_vehicle_count = world.vehicle_count(),
                         "VehicleElectrics for unowned vehicle"
                     );
                 }
@@ -737,11 +842,15 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                 target_node_id,
                 ..
             } => {
+                diag_component_rx += 1;
+                diag_coupling_rx += 1;
                 if let Err(e) = crate::validation::validate_vehicle_id(vehicle_id) {
+                    diag_component_reject_validation += 1;
                     tracing::warn!(player_id, vehicle_id, error = %e, "VehicleCoupling: invalid vehicle ID");
                     continue;
                 }
                 if let Err(e) = crate::validation::validate_vehicle_id(target_vehicle_id) {
+                    diag_component_reject_validation += 1;
                     tracing::warn!(player_id, target_vehicle_id, error = %e, "VehicleCoupling: invalid target vehicle ID");
                     continue;
                 }
@@ -758,8 +867,16 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                         },
                         Some(player_id),
                     );
+                    diag_component_relay += 1;
                 } else {
-                    tracing::warn!(player_id, vehicle_id, "VehicleCoupling for unowned vehicle");
+                    diag_component_reject_owner += 1;
+                    tracing::warn!(
+                        player_id,
+                        vehicle_id,
+                        player_vehicle_count = world.vehicle_count_for_player(player_id),
+                        world_vehicle_count = world.vehicle_count(),
+                        "VehicleCoupling for unowned vehicle"
+                    );
                 }
             }
             TcpPacket::ChatMessage { text } => {
