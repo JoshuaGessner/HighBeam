@@ -342,6 +342,14 @@ M.onCouplerDetached = function(objId1, objId2, nodeId, obj2nodeId)
   log('I', logTag, 'Coupler detached: ' .. tostring(serverId1) .. ' <-> ' .. tostring(serverId2))
 end
 
+-- P3.2: Mark damage dirty when a beam breaks so damage polling triggers promptly.
+-- BeamNG calls this hook for each broken beam on any vehicle.
+M.onBeamBroke = function(gameVehicleId, breakGroup)
+  if state and state.markDamageDirty then
+    state.markDamageDirty(gameVehicleId)
+  end
+end
+
 -- ──────────────────── Public API (callable from GE Lua console) ──────────────
 
 -- Open the server browser window

@@ -4,6 +4,7 @@ local logTag = "HighBeam.Vehicles"
 M.remoteVehicles = {} -- [playerId_vehicleId] = vehicleData
 M._remoteGameIds = {} -- [gameVehicleId] = true  (quick lookup for isRemote)
 M._spawningRemote = false -- Guard flag: true while core_vehicles.spawnNewVehicle is in-flight
+M._debugStats = {}  -- P0: Exposed debug stats for overlay
 
 local interpolationMath = require("highbeam/math")
 local config = require("highbeam/config")
@@ -19,6 +20,12 @@ local SPAWN_RETRY_BASE_DELAY = 0.75
 -- Thresholds for skipping setPositionRotation when delta is negligible
 local POS_DELTA_SQ_THRESHOLD = 0.000025  -- 0.005m squared
 local ROT_DELTA_SQ_THRESHOLD = 0.000001  -- ~0.001 quat component
+
+-- P0: Correction magnitude counters for diagnostics
+local _correctionPosSum = 0
+local _correctionRotSum = 0
+local _correctionCount = 0
+local _teleportCount = 0
 
 local function _shouldApplyPosRot(rv, pos, rot)
   if not rv._lastAppliedPos then return true end
@@ -36,33 +43,46 @@ local function _shouldApplyPosRot(rv, pos, rot)
   return false
 end
 
-local function _applyPosRot(rv, pos, rot, vel)
+local function _applyPosRot(rv, pos, rot, vel, angVel)
   rv.gameVehicle:setPositionRotation(pos[1], pos[2], pos[3], rot[1], rot[2], rot[3], rot[4])
   rv._lastAppliedPos = pos
   rv._lastAppliedRot = rot
 
+  -- Build a single batched vlua command string (P3.3)
+  local cmds = {}
+
   -- Set velocity to match the remote vehicle, reducing physics fighting.
-  -- The engine will apply this velocity instead of fighting the teleport.
   if vel then
     local vx = vel[1] or 0
     local vy = vel[2] or 0
     local vz = vel[3] or 0
     if (vx*vx + vy*vy + vz*vz) > 0.0001 then
-      pcall(function()
-        rv.gameVehicle:queueLuaCommand(
-          'obj:setVelocity(float3(' .. tostring(vx) .. ',' .. tostring(vy) .. ',' .. tostring(vz) .. '))'
-        )
-      end)
+      cmds[#cmds+1] = 'obj:setVelocity(float3(' .. tostring(vx) .. ',' .. tostring(vy) .. ',' .. tostring(vz) .. '))'
     end
   end
 
-  -- Zero angular velocity to prevent the physics engine from fighting the
-  -- rotation we just set.  Without this, the soft-body simulation immediately
-  -- recomputes orientation from wheel contact / suspension / gravity and the
-  -- remote vehicle appears to ignore rotation updates.
-  pcall(function()
-    rv.gameVehicle:queueLuaCommand('obj:setAngularVelocity(float3(0,0,0))')
-  end)
+  -- P1.2: Inject angular velocity derived from quaternion delta instead of
+  -- zeroing it.  This lets the physics engine continue the rotation naturally
+  -- between updates, eliminating the "stuck orientation" problem.
+  if angVel then
+    local ax = angVel[1] or 0
+    local ay = angVel[2] or 0
+    local az = angVel[3] or 0
+    if (ax*ax + ay*ay + az*az) > 0.0001 then
+      cmds[#cmds+1] = 'obj:setAngularVelocity(float3(' .. tostring(ax) .. ',' .. tostring(ay) .. ',' .. tostring(az) .. '))'
+    else
+      cmds[#cmds+1] = 'obj:setAngularVelocity(float3(0,0,0))'
+    end
+  else
+    cmds[#cmds+1] = 'obj:setAngularVelocity(float3(0,0,0))'
+  end
+
+  -- Execute all commands in a single queueLuaCommand call (P3.3)
+  if #cmds > 0 then
+    pcall(function()
+      rv.gameVehicle:queueLuaCommand(table.concat(cmds, ' '))
+    end)
+  end
 end
 
 local function _countPendingSpawnRetries()
@@ -92,8 +112,29 @@ local function _getExtrapolationWindow()
 end
 
 local function _getMaxSnapshots()
-  local raw = _getConfigNumber("jitterBufferSnapshots", 5)
+  local raw = _getConfigNumber("jitterBufferSnapshots", 8)
   return math.max(2, math.floor(raw))
+end
+
+local function _getCorrectionBlendFactor()
+  return _getConfigNumber("correctionBlendFactor", 0.15)
+end
+
+local function _getCorrectionTeleportDist()
+  return _getConfigNumber("correctionTeleportDist", 10.0)
+end
+
+local function _getLodDistanceNear()
+  return _getConfigNumber("lodDistanceNear", 200)
+end
+
+local function _getLodDistanceFar()
+  return _getConfigNumber("lodDistanceFar", 500)
+end
+
+local function _isDirectSteering()
+  local value = config and config.get and config.get("directSteering")
+  return value ~= false  -- default true
 end
 
 local function makeKey(playerId, vehicleId)
@@ -281,6 +322,7 @@ M.spawnRemoteFromSnapshot = function(vehicle)
 end
 
 local _updateRemoteDropLog = 0
+-- P2.3: Improved time offset convergence with min-filter + EMA
 M.updateRemote = function(decoded)
   local key = makeKey(decoded.playerId, decoded.vehicleId)
   local rv = M.remoteVehicles[key]
@@ -303,17 +345,33 @@ M.updateRemote = function(decoded)
   end
 
   -- Compute smoothed time offset between local clock and sender's simTime.
-  -- This lets us translate sender timestamps to local time for interpolation,
-  -- removing network jitter from the timeline.
+  -- P2.3: Use minimum-filter over recent window, then EMA-smooth the minimum.
+  -- This converges faster and avoids overestimating due to jitter spikes.
   local recvTime = os.clock()
   if decoded.time then
     local instantOffset = recvTime - decoded.time
+
+    -- Maintain a small circular buffer of recent offsets for min-filter
+    if not rv._offsetSamples then
+      rv._offsetSamples = {}
+      rv._offsetSampleIdx = 0
+    end
+    local maxSamples = 8
+    rv._offsetSampleIdx = (rv._offsetSampleIdx % maxSamples) + 1
+    rv._offsetSamples[rv._offsetSampleIdx] = instantOffset
+
+    -- Find minimum offset in the window (closest to true one-way delay)
+    local minOffset = instantOffset
+    for _, v in ipairs(rv._offsetSamples) do
+      if v < minOffset then minOffset = v end
+    end
+
     if not rv.timeOffset then
-      rv.timeOffset = instantOffset
+      rv.timeOffset = minOffset
     else
-      -- Exponential moving average (alpha ~0.1 → smooth over ~10 packets)
-      local alpha = 0.1
-      rv.timeOffset = rv.timeOffset + alpha * (instantOffset - rv.timeOffset)
+      -- EMA with higher alpha for faster convergence
+      local alpha = 0.15
+      rv.timeOffset = rv.timeOffset + alpha * (minOffset - rv.timeOffset)
     end
   end
 
@@ -455,6 +513,7 @@ M.applyElectrics = function(playerId, vehicleId, electricsData)
   if not elec then return end
 
   -- Apply electrics via vehicle-side Lua
+  -- P4.3: Added gear and parking brake
   pcall(function()
     local cmds = {}
     if elec.lights ~= nil then
@@ -477,6 +536,12 @@ M.applyElectrics = function(playerId, vehicleId, electricsData)
     end
     if elec.highbeams ~= nil then
       table.insert(cmds, 'electrics.values.highbeam = ' .. tostring(elec.highbeams))
+    end
+    if elec.gear ~= nil then
+      table.insert(cmds, 'electrics.values.gear_A = ' .. tostring(elec.gear))
+    end
+    if elec.parkingbrake ~= nil then
+      table.insert(cmds, 'electrics.values.parkingbrake = ' .. tostring(elec.parkingbrake))
     end
     if #cmds > 0 then
       veh:queueLuaCommand(table.concat(cmds, ' '))
@@ -571,12 +636,31 @@ M.removeAllForPlayer = function(playerId)
   end
 end
 
+-- P3.4: Helper to get camera position for LOD distance
+local function _getCameraPos()
+  if core_camera and core_camera.getPosition then
+    local p = core_camera.getPosition()
+    if p then return p.x, p.y, p.z end
+  end
+  return nil, nil, nil
+end
+
 M.tick = function(dt)
   local interpolationEnabled = (config and config.get and config.get("interpolation")) ~= false
   local interpolationDelay = _getInterpolationDelay()
   local extrapolationWindow = _getExtrapolationWindow()
+  local correctionBlend = _getCorrectionBlendFactor()
+  local teleportDist = _getCorrectionTeleportDist()
+  local teleportDistSq = teleportDist * teleportDist
+  local directSteering = _isDirectSteering()
+  local lodNear = _getLodDistanceNear()
+  local lodFar = _getLodDistanceFar()
+  local lodFarSq = lodFar * lodFar
   local now = os.clock()
   local renderTime = now - interpolationDelay
+
+  -- P3.4: Get camera position for LOD calculations
+  local camX, camY, camZ = _getCameraPos()
 
   for _, rv in pairs(M.remoteVehicles) do
     if (not rv.gameVehicleId) and rv.spawnRetry then
@@ -617,19 +701,40 @@ M.tick = function(dt)
       rv.gameVehicle = scenetree.findObjectById(rv.gameVehicleId)
     end
 
+    -- P3.4: LOD skip — for very distant vehicles, reduce update frequency
+    if rv.gameVehicle and camX and rv._lastAppliedPos then
+      local dx = rv._lastAppliedPos[1] - camX
+      local dy = rv._lastAppliedPos[2] - camY
+      local dz = rv._lastAppliedPos[3] - camZ
+      local distSq = dx*dx + dy*dy + dz*dz
+      if distSq > lodFarSq then
+        -- Beyond LOD far: update only every 4th tick
+        rv._lodSkipCounter = (rv._lodSkipCounter or 0) + 1
+        if rv._lodSkipCounter % 4 ~= 0 then
+          goto continue_vehicle
+        end
+      elseif distSq > (lodNear * lodNear) then
+        -- Between near and far: update every 2nd tick
+        rv._lodSkipCounter = (rv._lodSkipCounter or 0) + 1
+        if rv._lodSkipCounter % 2 ~= 0 then
+          goto continue_vehicle
+        end
+      else
+        rv._lodSkipCounter = 0
+      end
+    end
+
     if rv.gameVehicle and #rv.snapshots >= 2 and interpolationEnabled then
       local s1 = nil
       local s2 = nil
 
       -- Use sender timestamps (translated to local time) for interpolation.
-      -- This removes network jitter from the timeline.
       local timeOffset = rv.timeOffset or 0
       local localRenderTime = renderTime
 
       for i = 1, #rv.snapshots - 1 do
         local a = rv.snapshots[i]
         local b = rv.snapshots[i + 1]
-        -- Convert sender time to local time using smoothed offset
         local aLocal = (a.time or a.received) + timeOffset
         local bLocal = (b.time or b.received) + timeOffset
         if aLocal <= localRenderTime and bLocal >= localRenderTime then
@@ -644,7 +749,6 @@ M.tick = function(dt)
         s2 = rv.snapshots[#rv.snapshots]
       end
 
-      -- Compute span and t using sender timestamps for jitter-free timeline
       local s1Local = (s1.time or s1.received) + timeOffset
       local s2Local = (s2.time or s2.received) + timeOffset
       local span = s2Local - s1Local
@@ -653,85 +757,149 @@ M.tick = function(dt)
         t = (localRenderTime - s1Local) / span
       end
 
-      local pos = nil
-      local rot = nil
+      local targetPos = nil
+      local targetRot = nil
 
       if t <= 1.0 then
         -- Cubic Hermite interpolation using velocity at both endpoints
-        pos = interpolationMath.hermiteVec3(s1.pos, s1.vel, s2.pos, s2.vel, span, t)
-        rot = interpolationMath.slerpQuat(s1.rot, s2.rot, t)
+        targetPos = interpolationMath.hermiteVec3(s1.pos, s1.vel, s2.pos, s2.vel, span, t)
+        targetRot = interpolationMath.slerpQuat(s1.rot, s2.rot, t)
       else
-        -- Extrapolate using latest velocity + input-augmented arc
+        -- Extrapolate using latest velocity
         local extraT = math.min((localRenderTime - s2Local), extrapolationWindow)
         local vx = s2.vel[1] or 0
         local vy = s2.vel[2] or 0
         local vz = s2.vel[3] or 0
 
-        -- If we have input data, use steering for curved extrapolation
-        -- NOTE: Curved extrapolation disabled until coordinate-system
-        -- assumptions are validated (BeamNG uses Y-forward).
-        -- Straight-line extrapolation is used in all cases for now.
-        pos = {
+        targetPos = {
           s2.pos[1] + vx * extraT,
           s2.pos[2] + vy * extraT,
           s2.pos[3] + vz * extraT,
         }
-        rot = s2.rot
+        targetRot = s2.rot
       end
 
-      if _shouldApplyPosRot(rv, pos, rot) then
-        _applyPosRot(rv, pos, rot, s2.vel)
+      -- P2.2: Smooth correction blending instead of instant teleport.
+      -- Blend the current physics position toward the target position each frame.
+      -- If the error is very large, teleport immediately.
+      local finalPos = targetPos
+      local finalRot = targetRot
+      if rv._lastAppliedPos then
+        local errX = targetPos[1] - rv._lastAppliedPos[1]
+        local errY = targetPos[2] - rv._lastAppliedPos[2]
+        local errZ = targetPos[3] - rv._lastAppliedPos[3]
+        local errSq = errX*errX + errY*errY + errZ*errZ
+
+        -- P0.2: Track correction magnitudes for debug overlay
+        _correctionCount = _correctionCount + 1
+        _correctionPosSum = _correctionPosSum + math.sqrt(errSq)
+        if rv._lastAppliedRot then
+          local dqx = targetRot[1] - rv._lastAppliedRot[1]
+          local dqy = targetRot[2] - rv._lastAppliedRot[2]
+          local dqz = targetRot[3] - rv._lastAppliedRot[3]
+          local dqw = targetRot[4] - rv._lastAppliedRot[4]
+          _correctionRotSum = _correctionRotSum + math.sqrt(dqx*dqx + dqy*dqy + dqz*dqz + dqw*dqw)
+        end
+
+        if errSq > teleportDistSq then
+          -- Large error: teleport instantly
+          _teleportCount = _teleportCount + 1
+        elseif errSq > POS_DELTA_SQ_THRESHOLD then
+          -- Small-to-medium error: blend toward target
+          local blend = math.min(1.0, correctionBlend * dt * 60)  -- normalize to ~60fps
+          finalPos = {
+            rv._lastAppliedPos[1] + errX * blend,
+            rv._lastAppliedPos[2] + errY * blend,
+            rv._lastAppliedPos[3] + errZ * blend,
+          }
+          -- Also blend rotation
+          if rv._lastAppliedRot then
+            finalRot = interpolationMath.slerpQuat(rv._lastAppliedRot, targetRot, blend)
+          end
+        end
+      end
+
+      -- P1.2: Compute angular velocity from quaternion delta between snapshots
+      local angVel = nil
+      if s1 and s2 and span > 0.0001 then
+        angVel = interpolationMath.angularVelocityFromQuats(s1.rot, s2.rot, span)
+      end
+
+      if _shouldApplyPosRot(rv, finalPos, finalRot) then
+        _applyPosRot(rv, finalPos, finalRot, s2.vel, angVel)
       end
     elseif rv.gameVehicle and #rv.snapshots >= 1 then
       local latest = rv.snapshots[#rv.snapshots]
       local latestPos = latest.pos
       local latestRot = latest.rot
       if _shouldApplyPosRot(rv, latestPos, latestRot) then
-        _applyPosRot(rv, latestPos, latestRot, latest.vel)
+        _applyPosRot(rv, latestPos, latestRot, latest.vel, nil)
       end
     end
 
-    -- Apply steering/throttle/brake inputs to remote vehicle via input.event
-    -- (electrics.values.steering_input does not drive hydro actuators properly)
+    -- Apply steering/throttle/brake inputs to remote vehicle
     if rv.gameVehicle and rv.snapshots and #rv.snapshots >= 1 then
       local latestSnap = rv.snapshots[#rv.snapshots]
       if latestSnap.inputs then
         local inp = latestSnap.inputs
+        -- P3.3: Collect all input commands into a single batch
+        local inputCmds = {}
 
-        if inp.steer then
-          local lastSteer = rv._lastAppliedSteer
-          local newSteer = inp.steer
-          if not lastSteer or math.abs(newSteer - lastSteer) > 0.01 then
-            rv._lastAppliedSteer = newSteer
-            pcall(function()
-              rv.gameVehicle:queueLuaCommand('input.event("steering", ' .. tostring(newSteer) .. ', 1)')
-            end)
+        if directSteering then
+          -- P4.1: Direct steering via electrics — bypasses the input filter
+          -- that adds unwanted smoothing/deadzone to remote vehicle steering.
+          if inp.steer then
+            local lastSteer = rv._lastAppliedSteer
+            local newSteer = inp.steer
+            -- P4.2: Tighter threshold for smooth remote steering
+            if not lastSteer or math.abs(newSteer - lastSteer) > 0.002 then
+              rv._lastAppliedSteer = newSteer
+              inputCmds[#inputCmds+1] = 'electrics.values.steering_input = ' .. tostring(newSteer)
+              inputCmds[#inputCmds+1] = 'electrics.values.steering = ' .. tostring(newSteer)
+            end
+          end
+        else
+          -- Legacy: use input.event (has built-in smoothing/deadzone)
+          if inp.steer then
+            local lastSteer = rv._lastAppliedSteer
+            local newSteer = inp.steer
+            if not lastSteer or math.abs(newSteer - lastSteer) > 0.002 then
+              rv._lastAppliedSteer = newSteer
+              inputCmds[#inputCmds+1] = 'input.event("steering", ' .. tostring(newSteer) .. ', 1)'
+            end
           end
         end
 
         if inp.throttle then
           local lastThrottle = rv._lastAppliedThrottle
           local newThrottle = inp.throttle
-          if not lastThrottle or math.abs(newThrottle - lastThrottle) > 0.01 then
+          -- P4.2: Lower threshold
+          if not lastThrottle or math.abs(newThrottle - lastThrottle) > 0.002 then
             rv._lastAppliedThrottle = newThrottle
-            pcall(function()
-              rv.gameVehicle:queueLuaCommand('input.event("throttle", ' .. tostring(newThrottle) .. ', 1)')
-            end)
+            inputCmds[#inputCmds+1] = 'input.event("throttle", ' .. tostring(newThrottle) .. ', 1)'
           end
         end
 
         if inp.brake then
           local lastBrake = rv._lastAppliedBrake
           local newBrake = inp.brake
-          if not lastBrake or math.abs(newBrake - lastBrake) > 0.01 then
+          -- P4.2: Lower threshold
+          if not lastBrake or math.abs(newBrake - lastBrake) > 0.002 then
             rv._lastAppliedBrake = newBrake
-            pcall(function()
-              rv.gameVehicle:queueLuaCommand('input.event("brake", ' .. tostring(newBrake) .. ', 1)')
-            end)
+            inputCmds[#inputCmds+1] = 'input.event("brake", ' .. tostring(newBrake) .. ', 1)'
           end
+        end
+
+        -- P3.3: Single queueLuaCommand for all inputs
+        if #inputCmds > 0 then
+          pcall(function()
+            rv.gameVehicle:queueLuaCommand(table.concat(inputCmds, ' '))
+          end)
         end
       end
     end
+
+    ::continue_vehicle::
   end
 
   _diagTimer = _diagTimer + dt
@@ -753,6 +921,30 @@ M.tick = function(dt)
       _spawnRetryAttemptCount = 0
       _spawnRetrySuccessCount = 0
     end
+
+    -- P0.2: Log correction magnitudes every diagnostic interval
+    if _correctionCount > 0 then
+      local avgPos = _correctionPosSum / _correctionCount
+      local avgRot = _correctionRotSum / _correctionCount
+      log('I', logTag, 'Correction diag avgPos=' .. string.format("%.4f", avgPos)
+        .. 'm avgRot=' .. string.format("%.5f", avgRot)
+        .. ' samples=' .. tostring(_correctionCount)
+        .. ' teleports=' .. tostring(_teleportCount))
+    end
+
+    -- P0: Update debug stats for overlay
+    M._debugStats = {
+      avgCorrectionPos = _correctionCount > 0 and (_correctionPosSum / _correctionCount) or 0,
+      avgCorrectionRot = _correctionCount > 0 and (_correctionRotSum / _correctionCount) or 0,
+      correctionCount = _correctionCount,
+      teleportCount = _teleportCount,
+      staleDrops = _staleDropCount,
+    }
+
+    _correctionPosSum = 0
+    _correctionRotSum = 0
+    _correctionCount = 0
+    _teleportCount = 0
   end
 end
 
