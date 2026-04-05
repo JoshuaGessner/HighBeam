@@ -675,12 +675,7 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                         Some(player_id),
                     );
                     diag_component_relay += 1;
-                    tracing::debug!(
-                        player_id,
-                        vehicle_id,
-                        payload_bytes,
-                        "Relayed VehicleEdit"
-                    );
+                    tracing::debug!(player_id, vehicle_id, payload_bytes, "Relayed VehicleEdit");
                 } else {
                     diag_component_reject_owner += 1;
                     tracing::warn!(
@@ -739,12 +734,7 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                         Some(player_id),
                     );
                     diag_component_relay += 1;
-                    tracing::debug!(
-                        player_id,
-                        vehicle_id,
-                        payload_bytes,
-                        "Relayed VehicleReset"
-                    );
+                    tracing::debug!(player_id, vehicle_id, payload_bytes, "Relayed VehicleReset");
                 } else {
                     diag_component_reject_owner += 1;
                     tracing::warn!(
