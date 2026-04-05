@@ -19,6 +19,7 @@ local _electricsTimer = 0  -- timer for electrics polling
 local _inputsTimer = 0     -- timer for input polling (decoupled from electrics)
 local _lastElectrics = {}  -- [gameVehicleId] = last sent electrics state string
 M._cachedInputs = {}  -- [gameVehicleId] = {steer, throttle, brake} from vlua callback
+M._cachedVluaRot = {} -- [gameVehicleId] = {x, y, z, w} rotation from vlua physics
 M._damageDirty = {}   -- P3.2: [gameVehicleId] = true when damage event fires
 local _lastUdpErrorLogAt = -math.huge
 local _udpErrorLogCooldown = 2.0
@@ -157,8 +158,20 @@ M.tick = function(dt)
     local veh = scenetree.findObjectById(gameVid)
     if veh then
       local pos = veh:getPosition()
-      local rot = veh:getRotation()
       local vel = veh:getVelocity()
+
+      -- Use vlua-sourced rotation (physics-accurate) with GE fallback.
+      -- veh:getRotation() returns the SceneObject transform rotation which is
+      -- stale for soft-body vehicles.  The vlua cache is populated each frame
+      -- via _pollVluaRotation → queueGameEngineLua callback.
+      local cachedRot = M._cachedVluaRot[gameVid]
+      local rot
+      if cachedRot then
+        rot = cachedRot
+      else
+        local geRot = veh:getRotation()
+        rot = { x = geRot.x, y = geRot.y, z = geRot.z, w = geRot.w }
+      end
 
       -- Capture input state for input-augmented extrapolation
       -- NOTE: electrics are in vlua context, so we read from cached data
@@ -259,6 +272,7 @@ M.tick = function(dt)
     _inputsTimer = 0
     for gameVid, _ in pairs(M.localVehicles) do
       M._pollInputs(gameVid)
+      M._pollVluaRotation(gameVid)
     end
   end
 end
@@ -420,6 +434,27 @@ M.onInputsReport = function(gameVid, steer, throttle, brake)
     throttle = throttle or 0,
     brake = brake or 0,
   }
+end
+
+-- ── Vlua rotation polling ───────────────────────────────────────────
+-- veh:getRotation() returns the SceneObject transform rotation which does NOT
+-- track physics orientation on soft-body vehicles.  This polls the actual
+-- physics rotation from vlua using direction vectors (same as BeamMP).
+M._pollVluaRotation = function(gameVid)
+  local veh = scenetree.findObjectById(gameVid)
+  if not veh then return end
+
+  pcall(function()
+    veh:queueLuaCommand(
+      'local r = quatFromDir(-vec3(obj:getDirectionVector()), vec3(obj:getDirectionVectorUp())) '
+      .. 'obj:queueGameEngineLua("extensions.highbeam.onVluaRotationReport(' .. gameVid .. '," .. r.x .. "," .. r.y .. "," .. r.z .. "," .. r.w .. ")")'
+    )
+  end)
+end
+
+-- Called back from vehicle-side Lua with physics rotation quaternion
+M.onVluaRotationReport = function(gameVid, rx, ry, rz, rw)
+  M._cachedVluaRot[gameVid] = { x = rx or 0, y = ry or 0, z = rz or 0, w = rw or 1 }
 end
 
 -- P3.2: Mark a vehicle as needing a damage poll on the next cycle.

@@ -43,46 +43,15 @@ local function _shouldApplyPosRot(rv, pos, rot)
   return false
 end
 
-local function _applyPosRot(rv, pos, rot, vel, angVel)
+local function _applyPosRot(rv, pos, rot)
   rv.gameVehicle:setPositionRotation(pos[1], pos[2], pos[3], rot[1], rot[2], rot[3], rot[4])
   rv._lastAppliedPos = pos
   rv._lastAppliedRot = rot
-
-  -- Build a single batched vlua command string (P3.3)
-  local cmds = {}
-
-  -- Set velocity to match the remote vehicle, reducing physics fighting.
-  if vel then
-    local vx = vel[1] or 0
-    local vy = vel[2] or 0
-    local vz = vel[3] or 0
-    if (vx*vx + vy*vy + vz*vz) > 0.0001 then
-      cmds[#cmds+1] = 'obj:setVelocity(float3(' .. tostring(vx) .. ',' .. tostring(vy) .. ',' .. tostring(vz) .. '))'
-    end
-  end
-
-  -- P1.2: Inject angular velocity derived from quaternion delta instead of
-  -- zeroing it.  This lets the physics engine continue the rotation naturally
-  -- between updates, eliminating the "stuck orientation" problem.
-  if angVel then
-    local ax = angVel[1] or 0
-    local ay = angVel[2] or 0
-    local az = angVel[3] or 0
-    if (ax*ax + ay*ay + az*az) > 0.0001 then
-      cmds[#cmds+1] = 'obj:setAngularVelocity(float3(' .. tostring(ax) .. ',' .. tostring(ay) .. ',' .. tostring(az) .. '))'
-    else
-      cmds[#cmds+1] = 'obj:setAngularVelocity(float3(0,0,0))'
-    end
-  else
-    cmds[#cmds+1] = 'obj:setAngularVelocity(float3(0,0,0))'
-  end
-
-  -- Execute all commands in a single queueLuaCommand call (P3.3)
-  if #cmds > 0 then
-    pcall(function()
-      rv.gameVehicle:queueLuaCommand(table.concat(cmds, ' '))
-    end)
-  end
+  -- NOTE: obj:setVelocity() and obj:setAngularVelocity() do not exist in
+  -- BeamNG's vlua context.  BeamMP works around this with per-node
+  -- obj:applyForceVector() in a dedicated velocityVE extension.  For now
+  -- setPositionRotation() from the GE context is sufficient; a force-based
+  -- velocity system can be added later for smoother motion.
 end
 
 local function _countPendingSpawnRetries()
@@ -483,18 +452,20 @@ M.applyDamage = function(playerId, vehicleId, damageData)
 
   -- Apply beam deformation (sender field name is 'deform')
   -- Each entry is {deformVal, restLength} or a plain number (legacy).
-  -- We use obj:setBeamLength + beamstate.beamDeformed which are valid vlua APIs.
+  -- We use obj:setBeamLength to set the physical length directly.
+  -- NOTE: beamstate.beamDeformed() does not exist in BeamNG's vlua —
+  -- obj:setBeamLength() alone handles the visual + physical deformation.
   if dmg.deform then
     pcall(function()
       for beamIdStr, val in pairs(dmg.deform) do
         local cid = tostring(beamIdStr)
         if type(val) == 'table' and val[2] then
           -- New format: {deformation, restLength}
-          veh:queueLuaCommand('obj:setBeamLength(' .. cid .. ', ' .. tostring(val[2]) .. ') beamstate.beamDeformed(' .. cid .. ', ' .. tostring(val[1]) .. ')')
-        elseif type(val) == 'number' then
-          -- Legacy format: just deformation value, notify beamstate
-          veh:queueLuaCommand('beamstate.beamDeformed(' .. cid .. ', ' .. tostring(val) .. ')')
+          veh:queueLuaCommand('obj:setBeamLength(' .. cid .. ', ' .. tostring(val[2]) .. ')')
         end
+        -- Legacy format (plain number) had no restLength, so we cannot call
+        -- setBeamLength.  The deformation is purely cosmetic tracking and was
+        -- using the non-existent beamstate.beamDeformed() — skip silently.
       end
     end)
   end
@@ -819,21 +790,15 @@ M.tick = function(dt)
         end
       end
 
-      -- P1.2: Compute angular velocity from quaternion delta between snapshots
-      local angVel = nil
-      if s1 and s2 and span > 0.0001 then
-        angVel = interpolationMath.angularVelocityFromQuats(s1.rot, s2.rot, span)
-      end
-
       if _shouldApplyPosRot(rv, finalPos, finalRot) then
-        _applyPosRot(rv, finalPos, finalRot, s2.vel, angVel)
+        _applyPosRot(rv, finalPos, finalRot)
       end
     elseif rv.gameVehicle and #rv.snapshots >= 1 then
       local latest = rv.snapshots[#rv.snapshots]
       local latestPos = latest.pos
       local latestRot = latest.rot
       if _shouldApplyPosRot(rv, latestPos, latestRot) then
-        _applyPosRot(rv, latestPos, latestRot, latest.vel, nil)
+        _applyPosRot(rv, latestPos, latestRot)
       end
     end
 

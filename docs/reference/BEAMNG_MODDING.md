@@ -137,7 +137,11 @@ local playerVeh = be:getPlayerVehicle(0) -- 0 = player index
 local pos = veh:getPosition()  -- returns vec3
 
 -- Vehicle rotation (quaternion)
-local rot = veh:getRotation()  -- returns quat
+-- WARNING: veh:getRotation() returns the SceneObject transform rotation,
+-- which is STALE for soft-body vehicles (does not track physics orientation).
+-- For accurate physics rotation, poll from vlua instead:
+--   quatFromDir(-vec3(obj:getDirectionVector()), vec3(obj:getDirectionVectorUp()))
+local rot = veh:getRotation()  -- returns quat (STALE for soft-body vehicles!)
 
 -- Vehicle velocity
 local vel = veh:getVelocity()  -- returns vec3
@@ -397,6 +401,54 @@ local currentMap = getMissionFilename()
 | `deserialize(string)` | Deserialize string to Lua table |
 | `jsonEncode(table)` | Encode table as JSON string |
 | `jsonDecode(string)` | Decode JSON string to table |
+
+---
+
+## Vehicle Lua (vlua) vs GE Context
+
+BeamNG has two separate Lua contexts for vehicles:
+
+- **GE (Game Engine):** Global Lua VM where extensions run. Accesses vehicles as SceneObjects via `be:getObjectByID()`. Methods like `veh:getPosition()`, `veh:getVelocity()` work, but `veh:getRotation()` returns the **stale** SceneObject transform, not live physics orientation.
+- **vlua (Vehicle Lua):** Per-vehicle Lua VM. Accessed from GE via `veh:queueLuaCommand(luaString)`. Has the `obj` global for per-node physics. Can send data back to GE via `obj:queueGameEngineLua(luaString)`.
+
+### Correct vlua APIs (obj: methods)
+
+| Method | Description |
+|--------|-------------|
+| `obj:getPosition()` | Vehicle center of mass position (vec3) |
+| `obj:getVelocity()` | Vehicle velocity (float3) |
+| `obj:getDirectionVector()` | Forward direction vector (float3, physics-accurate) |
+| `obj:getDirectionVectorUp()` | Up direction vector (float3, physics-accurate) |
+| `obj:getNodePosition(cid)` | Position of a specific node |
+| `obj:getNodeMass(cid)` | Mass of a specific node |
+| `obj:applyForceVector(cid, float3)` | Apply force to a node |
+| `obj:setNodePosition(cid, float3)` | Set node position directly |
+| `obj:breakBeam(cid)` | Break a beam by ID |
+| `obj:setBeamLength(cid, length)` | Set beam rest length |
+| `obj:beamIsBroken(cid)` | Check if beam is broken |
+| `obj:getPhysicsFPS()` | Physics tick rate (typically 2000) |
+| `obj:getID()` | Vehicle object ID |
+| `obj:queueGameEngineLua(luaStr)` | Send data back to GE context |
+| `obj:getPitchAngularVelocity()` | Pitch angular velocity (rad/s) |
+| `obj:getRollAngularVelocity()` | Roll angular velocity (rad/s) |
+| `obj:getYawAngularVelocity()` | Yaw angular velocity (rad/s) |
+
+### NON-EXISTENT vlua methods (will throw FATAL LUA ERROR)
+
+| Method | Notes |
+|--------|-------|
+| `obj:setVelocity()` | Does not exist. Use per-node `applyForceVector()` instead. |
+| `obj:setAngularVelocity()` | Does not exist. Use per-node torque via `applyForceVector()`. |
+| `beamstate.beamDeformed()` | Does not exist. Use `obj:setBeamLength()` instead. |
+
+### Getting physics rotation from vlua
+
+```lua
+-- In vlua context: compute quaternion from direction vectors
+local rot = quatFromDir(-vec3(obj:getDirectionVector()), vec3(obj:getDirectionVectorUp()))
+-- Send back to GE:
+obj:queueGameEngineLua("extensions.mymod.onRotation(" .. rot.x .. "," .. rot.y .. "," .. rot.z .. "," .. rot.w .. ")")
+```
 
 ---
 

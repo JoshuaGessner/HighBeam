@@ -300,6 +300,13 @@ M.onInputsReport = function(gameVid, steer, throttle, brake)
   end
 end
 
+-- Called from vehicle-side queueGameEngineLua with physics rotation quaternion
+M.onVluaRotationReport = function(gameVid, rx, ry, rz, rw)
+  if state and state.onVluaRotationReport then
+    state.onVluaRotationReport(gameVid, rx, ry, rz, rw)
+  end
+end
+
 -- ─────────────── Coupling/trailer hooks ─────────────────────────────────────
 
 M.onCouplerAttached = function(objId1, objId2, nodeId, obj2nodeId)
