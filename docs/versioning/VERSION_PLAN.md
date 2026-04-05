@@ -1203,6 +1203,11 @@ Ideas for future development (not committed):
 
 ## Recent Release Notes
 
+### v0.8.2-dev.9 — 2026-04-05 (draft)
+- **Fix FATAL vlua errors on every position update (critical):** removed `obj:setVelocity()` and `obj:setAngularVelocity()` calls from `_applyPosRot` — these methods do not exist in BeamNG's vehicle Lua (vlua) context. Every remote vehicle position update was throwing FATAL LUA ERROR, preventing velocity/angular velocity injection entirely. BeamMP solves this with per-node `obj:applyForceVector()` in a dedicated velocityVE extension; HighBeam now relies on GE-side `setPositionRotation()` interpolation until a force-based system is added.
+- **Fix stale rotation data (critical):** `veh:getRotation()` in the GE context returns the SceneObject transform rotation, which does NOT track physics orientation for soft-body vehicles — quaternion values were constant across all diagnostic windows (`avgRot=0.00000`). Replaced with vlua-sourced rotation using `quatFromDir(-obj:getDirectionVector(), obj:getDirectionVectorUp())` polled via `queueLuaCommand` → `queueGameEngineLua` callback (same approach as BeamMP's positionVE.lua).
+- **Fix beamDeformed vlua error (moderate):** removed calls to `beamstate.beamDeformed()` which does not exist in BeamNG's vlua. Beam deformation sync now uses `obj:setBeamLength()` only, which handles both the physical and visual deformation.
+
 ### v0.8.2-dev.8 — 2026-04-05 (draft)
 - **Comprehensive sync optimization (P0–P4):** client-side only, no protocol changes.
 - **P0 — Debug instrumentation:** sync debug overlay (toggled via `debugOverlay` config), correction magnitude logging, packet-rate sliding window (200-entry circular buffer).
