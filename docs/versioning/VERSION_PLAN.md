@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-04-04
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.2-dev.3 (protocol v2)
+> **Current version:** v0.8.2-dev.4 (protocol v2)
 > **Status:** v0.8.1 released | v0.8.2 in development
 
 ---
@@ -1202,6 +1202,13 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.2-dev.4 — 2026-04-04 (draft)
+- **Fix updater self-downgrade (critical):** `is_newer()` now strips pre-release suffixes before parsing — `0.8.2-dev.3` was parsed as `(0,8,0)` < `(0,8,1)`, causing server and launcher to downgrade to v0.8.1 on every boot. Dev builds now skip auto-update entirely since `/releases/latest` only returns stable releases.
+- **Fix bootstrap extension reload:** `modScript.lua` now guards against re-loading the extension when it's already active, preventing remote vehicle state wipe during mid-session modDB re-initialization.
+- **Fix camera focus stolen on remote spawn:** player's active vehicle is saved before `core_vehicles.spawnNewVehicle` and restored after, so camera stays on the local vehicle.
+- **Fix steering/throttle/brake on remote vehicles:** replaced `electrics.values.steering_input` with `input.event("steering", val, FILTER_DIRECT)` which properly drives hydro actuators. Throttle and brake inputs are now also applied to remote vehicles.
+- **Fix ghost vehicles from persistence:** `load_state()` no longer restores vehicles at boot — without connected sessions they'd be orphaned, causing new joiners to see phantom players and vehicles in WorldState.
 
 ### v0.8.1 — 2026-04-04 (public release)
 First patch release for v0.8.x. Fixes all vehicle synchronization bugs discovered during multi-player testing and improves performance for servers running heavy mods.
