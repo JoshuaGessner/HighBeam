@@ -1203,6 +1203,11 @@ Ideas for future development (not committed):
 
 ## Recent Release Notes
 
+### v0.8.2-dev.6 — 2026-04-04 (draft)
+- **Deep spawn diagnostic logging:** comprehensive logging throughout the entire vehicle spawn chain (`_spawnWorldVehicles`, `spawnRemoteFromSnapshot`, `spawnRemote`, `_spawnGameVehicle`) to pinpoint why remote vehicles silently fail to spawn on the joining player. Every guard, pcall result, and iteration count is now logged explicitly.
+- **Fix NAT hairpin for host player (critical):** launcher proxy now detects when the resolved server address belongs to a local network interface and routes via `127.0.0.1` instead of the public IP. This prevents consumer routers from silently dropping UDP loopback traffic (LAN→WAN→LAN), which caused the host player to never receive inbound relay packets (`udpBound=false`, `udpRx=0` for the entire session).
+- **Fix rotation sync — angular velocity zeroing:** `_applyPosRot` now zeros angular velocity after `setPositionRotation` to prevent BeamNG's soft-body physics from immediately overriding the rotation set on remote vehicles.
+
 ### v0.8.2-dev.4 — 2026-04-04 (draft)
 - **Fix updater self-downgrade (critical):** `is_newer()` now strips pre-release suffixes before parsing — `0.8.2-dev.3` was parsed as `(0,8,0)` < `(0,8,1)`, causing server and launcher to downgrade to v0.8.1 on every boot. Dev builds now skip auto-update entirely since `/releases/latest` only returns stable releases.
 - **Fix bootstrap extension reload:** `modScript.lua` now guards against re-loading the extension when it's already active, preventing remote vehicle state wipe during mid-session modDB re-initialization.
