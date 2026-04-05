@@ -82,6 +82,14 @@ M.encodePositionUpdate = function(sessionHash, vehicleId, pos, rot, vel, simTime
     and (inputs.steer ~= nil or inputs.throttle ~= nil or inputs.brake ~= nil)
   local typeByte = hasInputs and 0x11 or 0x10
 
+  -- P1.1: Normalize quaternion before encoding to prevent drift
+  if rot then
+    local rlen = math.sqrt(rot[1]*rot[1] + rot[2]*rot[2] + rot[3]*rot[3] + rot[4]*rot[4])
+    if rlen > 0.0001 and math.abs(rlen - 1.0) > 0.0001 then
+      rot = { rot[1]/rlen, rot[2]/rlen, rot[3]/rlen, rot[4]/rlen }
+    end
+  end
+
   local expectedSize = hasInputs and 69 or 63
   local buf = ffi.new("uint8_t[?]", expectedSize)
   ffi.copy(buf, sessionHash, 16)
@@ -156,6 +164,12 @@ M.decodePositionUpdate = function(data)
     vel  = { v1, v2, v3 },
     time = simTime,
   }
+
+  -- P1.1: Normalize decoded quaternion to prevent drift from float imprecision
+  local rlen = math.sqrt(r1*r1 + r2*r2 + r3*r3 + r4*r4)
+  if rlen > 0.0001 and math.abs(rlen - 1.0) > 0.0001 then
+    result.rot = { r1/rlen, r2/rlen, r3/rlen, r4/rlen }
+  end
 
   -- Decode inputs if present (type 0x11, 71 bytes)
   if typeByte == 0x11 and #data >= 71 then

@@ -19,6 +19,7 @@ local _electricsTimer = 0  -- timer for electrics polling
 local _inputsTimer = 0     -- timer for input polling (decoupled from electrics)
 local _lastElectrics = {}  -- [gameVehicleId] = last sent electrics state string
 M._cachedInputs = {}  -- [gameVehicleId] = {steer, throttle, brake} from vlua callback
+M._damageDirty = {}   -- P3.2: [gameVehicleId] = true when damage event fires
 local _lastUdpErrorLogAt = -math.huge
 local _udpErrorLogCooldown = 2.0
 local _pendingSpawnTimeoutSec = 8.0
@@ -117,6 +118,31 @@ M.tick = function(dt)
   end
 
   local updateRate = (config and config.get("updateRate")) or 20
+
+  -- P3.1: Adaptive send rate — increase update rate when vehicle is moving fast.
+  -- At rest or slow speeds: use configured updateRate.
+  -- At high speed (>20 m/s ≈ 72 km/h): double the rate.
+  local adaptiveSendRate = config and config.get("adaptiveSendRate")
+  if adaptiveSendRate ~= false then
+    local maxSpeedSq = 0
+    for gameVid, _ in pairs(M.localVehicles) do
+      local veh = scenetree.findObjectById(gameVid)
+      if veh then
+        local vel = veh:getVelocity()
+        if vel then
+          local speedSq = vel.x*vel.x + vel.y*vel.y + vel.z*vel.z
+          if speedSq > maxSpeedSq then maxSpeedSq = speedSq end
+        end
+      end
+    end
+    -- 20 m/s = 400 speedSq
+    if maxSpeedSq > 400 then
+      updateRate = math.min(60, updateRate * 2)
+    elseif maxSpeedSq > 100 then  -- 10 m/s
+      updateRate = math.min(60, math.floor(updateRate * 1.5))
+    end
+  end
+
   local updateInterval = 1.0 / updateRate
   sendTimer = sendTimer + dt
   if sendTimer < updateInterval then return end
@@ -184,9 +210,26 @@ M.tick = function(dt)
   end
 
   -- ── Damage polling (every 1000ms) ─────────────────────────────────
+  -- P3.2: Only poll damage for vehicles that have recently had a collision.
+  -- We track a per-vehicle "dirty" flag that is set by onBeamBroke / manual triggers.
+  -- Fallback: poll at a reduced rate (every 3s) to catch missed events.
   _damageTimer = _damageTimer + dt
   if _damageTimer >= 1.0 then
     _damageTimer = 0
+    for gameVid, serverVid in pairs(M.localVehicles) do
+      local dirty = M._damageDirty and M._damageDirty[gameVid]
+      if dirty then
+        M._pollDamage(gameVid)
+        if M._damageDirty then M._damageDirty[gameVid] = nil end
+      end
+    end
+  end
+
+  -- P3.2: Fallback full damage poll every 3s for vehicles with no dirty flag
+  if not M._damageFullTimer then M._damageFullTimer = 0 end
+  M._damageFullTimer = M._damageFullTimer + dt
+  if M._damageFullTimer >= 3.0 then
+    M._damageFullTimer = 0
     for gameVid, serverVid in pairs(M.localVehicles) do
       M._pollDamage(gameVid)
     end
@@ -318,6 +361,7 @@ M._pollElectrics = function(gameVid, serverVid)
   if not veh then return end
 
   -- Query electrics via vehicle-side Lua and report back to GE
+  -- P4.3: Added gear and parking brake for full drivetrain sync
   pcall(function()
     veh:queueLuaCommand(
       'local e = electrics.values '
@@ -329,6 +373,8 @@ M._pollElectrics = function(gameVid, serverVid)
       .. 's.horn = (e.horn and e.horn > 0.5) and 1 or 0 '
       .. 's.headlights = e.lowbeam or 0 '
       .. 's.highbeams = e.highbeam or 0 '
+      .. 's.gear = e.gear_A or 0 '
+      .. 's.parkingbrake = (e.parkingbrake and e.parkingbrake > 0.5) and 1 or 0 '
       .. 'obj:queueGameEngineLua("extensions.highbeam.onElectricsReport(' .. gameVid .. ', \'" .. (jsonEncode and jsonEncode(s) or "{}") .. "\')")'
     )
   end)
@@ -374,6 +420,14 @@ M.onInputsReport = function(gameVid, steer, throttle, brake)
     throttle = throttle or 0,
     brake = brake or 0,
   }
+end
+
+-- P3.2: Mark a vehicle as needing a damage poll on the next cycle.
+-- Called from the main extension's onBeamBroke / collision hooks.
+M.markDamageDirty = function(gameVid)
+  if M.localVehicles[gameVid] then
+    M._damageDirty[gameVid] = true
+  end
 end
 
 M.onWorldState = function(players)
@@ -490,6 +544,8 @@ M.onDisconnect = function()
   _electricsTimer = 0
   _lastElectrics = {}
   M._cachedInputs = {}
+  M._damageDirty = {}
+  M._damageFullTimer = 0
   _lastUdpErrorLogAt = -math.huge
   _diagLogTimer = 0
   _udpSentCount = 0

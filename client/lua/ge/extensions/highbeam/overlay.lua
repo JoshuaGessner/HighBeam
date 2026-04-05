@@ -183,6 +183,21 @@ M.render = function()
 
     _im.Separator()
 
+    -- P0.1: Sync debug panel (toggled via debugOverlay config)
+    local debugOverlay = _config and _config.get and _config.get("debugOverlay")
+    if debugOverlay then
+      local stats = _vehicles and _vehicles._debugStats or {}
+      local conn = _connection or {}
+      _im.TextColored(_im.ImVec4(0.8, 0.8, 0.3, 1.0), "Sync Debug")
+      _im.Text("  AvgCorrPos: " .. string.format("%.4f", stats.avgCorrectionPos or 0) .. " m")
+      _im.Text("  AvgCorrRot: " .. string.format("%.5f", stats.avgCorrectionRot or 0))
+      _im.Text("  Corrections: " .. tostring(stats.correctionCount or 0)
+        .. "  Teleports: " .. tostring(stats.teleportCount or 0))
+      _im.Text("  UDP RxRate: " .. tostring(conn._udpRxRateHz or 0) .. " pkt/s"
+        .. "  TotalRx: " .. tostring(conn._udpRxCount or 0))
+      _im.Separator()
+    end
+
     if _im.BeginTable("##hb_overlay_table", 4, 64 + 1920 + 8) then
       _im.TableSetupColumn("Player")
       _im.TableSetupColumn("Ping")
