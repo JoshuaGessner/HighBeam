@@ -127,6 +127,10 @@ end
 local function _spawnGameVehicle(spec)
   local vehObj = nil
   M._spawningRemote = true
+
+  -- Save the player's current vehicle so we can restore focus after spawn
+  local savedPlayerVeh = be and be:getPlayerVehicle(0) or nil
+
   local ok, err = pcall(function()
     vehObj = core_vehicles.spawnNewVehicle(spec.model, {
       config = spec.partCfg,
@@ -154,6 +158,11 @@ local function _spawnGameVehicle(spec)
     end
   end
   M._spawningRemote = false
+
+  -- Restore camera focus to the player's vehicle (spawn may steal it)
+  if savedPlayerVeh and be then
+    pcall(function() be:enterVehicle(0, savedPlayerVeh) end)
+  end
 
   -- core_vehicles.spawnNewVehicle returns a vehicle object (userdata), not an ID
   local vid = nil
@@ -645,17 +654,44 @@ M.tick = function(dt)
       end
     end
 
-    -- Apply steering input to remote vehicle visuals (rate-limited to ~10Hz)
+    -- Apply steering/throttle/brake inputs to remote vehicle via input.event
+    -- (electrics.values.steering_input does not drive hydro actuators properly)
     if rv.gameVehicle and rv.snapshots and #rv.snapshots >= 1 then
       local latestSnap = rv.snapshots[#rv.snapshots]
-      if latestSnap.inputs and latestSnap.inputs.steer then
-        local lastSteer = rv._lastAppliedSteer
-        local newSteer = latestSnap.inputs.steer
-        if not lastSteer or math.abs(newSteer - lastSteer) > 0.01 then
-          rv._lastAppliedSteer = newSteer
-          pcall(function()
-            rv.gameVehicle:queueLuaCommand('electrics.values.steering_input = ' .. tostring(newSteer))
-          end)
+      if latestSnap.inputs then
+        local inp = latestSnap.inputs
+
+        if inp.steer then
+          local lastSteer = rv._lastAppliedSteer
+          local newSteer = inp.steer
+          if not lastSteer or math.abs(newSteer - lastSteer) > 0.01 then
+            rv._lastAppliedSteer = newSteer
+            pcall(function()
+              rv.gameVehicle:queueLuaCommand('input.event("steering", ' .. tostring(newSteer) .. ', 1)')
+            end)
+          end
+        end
+
+        if inp.throttle then
+          local lastThrottle = rv._lastAppliedThrottle
+          local newThrottle = inp.throttle
+          if not lastThrottle or math.abs(newThrottle - lastThrottle) > 0.01 then
+            rv._lastAppliedThrottle = newThrottle
+            pcall(function()
+              rv.gameVehicle:queueLuaCommand('input.event("throttle", ' .. tostring(newThrottle) .. ', 1)')
+            end)
+          end
+        end
+
+        if inp.brake then
+          local lastBrake = rv._lastAppliedBrake
+          local newBrake = inp.brake
+          if not lastBrake or math.abs(newBrake - lastBrake) > 0.01 then
+            rv._lastAppliedBrake = newBrake
+            pcall(function()
+              rv.gameVehicle:queueLuaCommand('input.event("brake", ' .. tostring(newBrake) .. ', 1)')
+            end)
+          end
         end
       end
     end

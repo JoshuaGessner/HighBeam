@@ -20,6 +20,12 @@ local function setManualUnloadMode()
 end
 
 local function bootstrap()
+	-- Guard: skip if the extension is already loaded (prevents state wipe on modDB re-init)
+	if extensions and extensions[EXT_NAME] then
+		log('I', LOG_TAG, 'Extension already loaded, skipping bootstrap: ' .. EXT_NAME)
+		return
+	end
+
 	if extensions and extensions.load then
 		local ok, err = pcall(extensions.load, EXT_NAME)
 		if not ok then

@@ -26,7 +26,11 @@ struct GithubAsset {
 /// Returns true if `remote` is newer than `local`.
 fn is_newer(local: &str, remote: &str) -> bool {
     let parse = |s: &str| -> (u32, u32, u32) {
-        let mut parts = s.split('.').map(|p| p.parse::<u32>().unwrap_or(0));
+        // Strip pre-release suffix (e.g. "2-dev.3" → "2") before parsing.
+        let mut parts = s.split('.').map(|p| {
+            let base = p.split('-').next().unwrap_or(p);
+            base.parse::<u32>().unwrap_or(0)
+        });
         (
             parts.next().unwrap_or(0),
             parts.next().unwrap_or(0),
@@ -64,6 +68,17 @@ pub fn check_and_update() -> Result<bool> {
             return Ok(false);
         }
     };
+
+    // Dev builds (pre-release suffix like -dev.N) must never auto-update from
+    // /releases/latest because that endpoint only returns stable releases,
+    // which would cause a downgrade (e.g. 0.8.2-dev.3 → 0.8.1).
+    if CURRENT_VERSION.contains('-') {
+        tracing::info!(
+            current = CURRENT_VERSION,
+            "Dev build detected, skipping auto-update"
+        );
+        return Ok(false);
+    }
 
     let remote_version = release
         .tag_name
