@@ -15,7 +15,7 @@ MaxAuthAttempts = 5
 AuthTimeoutSec = 30
 
 [Network]
-TickRate = 20
+TickRate = 60
 UdpBufferSize = 65535
 UdpRelayDistanceMeters = 0 # <=0 disables distance culling (full sync across map)
 TcpKeepAliveSec = 15

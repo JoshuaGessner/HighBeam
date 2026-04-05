@@ -268,7 +268,7 @@ M.onVehicleResetted = function(gameVehicleId)
   if not veh then return end
 
   local pos = veh:getPosition()
-  local rot = quatFromDir(veh:getDirectionVector(), veh:getDirectionVectorUp())
+  local rot = veh:getRotation()
   local resetData = '{"pos":[' .. pos.x .. ',' .. pos.y .. ',' .. pos.z .. '],"rot":[' .. rot.x .. ',' .. rot.y .. ',' .. rot.z .. ',' .. rot.w .. ']}'
   connection._sendPacket({
     type = "vehicle_reset",
