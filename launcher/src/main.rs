@@ -5,6 +5,7 @@ use anyhow::Result;
 mod config;
 mod detect;
 mod discovery;
+mod firewall;
 mod game;
 mod installer;
 mod ipc;
@@ -203,6 +204,9 @@ fn main() -> Result<()> {
 
     let args = parse_args();
     let mut cfg = config::LauncherConfig::load(&args.config)?;
+
+    // Ensure the launcher binary is allowed through the firewall for outbound connections.
+    firewall::ensure_outbound_allowed();
 
     if let Some(addr) = args.query_server.as_deref() {
         let started = std::time::Instant::now();
