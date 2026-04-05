@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-04-05
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.2-dev.14 (protocol v2)
+> **Current version:** v0.8.2-dev.15 (protocol v2)
 > **Status:** v0.8.1 released | v0.8.2 in development
 
 ---
@@ -1202,6 +1202,10 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.2-dev.15 - 2026-04-05 (draft)
+- **Client load fix (critical):** corrected a Lua syntax error in sync diagnostics logging that aborted HighBeam startup while loading `highbeam/connection`.
+- **Connection diagnostics restored:** periodic sync diagnostic logging now runs normally again, including per-component RX counters and reconnect metadata.
 
 ### v0.8.2-dev.14 — 2026-04-05 (draft)
 - **Sync release roll-up:** includes all latest player-sync diagnostics and runtime tuning now merged on `main`.
