@@ -1203,6 +1203,15 @@ Ideas for future development (not committed):
 
 ## Recent Release Notes
 
+### v0.8.2-dev.8 — 2026-04-05 (draft)
+- **Comprehensive sync optimization (P0–P4):** client-side only, no protocol changes.
+- **P0 — Debug instrumentation:** sync debug overlay (toggled via `debugOverlay` config), correction magnitude logging, packet-rate sliding window (200-entry circular buffer).
+- **P1 — Rotation fixes:** quaternion normalization on encode/decode, angular velocity injection from quaternion delta, true spherical lerp (sin(θ)-based slerp with nlerp fallback for small angles).
+- **P2 — Jitter reduction:** interpolation delay increased to 100ms (2 packets at 20Hz), jitter buffer expanded to 8 snapshots, smooth correction blending with configurable blend factor, min-filter + EMA time offset estimation.
+- **P3 — Performance:** adaptive send rate (20→40Hz at high speed), event-driven damage polling via `onBeamBroke` hook with 3s fallback, batched `queueLuaCommand` calls, LOD-based update frequency (4th tick beyond `lodDistanceFar`, 2nd tick between near/far).
+- **P4 — Steering & components:** direct steering via `electrics.values.steering_input`, lower input thresholds (0.01→0.002), gear and parking brake sync.
+- **New config keys:** `debugOverlay`, `correctionBlendFactor`, `correctionTeleportDist`, `adaptiveSendRate`, `lodDistanceNear`, `lodDistanceFar`, `directSteering`.
+
 ### v0.8.2-dev.6 — 2026-04-04 (draft)
 - **Deep spawn diagnostic logging:** comprehensive logging throughout the entire vehicle spawn chain (`_spawnWorldVehicles`, `spawnRemoteFromSnapshot`, `spawnRemote`, `_spawnGameVehicle`) to pinpoint why remote vehicles silently fail to spawn on the joining player. Every guard, pcall result, and iteration count is now logged explicitly.
 - **Fix NAT hairpin for host player (critical):** launcher proxy now detects when the resolved server address belongs to a local network interface and routes via `127.0.0.1` instead of the public IP. This prevents consumer routers from silently dropping UDP loopback traffic (LAN→WAN→LAN), which caused the host player to never receive inbound relay packets (`udpBound=false`, `udpRx=0` for the entire session).
