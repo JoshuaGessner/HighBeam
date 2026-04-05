@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-04-05
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.2-dev.12 (protocol v2)
+> **Current version:** v0.8.2-dev.13 (protocol v2)
 > **Status:** v0.8.1 released | v0.8.2 in development
 
 ---
@@ -1202,6 +1202,14 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.2-dev.13 — 2026-04-05 (draft)
+- **Verbose sync diagnostics (client):** added structured component TX/RX/apply counters for `vehicle_damage`, `vehicle_electrics`, `vehicle_edit`, `vehicle_reset`, and `vehicle_coupling` to pinpoint where non-movement sync drops occur.
+- **Owner-gate observability (server):** added periodic TCP component diagnostics and richer unowned-vehicle rejection logs including per-player and world vehicle counts.
+- **Frame-drop mitigation (client):** reduced high-frequency Lua polling pressure by combining input+rotation polling into a single queue command path and lowering adaptive send pressure tiers.
+- **Damage polling smoothing (client):** replaced fallback all-vehicle damage scans with sparse round-robin polling to avoid periodic frame spikes.
+- **Tunable runtime knobs:** added `verboseSyncLogging`, `maxAdaptiveSendRate`, `inputPollIntervalSec`, `electricsPollIntervalSec`, and `damageFallbackPollSec` config options.
+- **Payload refreshed:** rebuilt launcher-bundled `highbeam.zip` with the updated client sync/performance changes.
 
 ### v0.8.2-dev.12 — 2026-04-05 (draft)
 - **Production sync hardening (client):** strengthened motion sync pipeline for playability under real-world jitter and mixed vehicle counts.
