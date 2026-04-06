@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-04-05
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.2-dev.17 (protocol v2)
+> **Current version:** v0.8.2-dev.18 (protocol v2)
 > **Status:** v0.8.1 released | v0.8.2 in development
 
 ---
@@ -1202,6 +1202,13 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.2-dev.18 - 2026-04-05 (draft)
+- **VE sync architecture rollout:** merged per-vehicle VE modules for motion, inputs, electrics, powertrain, and damage sync (`highbeamVE`, `highbeamPositionVE`, `highbeamVelocityVE`, `highbeamInputsVE`, `highbeamElectricsVE`, `highbeamPowertrainVE`, `highbeamDamageVE`).
+- **Remote motion pipeline upgrade:** remote snapshots are now forwarded to VE PD target handlers with VE-first execution and GE interpolation fallback retained for compatibility.
+- **New component transport channels:** added `vehicle_inputs` and `vehicle_powertrain` TCP packet relays (client dispatch + server validation/ownership gate + remote apply path).
+- **Damage optimization follow-up:** added break-group aware damage replication payloads with receiver-side group expansion fallback to beam-level breaking.
+- **Payload refreshed:** launcher-bundled `highbeam.zip` now includes the VE extension tree under `lua/vehicle/extensions/highbeam/`.
 
 ### v0.8.2-dev.17 - 2026-04-05 (draft)
 - **Fix join-time disconnect regression (critical):** restored `_syncVerboseLoggingEnabled` to file scope in `highbeam/connection.lua` after it was accidentally nested inside `_formatCounterMap`.
