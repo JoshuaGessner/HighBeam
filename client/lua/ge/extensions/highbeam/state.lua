@@ -360,7 +360,7 @@ M.tick = function(dt)
       local veFresh = _veDataReady[gameVid] and _veLastDataAt[gameVid] and ((now - _veLastDataAt[gameVid]) <= 0.5)
       if veFresh and _vePos[gameVid] and _veRot[gameVid] and _veVel[gameVid] then
         posArr = { _vePos[gameVid][1], _vePos[gameVid][2], _vePos[gameVid][3] }
-        rotArr = syncMath.normalizeQuat({ _veRot[gameVid][1], _veRot[gameVid][2], _veRot[gameVid][3], _veRot[gameVid][4] })
+        rotArr = { _veRot[gameVid][1], _veRot[gameVid][2], _veRot[gameVid][3], _veRot[gameVid][4] }
         velArr = { _veVel[gameVid][1], _veVel[gameVid][2], _veVel[gameVid][3] }
         speed = math.sqrt((velArr[1] or 0)*(velArr[1] or 0) + (velArr[2] or 0)*(velArr[2] or 0) + (velArr[3] or 0)*(velArr[3] or 0))
       else
@@ -377,7 +377,7 @@ M.tick = function(dt)
         end
 
         posArr = { pos.x, pos.y, pos.z }
-        rotArr = syncMath.normalizeQuat({ rot.x, rot.y, rot.z, rot.w })
+        rotArr = { rot.x, rot.y, rot.z, rot.w }
         velArr = { vel.x, vel.y, vel.z }
         speed = math.sqrt((velArr[1] or 0)*(velArr[1] or 0) + (velArr[2] or 0)*(velArr[2] or 0) + (velArr[3] or 0)*(velArr[3] or 0))
       end
@@ -573,7 +573,7 @@ M.tick = function(dt)
   end
 
   -- Fallback damage polling runs sparsely and round-robin to avoid frame spikes.
-  local damageFallbackInterval = math.max(2.0, math.min(20.0, _getConfigNumber("damageFallbackPollSec", 8.0)))
+  local damageFallbackInterval = math.max(1.0, math.min(20.0, _getConfigNumber("damageFallbackPollSec", 2.0)))
   _damageFallbackTimer = _damageFallbackTimer + dt
   if _damageFallbackTimer >= damageFallbackInterval then
     _damageFallbackTimer = 0
@@ -635,12 +635,19 @@ M._pollDamage = function(gameVid)
 
   -- Request the vehicle Lua to report damage state back to GE.
   -- The vehicle-side callback will fire our GE extension event.
+  -- Bug #3b: Also collect node positions for nodes connected to damaged beams.
   local ok = pcall(function()
     veh:queueLuaCommand(
       'local d = {} '
       .. 'd.broken = {} '
+      .. 'local _damagedNodes = {} '
       .. 'for i = 0, obj:getBeamCount() - 1 do '
-      .. '  if obj:beamIsBroken(i) then table.insert(d.broken, i) end '
+      .. '  if obj:beamIsBroken(i) then '
+      .. '    table.insert(d.broken, i) '
+      .. '    local n1,n2 = obj:getBeamNode1(i),obj:getBeamNode2(i) '
+      .. '    if n1 then _damagedNodes[n1] = true end '
+      .. '    if n2 then _damagedNodes[n2] = true end '
+      .. '  end '
       .. 'end '
       .. 'd.deform = {} '
       .. 'for i = 0, obj:getBeamCount() - 1 do '
@@ -649,6 +656,22 @@ M._pollDamage = function(gameVid)
       .. '    if def > 0.001 then '
       .. '      local rl = obj:getBeamRestLength(i) '
       .. '      d.deform[tostring(i)] = {math.floor(def * 1000) / 1000, math.floor(rl * 1000) / 1000} '
+      .. '      local n1,n2 = obj:getBeamNode1(i),obj:getBeamNode2(i) '
+      .. '      if n1 then _damagedNodes[n1] = true end '
+      .. '      if n2 then _damagedNodes[n2] = true end '
+      .. '    end '
+      .. '  end '
+      .. 'end '
+      .. 'd.nodes = {} '
+      .. 'for nid,_ in pairs(_damagedNodes) do '
+      .. '  local np = obj:getNodePosition(nid) '
+      .. '  if np then '
+      .. '    local op = obj:getOriginalNodePosition(nid) '
+      .. '    if op then '
+      .. '      local dx2 = (np.x-op.x)*(np.x-op.x)+(np.y-op.y)*(np.y-op.y)+(np.z-op.z)*(np.z-op.z) '
+      .. '      if dx2 > 0.0001 then '
+      .. '        d.nodes[tostring(nid)] = {math.floor(np.x*1000)/1000,math.floor(np.y*1000)/1000,math.floor(np.z*1000)/1000} '
+      .. '      end '
       .. '    end '
       .. '  end '
       .. 'end '
@@ -989,6 +1012,11 @@ M.markDamageDirty = function(gameVid)
   if M.localVehicles[gameVid] then
     M._damageDirty[gameVid] = true
   end
+end
+
+-- Bug #3a: Clear damage hash so next poll detects fresh state after reset.
+M.clearDamageHash = function(gameVid)
+  _lastDamageHashes[gameVid] = nil
 end
 
 M.onWorldState = function(players)

@@ -111,15 +111,33 @@ local function _shouldApplyPosRot(rv, pos, rot)
   return false
 end
 
-local function _applyPosRot(rv, pos, rot)
+local function _applyPosRot(rv, pos, rot, vel)
+  -- When VE is active, send target to VE via queueLuaCommand instead of
+  -- hard-teleporting with setPositionRotation (which resets velocity).
+  if rv._hasVE and rv.gameVehicle then
+    local vx, vy, vz = 0, 0, 0
+    if vel then vx, vy, vz = vel[1] or 0, vel[2] or 0, vel[3] or 0 end
+    local ax, ay, az = 0, 0, 0
+    if rv._lastAngVel then ax, ay, az = rv._lastAngVel[1] or 0, rv._lastAngVel[2] or 0, rv._lastAngVel[3] or 0 end
+    pcall(function()
+      rv.gameVehicle:queueLuaCommand(string.format(
+        "if highbeam_highbeamPositionVE and highbeam_highbeamPositionVE.setTarget then highbeam_highbeamPositionVE.setTarget(%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f,%.4f,%.4f) end",
+        pos[1], pos[2], pos[3],
+        vx, vy, vz,
+        rot[1], rot[2], rot[3], rot[4],
+        ax, ay, az,
+        rv._lastTargetTime or 0
+      ))
+    end)
+    rv._lastAppliedPos = { pos[1], pos[2], pos[3] }
+    rv._lastAppliedRot = { rot[1], rot[2], rot[3], rot[4] }
+    return
+  end
+
+  -- Fallback for pre-VE bootstrap: use setPositionRotation (resets velocity)
   rv.gameVehicle:setPositionRotation(pos[1], pos[2], pos[3], rot[1], rot[2], rot[3], rot[4])
   rv._lastAppliedPos = { pos[1], pos[2], pos[3] }
   rv._lastAppliedRot = { rot[1], rot[2], rot[3], rot[4] }
-  -- NOTE: obj:setVelocity() and obj:setAngularVelocity() do not exist in
-  -- BeamNG's vlua context.  BeamMP works around this with per-node
-  -- obj:applyForceVector() in a dedicated velocityVE extension.  For now
-  -- setPositionRotation() from the GE context is sufficient; a force-based
-  -- velocity system can be added later for smoother motion.
 end
 
 local function _countPendingSpawnRetries()
@@ -540,6 +558,10 @@ M.updateRemote = function(decoded)
     end)
   end
 
+  -- Store for GE interpolation fallback path
+  rv._lastAngVel = decoded.angVel
+  rv._lastTargetTime = decoded.time
+
   table.insert(rv.snapshots, {
     pos = decoded.pos,
     rot = decoded.rot,
@@ -739,8 +761,6 @@ M.applyDamage = function(playerId, vehicleId, damageData)
   -- Apply beam deformation (sender field name is 'deform')
   -- Each entry is {deformVal, restLength} or a plain number (legacy).
   -- We use obj:setBeamLength to set the physical length directly.
-  -- NOTE: beamstate.beamDeformed() does not exist in BeamNG's vlua —
-  -- obj:setBeamLength() alone handles the visual + physical deformation.
   if dmg.deform then
     local ok = pcall(function()
       for beamIdStr, val in pairs(dmg.deform) do
@@ -750,13 +770,27 @@ M.applyDamage = function(playerId, vehicleId, damageData)
           veh:queueLuaCommand('obj:setBeamLength(' .. cid .. ', ' .. tostring(val[2]) .. ')')
           commandsQueued = commandsQueued + 1
         end
-        -- Legacy format (plain number) had no restLength, so we cannot call
-        -- setBeamLength.  The deformation is purely cosmetic tracking and was
-        -- using the non-existent beamstate.beamDeformed() — skip silently.
       end
     end)
     if not ok then
       _bumpApplyStat("damage_error_deform")
+    end
+  end
+
+  -- Bug #3b: Apply node positions from damage data to reproduce deformed shape
+  if dmg.nodes then
+    local ok = pcall(function()
+      for nodeIdStr, pos in pairs(dmg.nodes) do
+        if type(pos) == 'table' and #pos >= 3 then
+          local nid = tostring(nodeIdStr)
+          veh:queueLuaCommand('obj:setNodePosition(' .. nid
+            .. ', float3(' .. tostring(pos[1]) .. ',' .. tostring(pos[2]) .. ',' .. tostring(pos[3]) .. '))')
+          commandsQueued = commandsQueued + 1
+        end
+      end
+    end)
+    if not ok then
+      _bumpApplyStat("damage_error_nodes")
     end
   end
 
@@ -1118,11 +1152,10 @@ M.tick = function(dt)
       end
     end
 
-    -- When VE is active, skip GE interpolation (VE handles position via
-    -- onPhysicsStep) but still fall through to the input-application block.
-    if rv._hasVE and rv.gameVehicle then
-      goto skip_ge_interpolation
-    end
+    -- When VE is active, it handles physics-rate positioning via onPhysicsStep.
+    -- GE still computes interpolation targets and forwards them via _applyPosRot
+    -- (which dispatches to VE queueLuaCommand when _hasVE is true).
+    -- Skip LOD throttling when VE is active since VE handles its own rate.
 
     -- P3.4: LOD skip — for very distant vehicles, reduce update frequency
     if rv.gameVehicle and camX and rv._lastAppliedPos then
@@ -1248,19 +1281,19 @@ M.tick = function(dt)
         end
       end
 
+      -- Compute velocity for VE forwarding
+      local interpVel = s2.vel
       if _shouldApplyPosRot(rv, finalPos, finalRot) then
-        _applyPosRot(rv, finalPos, finalRot)
+        _applyPosRot(rv, finalPos, finalRot, interpVel)
       end
     elseif rv.gameVehicle and #rv.snapshots >= 1 then
       local latest = rv.snapshots[#rv.snapshots]
       local latestPos = latest.pos
       local latestRot = latest.rot
       if _shouldApplyPosRot(rv, latestPos, latestRot) then
-        _applyPosRot(rv, latestPos, latestRot)
+        _applyPosRot(rv, latestPos, latestRot, latest.vel)
       end
     end
-
-    ::skip_ge_interpolation::
 
     -- Apply steering/throttle/brake inputs to remote vehicle
     if rv.gameVehicle and rv.snapshots and #rv.snapshots >= 1 then

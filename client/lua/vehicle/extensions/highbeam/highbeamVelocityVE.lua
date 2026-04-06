@@ -171,6 +171,34 @@ function M.addAngularVelocity(avx, avy, avz, px, py, pz)
   end
 end
 
+-- Set absolute velocity by zeroing current and adding target.
+-- Uses cluster API when available, falls back to per-node forces.
+function M.setVelocity(vx, vy, vz)
+  if not obj then return end
+  if connectedNodeCount == 0 then
+    M.recalcConnectivity()
+    if connectedNodeCount == 0 then return end
+  end
+
+  if obj.applyClusterVelocityScaleAdd and connectedNodeCount > 0 and obj.getNodeCount then
+    local okNodeCount, nodeCount = pcall(obj.getNodeCount, obj)
+    if okNodeCount and nodeCount and nodeCount > 0 and (connectedNodeCount / nodeCount) > 0.9 then
+      -- Scale 0 zeros existing velocity, then adds vx/vy/vz
+      pcall(obj.applyClusterVelocityScaleAdd, obj, 0, 0, vx, vy, vz)
+      return
+    end
+  end
+
+  -- Fallback: compute delta and use addVelocity
+  local curVel = obj:getVelocity()
+  if curVel then
+    local dvx = vx - (curVel.x or 0)
+    local dvy = vy - (curVel.y or 0)
+    local dvz = vz - (curVel.z or 0)
+    M.addVelocity(dvx, dvy, dvz)
+  end
+end
+
 function M.getCOG()
   return cogX, cogY, cogZ
 end
