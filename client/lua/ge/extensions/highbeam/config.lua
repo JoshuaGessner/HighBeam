@@ -33,6 +33,13 @@ M.defaults = {
   persistRemoteDamageOnReset = true, -- Keep remote damage after reset packets
   localResetDebounceSec = 0.75,      -- Debounce local reset packet emission
   remoteResetMinIntervalSec = 0.5,   -- Suppress duplicate inbound reset bursts
+  resetStabilizeSec = 2.0,           -- Temporary soft-correction window after reset bursts
+  resetBurstWindowSec = 2.0,         -- Window for counting reset bursts
+  resetBurstThreshold = 3,           -- Enter stabilization when this many resets happen in window
+  forceKeyframeIntervalSec = 0.45,   -- Force periodic outbound keyframes even when unchanged
+  motionWatchdogSec = 0.7,           -- Force send when moving but no packet sent for this long
+  motionWatchdogMinSpeed = 0.5,      -- m/s threshold used by motion watchdog
+  localVehicleReconcileSec = 1.0,    -- Re-check active player vehicle mapping interval
   veForceController = true,
   vePosCorrectMul = 5,
   vePosForceMul = 5,
@@ -211,6 +218,34 @@ local function _sanitizeNumber(key, value)
   end
   if key == "remoteResetMinIntervalSec" then
     local out = math.max(0.0, math.min(3.0, value))
+    return out, out ~= value
+  end
+  if key == "resetStabilizeSec" then
+    local out = math.max(0.2, math.min(10.0, value))
+    return out, out ~= value
+  end
+  if key == "resetBurstWindowSec" then
+    local out = math.max(0.2, math.min(10.0, value))
+    return out, out ~= value
+  end
+  if key == "resetBurstThreshold" then
+    local out = math.max(2, math.min(10, math.floor(value + 0.5)))
+    return out, out ~= value
+  end
+  if key == "forceKeyframeIntervalSec" then
+    local out = math.max(0.2, math.min(2.0, value))
+    return out, out ~= value
+  end
+  if key == "motionWatchdogSec" then
+    local out = math.max(0.2, math.min(3.0, value))
+    return out, out ~= value
+  end
+  if key == "motionWatchdogMinSpeed" then
+    local out = math.max(0.0, math.min(20.0, value))
+    return out, out ~= value
+  end
+  if key == "localVehicleReconcileSec" then
+    local out = math.max(0.25, math.min(5.0, value))
     return out, out ~= value
   end
   if key == "vePosCorrectMul" or key == "vePosForceMul" then
@@ -396,6 +431,55 @@ M.set = function(key, value)
     local numeric = tonumber(value)
     if not numeric then return false end
     M.current.remoteResetMinIntervalSec = math.max(0.0, math.min(3.0, numeric))
+    return true
+  end
+
+  if key == "resetStabilizeSec" then
+    local numeric = tonumber(value)
+    if not numeric then return false end
+    M.current.resetStabilizeSec = math.max(0.2, math.min(10.0, numeric))
+    return true
+  end
+
+  if key == "resetBurstWindowSec" then
+    local numeric = tonumber(value)
+    if not numeric then return false end
+    M.current.resetBurstWindowSec = math.max(0.2, math.min(10.0, numeric))
+    return true
+  end
+
+  if key == "resetBurstThreshold" then
+    local numeric = tonumber(value)
+    if not numeric then return false end
+    M.current.resetBurstThreshold = math.max(2, math.min(10, math.floor(numeric + 0.5)))
+    return true
+  end
+
+  if key == "forceKeyframeIntervalSec" then
+    local numeric = tonumber(value)
+    if not numeric then return false end
+    M.current.forceKeyframeIntervalSec = math.max(0.2, math.min(2.0, numeric))
+    return true
+  end
+
+  if key == "motionWatchdogSec" then
+    local numeric = tonumber(value)
+    if not numeric then return false end
+    M.current.motionWatchdogSec = math.max(0.2, math.min(3.0, numeric))
+    return true
+  end
+
+  if key == "motionWatchdogMinSpeed" then
+    local numeric = tonumber(value)
+    if not numeric then return false end
+    M.current.motionWatchdogMinSpeed = math.max(0.0, math.min(20.0, numeric))
+    return true
+  end
+
+  if key == "localVehicleReconcileSec" then
+    local numeric = tonumber(value)
+    if not numeric then return false end
+    M.current.localVehicleReconcileSec = math.max(0.25, math.min(5.0, numeric))
     return true
   end
 
