@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-04-05
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.2-dev.20 (protocol v2)
+> **Current version:** v0.8.2-dev.21 (protocol v2)
 > **Status:** v0.8.1 released | v0.8.2 in development
 
 ---
@@ -1202,6 +1202,13 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.2-dev.21 - 2026-04-05 (draft)
+- **VE runtime fix:** register all HighBeam VE modules as vehicle controllers during remote bootstrap to ensure `onPhysicsStep` callbacks execute reliably.
+- **VE readiness hardening:** added VE probe retries for remote vehicles so transient vlua initialization races no longer leave vehicles stuck in GE fallback forever.
+- **Remote control continuity:** fixed remote input routing so steering/throttle/brake/gear/handbrake updates continue applying when VE motion is active.
+- **Force path recovery:** added zero-node connectivity self-heal in VE velocity module to recover when early init runs before the physics mesh is ready.
+- **Payload refresh:** rebuilt launcher bundled HighBeam payload zip with the latest client VE/GE fixes.
 
 ### v0.8.2-dev.20 - 2026-04-05 (draft)
 - **Release refresh after cleanup:** canceled stale `v0.8.2-dev.19` release build that was missing latest `main` commit(s), then cut a fresh dev release from cleaned `main`.
