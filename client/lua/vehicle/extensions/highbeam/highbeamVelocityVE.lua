@@ -98,6 +98,11 @@ end
 
 function M.addVelocity(vx, vy, vz)
   if not obj then return end
+  -- Auto-recover if onInit ran before physics mesh was ready (zero nodes)
+  if connectedNodeCount == 0 then
+    M.recalcConnectivity()
+    if connectedNodeCount == 0 then return end
+  end
   local dtSim = math.max(0.0001, lastDtSim or 0.0005)
   local physicsFps = 1 / dtSim
 
@@ -124,6 +129,11 @@ end
 
 function M.addAngularVelocity(avx, avy, avz, px, py, pz)
   if not obj then return end
+  -- Auto-recover if onInit ran before physics mesh was ready (zero nodes)
+  if connectedNodeCount == 0 then
+    M.recalcConnectivity()
+    if connectedNodeCount == 0 then return end
+  end
   local dtSim = math.max(0.0001, lastDtSim or 0.0005)
   local physicsFps = 1 / dtSim
 

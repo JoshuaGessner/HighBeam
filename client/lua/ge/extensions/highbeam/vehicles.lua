@@ -16,6 +16,8 @@ local _spawnRetryAttemptCount = 0
 local _spawnRetrySuccessCount = 0
 local SPAWN_RETRY_MAX_ATTEMPTS = 15
 local SPAWN_RETRY_BASE_DELAY = 0.75
+local VE_PROBE_RETRY_DELAY = 0.5      -- seconds between VE probe retries
+local VE_PROBE_MAX_RETRIES = 6        -- max re-probes before giving up
 
 -- Thresholds for skipping setPositionRotation when delta is negligible
 local POS_DELTA_SQ_THRESHOLD = 0.000025  -- 0.005m squared
@@ -182,8 +184,28 @@ local function _queueRemoteVeBootstrap(rv, key)
   pcall(function()
     vehObj:queueLuaCommand([[
       local _missing = {}
+
+      -- Ensure VE modules are registered as controllers so onPhysicsStep fires.
+      -- Auto-loaded globals from lua/vehicle/extensions/ may not receive physics
+      -- callbacks unless explicitly loaded as controllers.
+      local _veModules = {
+        {"highbeam/highbeamVE", "highbeam_highbeamVE"},
+        {"highbeam/highbeamPositionVE", "highbeam_highbeamPositionVE"},
+        {"highbeam/highbeamVelocityVE", "highbeam_highbeamVelocityVE"},
+        {"highbeam/highbeamInputsVE", "highbeam_highbeamInputsVE"},
+        {"highbeam/highbeamElectricsVE", "highbeam_highbeamElectricsVE"},
+        {"highbeam/highbeamPowertrainVE", "highbeam_highbeamPowertrainVE"},
+        {"highbeam/highbeamDamageVE", "highbeam_highbeamDamageVE"},
+      }
+      if controller and controller.loadControllerExternal then
+        for _, entry in ipairs(_veModules) do
+          pcall(controller.loadControllerExternal, entry[1], entry[2])
+        end
+      end
+
       local _hasVE = highbeam_highbeamVE and highbeam_highbeamVE.setActive
       local _hasPos = highbeam_highbeamPositionVE and highbeam_highbeamPositionVE.setRemote and highbeam_highbeamPositionVE.setTarget
+      local _hasVel = highbeam_highbeamVelocityVE and highbeam_highbeamVelocityVE.addVelocity
       local _hasInputs = highbeam_highbeamInputsVE and highbeam_highbeamInputsVE.setActive
       local _hasElectrics = highbeam_highbeamElectricsVE and highbeam_highbeamElectricsVE.setActive
       local _hasPowertrain = highbeam_highbeamPowertrainVE and highbeam_highbeamPowertrainVE.setActive
@@ -191,12 +213,13 @@ local function _queueRemoteVeBootstrap(rv, key)
 
       if not _hasVE then table.insert(_missing, "highbeam_highbeamVE") end
       if not _hasPos then table.insert(_missing, "highbeam_highbeamPositionVE") end
+      if not _hasVel then table.insert(_missing, "highbeam_highbeamVelocityVE") end
       if not _hasInputs then table.insert(_missing, "highbeam_highbeamInputsVE") end
       if not _hasElectrics then table.insert(_missing, "highbeam_highbeamElectricsVE") end
       if not _hasPowertrain then table.insert(_missing, "highbeam_highbeamPowertrainVE") end
       if not _hasDamage then table.insert(_missing, "highbeam_highbeamDamageVE") end
 
-      local _ready = (_hasVE and _hasPos and _hasInputs and _hasElectrics and _hasPowertrain and _hasDamage) and true or false
+      local _ready = (_hasVE and _hasPos and _hasVel and _hasInputs and _hasElectrics and _hasPowertrain and _hasDamage) and true or false
 
       if _ready then
         highbeam_highbeamVE.setActive(true, true)
@@ -231,13 +254,23 @@ M.onRemoteVEReady = function(gameVehicleId, ready, missingCsv)
       rv._veReadyAt = os.clock()
       rv._veProbeMissing = missingCsv
       if readyBool then
+        rv._veProbeRetries = VE_PROBE_MAX_RETRIES  -- stop retrying
         log('I', logTag, 'Remote VE confirmed key=' .. tostring(key)
-          .. ' gameVid=' .. tostring(gameVehicleId))
+          .. ' gameVid=' .. tostring(gameVehicleId)
+          .. ' retries=' .. tostring(rv._veProbeRetries or 0))
       else
         local missing = tostring(missingCsv or '')
-        log('W', logTag, 'Remote VE unavailable; GE fallback active key=' .. tostring(key)
-          .. ' gameVid=' .. tostring(gameVehicleId)
-          .. ' missing=' .. (missing ~= '' and missing or 'unknown'))
+        local retries = rv._veProbeRetries or 0
+        if retries < VE_PROBE_MAX_RETRIES then
+          log('D', logTag, 'VE probe pending retry key=' .. tostring(key)
+            .. ' gameVid=' .. tostring(gameVehicleId)
+            .. ' attempt=' .. tostring(retries)
+            .. ' missing=' .. (missing ~= '' and missing or 'unknown'))
+        else
+          log('W', logTag, 'Remote VE failed after retries key=' .. tostring(key)
+            .. ' gameVid=' .. tostring(gameVehicleId)
+            .. ' missing=' .. (missing ~= '' and missing or 'unknown'))
+        end
       end
       return
     end
@@ -1071,8 +1104,24 @@ M.tick = function(dt)
       rv.gameVehicle = scenetree.findObjectById(rv.gameVehicleId)
     end
 
+    -- VE probe retry: if previous probe failed and enough time has passed, re-probe
+    if rv.gameVehicle and not rv._hasVE and rv._veProbeQueuedAt then
+      local probeAge = now - rv._veProbeQueuedAt
+      local retries = rv._veProbeRetries or 0
+      if probeAge >= VE_PROBE_RETRY_DELAY and retries < VE_PROBE_MAX_RETRIES then
+        rv._veProbeRetries = retries + 1
+        local key = tostring(rv.playerId) .. '_' .. tostring(rv.vehicleId)
+        if _verboseSyncLoggingEnabled() then
+          log('D', logTag, 'VE probe retry #' .. tostring(rv._veProbeRetries) .. ' key=' .. key)
+        end
+        _queueRemoteVeBootstrap(rv, key)
+      end
+    end
+
+    -- When VE is active, skip GE interpolation (VE handles position via
+    -- onPhysicsStep) but still fall through to the input-application block.
     if rv._hasVE and rv.gameVehicle then
-      goto continue_vehicle
+      goto skip_ge_interpolation
     end
 
     -- P3.4: LOD skip — for very distant vehicles, reduce update frequency
@@ -1210,6 +1259,8 @@ M.tick = function(dt)
         _applyPosRot(rv, latestPos, latestRot)
       end
     end
+
+    ::skip_ge_interpolation::
 
     -- Apply steering/throttle/brake inputs to remote vehicle
     if rv.gameVehicle and rv.snapshots and #rv.snapshots >= 1 then
