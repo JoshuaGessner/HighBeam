@@ -395,6 +395,13 @@ M.onVEDamageDirty = function(gameVid)
   end
 end
 
+-- Called from remote vehicle-side capability probe to confirm VE module availability.
+M.onRemoteVEReady = function(gameVid, ready, missingCsv)
+  if vehicles and vehicles.onRemoteVEReady then
+    vehicles.onRemoteVEReady(gameVid, ready, missingCsv)
+  end
+end
+
 -- ─────────────── Coupling/trailer hooks ─────────────────────────────────────
 
 M.onCouplerAttached = function(objId1, objId2, nodeId, obj2nodeId)

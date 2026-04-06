@@ -494,6 +494,12 @@ where
     let mut has_mod_script_root = false;
     let mut has_mod_script_legacy = false;
     let mut has_extension = false;
+    let mut has_vehicle_ext = false;
+    let mut has_position_ve = false;
+    let mut has_inputs_ve = false;
+    let mut has_electrics_ve = false;
+    let mut has_powertrain_ve = false;
+    let mut has_damage_ve = false;
 
     for i in 0..archive.len() {
         let entry = archive.by_index(i).context("Failed to read zip entry")?;
@@ -507,15 +513,45 @@ where
         if name == "lua/ge/extensions/highbeam.lua" {
             has_extension = true;
         }
+        if name == "lua/vehicle/extensions/highbeam/highbeamVE.lua" {
+            has_vehicle_ext = true;
+        }
+        if name == "lua/vehicle/extensions/highbeam/highbeamPositionVE.lua" {
+            has_position_ve = true;
+        }
+        if name == "lua/vehicle/extensions/highbeam/highbeamInputsVE.lua" {
+            has_inputs_ve = true;
+        }
+        if name == "lua/vehicle/extensions/highbeam/highbeamElectricsVE.lua" {
+            has_electrics_ve = true;
+        }
+        if name == "lua/vehicle/extensions/highbeam/highbeamPowertrainVE.lua" {
+            has_powertrain_ve = true;
+        }
+        if name == "lua/vehicle/extensions/highbeam/highbeamDamageVE.lua" {
+            has_damage_ve = true;
+        }
     }
 
     let has_mod_script = has_mod_script_root || has_mod_script_legacy;
-    if !has_mod_script || !has_extension {
+    let has_required_ve = has_vehicle_ext
+        && has_position_ve
+        && has_inputs_ve
+        && has_electrics_ve
+        && has_powertrain_ve
+        && has_damage_ve;
+    if !has_mod_script || !has_extension || !has_required_ve {
         return Err(anyhow!(
-            "HighBeam client zip is missing required files (modScript_root={}, modScript_legacy={}, extension={})",
+            "HighBeam client zip is missing required files (modScript_root={}, modScript_legacy={}, extension={}, ve={}, position_ve={}, inputs_ve={}, electrics_ve={}, powertrain_ve={}, damage_ve={})",
             has_mod_script_root,
             has_mod_script_legacy,
-            has_extension
+            has_extension,
+            has_vehicle_ext,
+            has_position_ve,
+            has_inputs_ve,
+            has_electrics_ve,
+            has_powertrain_ve,
+            has_damage_ve
         ));
     }
 
@@ -569,6 +605,39 @@ mod tests {
                 .expect("write extension entry");
             zip.write_all(b"return {}")
                 .expect("write extension contents");
+            zip.start_file("lua/vehicle/extensions/highbeam/highbeamVE.lua", options)
+                .expect("write highbeamVE entry");
+            zip.write_all(b"return {}")
+                .expect("write highbeamVE contents");
+            zip.start_file(
+                "lua/vehicle/extensions/highbeam/highbeamPositionVE.lua",
+                options,
+            )
+            .expect("write highbeamPositionVE entry");
+            zip.write_all(b"return {}")
+                .expect("write highbeamPositionVE contents");
+            zip.start_file("lua/vehicle/extensions/highbeam/highbeamInputsVE.lua", options)
+                .expect("write highbeamInputsVE entry");
+            zip.write_all(b"return {}")
+                .expect("write highbeamInputsVE contents");
+            zip.start_file(
+                "lua/vehicle/extensions/highbeam/highbeamElectricsVE.lua",
+                options,
+            )
+            .expect("write highbeamElectricsVE entry");
+            zip.write_all(b"return {}")
+                .expect("write highbeamElectricsVE contents");
+            zip.start_file(
+                "lua/vehicle/extensions/highbeam/highbeamPowertrainVE.lua",
+                options,
+            )
+            .expect("write highbeamPowertrainVE entry");
+            zip.write_all(b"return {}")
+                .expect("write highbeamPowertrainVE contents");
+            zip.start_file("lua/vehicle/extensions/highbeam/highbeamDamageVE.lua", options)
+                .expect("write highbeamDamageVE entry");
+            zip.write_all(b"return {}")
+                .expect("write highbeamDamageVE contents");
             zip.finish().expect("finish zip");
         }
 
@@ -613,6 +682,39 @@ mod tests {
                 .expect("write extension entry");
             zip.write_all(b"return {}")
                 .expect("write extension contents");
+            zip.start_file("lua/vehicle/extensions/highbeam/highbeamVE.lua", options)
+                .expect("write highbeamVE entry");
+            zip.write_all(b"return {}")
+                .expect("write highbeamVE contents");
+            zip.start_file(
+                "lua/vehicle/extensions/highbeam/highbeamPositionVE.lua",
+                options,
+            )
+            .expect("write highbeamPositionVE entry");
+            zip.write_all(b"return {}")
+                .expect("write highbeamPositionVE contents");
+            zip.start_file("lua/vehicle/extensions/highbeam/highbeamInputsVE.lua", options)
+                .expect("write highbeamInputsVE entry");
+            zip.write_all(b"return {}")
+                .expect("write highbeamInputsVE contents");
+            zip.start_file(
+                "lua/vehicle/extensions/highbeam/highbeamElectricsVE.lua",
+                options,
+            )
+            .expect("write highbeamElectricsVE entry");
+            zip.write_all(b"return {}")
+                .expect("write highbeamElectricsVE contents");
+            zip.start_file(
+                "lua/vehicle/extensions/highbeam/highbeamPowertrainVE.lua",
+                options,
+            )
+            .expect("write highbeamPowertrainVE entry");
+            zip.write_all(b"return {}")
+                .expect("write highbeamPowertrainVE contents");
+            zip.start_file("lua/vehicle/extensions/highbeam/highbeamDamageVE.lua", options)
+                .expect("write highbeamDamageVE entry");
+            zip.write_all(b"return {}")
+                .expect("write highbeamDamageVE contents");
             zip.finish().expect("finish zip");
         }
 
@@ -633,6 +735,39 @@ mod tests {
                 .expect("write extension entry");
             zip.write_all(b"return {}")
                 .expect("write extension contents");
+            zip.start_file("lua/vehicle/extensions/highbeam/highbeamVE.lua", options)
+                .expect("write highbeamVE entry");
+            zip.write_all(b"return {}")
+                .expect("write highbeamVE contents");
+            zip.start_file(
+                "lua/vehicle/extensions/highbeam/highbeamPositionVE.lua",
+                options,
+            )
+            .expect("write highbeamPositionVE entry");
+            zip.write_all(b"return {}")
+                .expect("write highbeamPositionVE contents");
+            zip.start_file("lua/vehicle/extensions/highbeam/highbeamInputsVE.lua", options)
+                .expect("write highbeamInputsVE entry");
+            zip.write_all(b"return {}")
+                .expect("write highbeamInputsVE contents");
+            zip.start_file(
+                "lua/vehicle/extensions/highbeam/highbeamElectricsVE.lua",
+                options,
+            )
+            .expect("write highbeamElectricsVE entry");
+            zip.write_all(b"return {}")
+                .expect("write highbeamElectricsVE contents");
+            zip.start_file(
+                "lua/vehicle/extensions/highbeam/highbeamPowertrainVE.lua",
+                options,
+            )
+            .expect("write highbeamPowertrainVE entry");
+            zip.write_all(b"return {}")
+                .expect("write highbeamPowertrainVE contents");
+            zip.start_file("lua/vehicle/extensions/highbeam/highbeamDamageVE.lua", options)
+                .expect("write highbeamDamageVE entry");
+            zip.write_all(b"return {}")
+                .expect("write highbeamDamageVE contents");
             zip.finish().expect("finish zip");
         }
         fs::write(zip_path, cursor.into_inner()).expect("write payload zip");

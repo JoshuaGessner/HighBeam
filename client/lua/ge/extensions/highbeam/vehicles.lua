@@ -176,6 +176,74 @@ makeKey = function(playerId, vehicleId)
   return tostring(playerId) .. "_" .. tostring(vehicleId)
 end
 
+local function _queueRemoteVeBootstrap(rv, key)
+  if not rv or not rv.gameVehicle then return end
+  local vehObj = rv.gameVehicle
+  pcall(function()
+    vehObj:queueLuaCommand([[
+      local _missing = {}
+      local _hasVE = highbeam_highbeamVE and highbeam_highbeamVE.setActive
+      local _hasPos = highbeam_highbeamPositionVE and highbeam_highbeamPositionVE.setRemote and highbeam_highbeamPositionVE.setTarget
+      local _hasInputs = highbeam_highbeamInputsVE and highbeam_highbeamInputsVE.setActive
+      local _hasElectrics = highbeam_highbeamElectricsVE and highbeam_highbeamElectricsVE.setActive
+      local _hasPowertrain = highbeam_highbeamPowertrainVE and highbeam_highbeamPowertrainVE.setActive
+      local _hasDamage = highbeam_highbeamDamageVE and highbeam_highbeamDamageVE.setActive
+
+      if not _hasVE then table.insert(_missing, "highbeam_highbeamVE") end
+      if not _hasPos then table.insert(_missing, "highbeam_highbeamPositionVE") end
+      if not _hasInputs then table.insert(_missing, "highbeam_highbeamInputsVE") end
+      if not _hasElectrics then table.insert(_missing, "highbeam_highbeamElectricsVE") end
+      if not _hasPowertrain then table.insert(_missing, "highbeam_highbeamPowertrainVE") end
+      if not _hasDamage then table.insert(_missing, "highbeam_highbeamDamageVE") end
+
+      local _ready = (_hasVE and _hasPos and _hasInputs and _hasElectrics and _hasPowertrain and _hasDamage) and true or false
+
+      if _ready then
+        highbeam_highbeamVE.setActive(true, true)
+        highbeam_highbeamPositionVE.setRemote(true)
+        highbeam_highbeamInputsVE.setActive(true, true)
+        highbeam_highbeamElectricsVE.setActive(true, true)
+        highbeam_highbeamPowertrainVE.setActive(true, true)
+        highbeam_highbeamDamageVE.setActive(true, true)
+      end
+
+      local _missingCsv = table.concat(_missing, ",")
+      obj:queueGameEngineLua(
+        "if extensions and extensions.highbeam and extensions.highbeam.onRemoteVEReady then extensions.highbeam.onRemoteVEReady(" .. tostring(obj:getID()) .. "," .. tostring(_ready) .. "," .. string.format("%q", _missingCsv) .. ") end"
+      )
+    ]])
+  end)
+  rv._veProbeQueuedAt = os.clock()
+  rv._veProbeMissing = nil
+  rv._hasVE = false
+  if _verboseSyncLoggingEnabled() then
+    log('D', logTag, 'Queued remote VE capability probe key=' .. tostring(key)
+      .. ' gameVid=' .. tostring(rv.gameVehicleId))
+  end
+end
+
+M.onRemoteVEReady = function(gameVehicleId, ready, missingCsv)
+  if not gameVehicleId then return end
+  local readyBool = (ready == true) or (ready == 1) or (tostring(ready) == "true")
+  for key, rv in pairs(M.remoteVehicles) do
+    if rv and rv.gameVehicleId == gameVehicleId then
+      rv._hasVE = readyBool
+      rv._veReadyAt = os.clock()
+      rv._veProbeMissing = missingCsv
+      if readyBool then
+        log('I', logTag, 'Remote VE confirmed key=' .. tostring(key)
+          .. ' gameVid=' .. tostring(gameVehicleId))
+      else
+        local missing = tostring(missingCsv or '')
+        log('W', logTag, 'Remote VE unavailable; GE fallback active key=' .. tostring(key)
+          .. ' gameVid=' .. tostring(gameVehicleId)
+          .. ' missing=' .. (missing ~= '' and missing or 'unknown'))
+      end
+      return
+    end
+  end
+end
+
 -- Decode JSON config using available decoders
 local function _decodeJson(str)
   if not str or str == '' then return nil end
@@ -323,7 +391,7 @@ M.spawnRemote = function(playerId, vehicleId, configData, snapshot)
     lastSeqTime = -1,  -- For out-of-order rejection
     spawnSpec = spec,
     spawnRetry = nil,
-    _hasVE = true,
+    _hasVE = false,
   }
 
   if snapshot or spec.snapshotTimeMs then
@@ -339,14 +407,7 @@ M.spawnRemote = function(playerId, vehicleId, configData, snapshot)
   end
 
   if vid then
-    pcall(function()
-      vehObj:queueLuaCommand("if highbeam_highbeamVE and highbeam_highbeamVE.setActive then highbeam_highbeamVE.setActive(true, true) end")
-      vehObj:queueLuaCommand("if highbeam_highbeamPositionVE and highbeam_highbeamPositionVE.setRemote then highbeam_highbeamPositionVE.setRemote(true) end")
-      vehObj:queueLuaCommand("if highbeam_highbeamInputsVE and highbeam_highbeamInputsVE.setActive then highbeam_highbeamInputsVE.setActive(true, true) end")
-      vehObj:queueLuaCommand("if highbeam_highbeamElectricsVE and highbeam_highbeamElectricsVE.setActive then highbeam_highbeamElectricsVE.setActive(true, true) end")
-      vehObj:queueLuaCommand("if highbeam_highbeamPowertrainVE and highbeam_highbeamPowertrainVE.setActive then highbeam_highbeamPowertrainVE.setActive(true, true) end")
-      vehObj:queueLuaCommand("if highbeam_highbeamDamageVE and highbeam_highbeamDamageVE.setActive then highbeam_highbeamDamageVE.setActive(true, true) end")
-    end)
+    _queueRemoteVeBootstrap(M.remoteVehicles[key], key)
     log('I', logTag, 'Spawned remote vehicle: ' .. key .. ' gameVid=' .. tostring(vid))
   else
     M.remoteVehicles[key].spawnRetry = {
@@ -986,15 +1047,8 @@ M.tick = function(dt)
           rv.gameVehicle = vehObj
           rv.spawnRetry = nil
           M._remoteGameIds[vid] = true
-          rv._hasVE = true
-          pcall(function()
-            vehObj:queueLuaCommand("if highbeam_highbeamVE and highbeam_highbeamVE.setActive then highbeam_highbeamVE.setActive(true, true) end")
-            vehObj:queueLuaCommand("if highbeam_highbeamPositionVE and highbeam_highbeamPositionVE.setRemote then highbeam_highbeamPositionVE.setRemote(true) end")
-            vehObj:queueLuaCommand("if highbeam_highbeamInputsVE and highbeam_highbeamInputsVE.setActive then highbeam_highbeamInputsVE.setActive(true, true) end")
-            vehObj:queueLuaCommand("if highbeam_highbeamElectricsVE and highbeam_highbeamElectricsVE.setActive then highbeam_highbeamElectricsVE.setActive(true, true) end")
-            vehObj:queueLuaCommand("if highbeam_highbeamPowertrainVE and highbeam_highbeamPowertrainVE.setActive then highbeam_highbeamPowertrainVE.setActive(true, true) end")
-            vehObj:queueLuaCommand("if highbeam_highbeamDamageVE and highbeam_highbeamDamageVE.setActive then highbeam_highbeamDamageVE.setActive(true, true) end")
-          end)
+          rv._hasVE = false
+          _queueRemoteVeBootstrap(rv, tostring(rv.playerId) .. '_' .. tostring(rv.vehicleId))
           _spawnRetrySuccessCount = _spawnRetrySuccessCount + 1
           log('I', logTag, 'Remote spawn recovered: ' .. tostring(rv.playerId) .. '_' .. tostring(rv.vehicleId) .. ' gameVid=' .. tostring(vid))
         else

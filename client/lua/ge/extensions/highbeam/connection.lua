@@ -64,6 +64,7 @@ M._udpBindRetryTimer = 0     -- timer for UdpBind retry
 M._udpBindRetrySent = 0      -- how many UdpBind retries sent
 M._udpBindAckCount = 0       -- count of bind ACK packets received in current diag interval
 M._udpPerPlayerRx = {}       -- [playerId] = count of inbound UDP packets
+M._udpUnexpectedLogCount = 0 -- capped detailed logs for unexpected UDP packets
 M._componentRxStats = {}
 M._tcpRxTypeCounts = {}
 M._tcpTxTypeCounts = {}
@@ -477,6 +478,7 @@ M.disconnect = function()
   M._udpBindRetrySent = 0
   M._udpBindAckCount = 0
   M._udpPerPlayerRx = {}
+  M._udpUnexpectedLogCount = 0
     M._componentRxStats = {}
   M._tcpRxTypeCounts = {}
   M._tcpTxTypeCounts = {}
@@ -584,8 +586,12 @@ M.tick = function(dt)
         M._udpBindRetryTimer = 0
         M._udpBindRetrySent = M._udpBindRetrySent + 1
         udp:send(M._sessionHash .. string.char(0x01))
+        local peerIp, peerPort = udp:getpeername()
+        local localIp, localPort = udp:getsockname()
         log('I', logTag, 'UdpBind retry #' .. tostring(M._udpBindRetrySent)
-          .. ' (no inbound UDP yet)')
+          .. ' (no inbound UDP yet)'
+          .. ' local=' .. tostring(localIp) .. ':' .. tostring(localPort)
+          .. ' peer=' .. tostring(peerIp) .. ':' .. tostring(peerPort))
       end
     end
 
@@ -650,6 +656,7 @@ M.tick = function(dt)
       M._udpUnexpectedCount = 0
       M._udpRecvPollCount = 0
       M._udpPerPlayerRx = {}
+      M._udpUnexpectedLogCount = 0
       M._tcpRxTypeCounts = {}
       M._tcpTxTypeCounts = {}
     end
@@ -1186,6 +1193,16 @@ M._tickUdp = function()
     M._udpRxTimestamps[M._udpRxTsIdx] = rxNow
     local packetType = (#data >= 17) and data:byte(17) or nil
 
+    if #data < 17 then
+      M._udpUnexpectedCount = M._udpUnexpectedCount + 1
+      if M._udpUnexpectedLogCount < 10 then
+        M._udpUnexpectedLogCount = M._udpUnexpectedLogCount + 1
+        log('W', logTag, 'UDP short packet dropped len=' .. tostring(#data)
+          .. ' hex=' .. _hexDump(data, 24))
+      end
+      goto continue_udp
+    end
+
     -- UdpBindAck format: [16B hash][0x02][1B status]
     if #data >= 18 and packetType == 0x02 then
       M._udpBindAckCount = M._udpBindAckCount + 1
@@ -1219,7 +1236,14 @@ M._tickUdp = function()
       end
     else
       M._udpUnexpectedCount = M._udpUnexpectedCount + 1
+      if _syncVerboseLoggingEnabled() and M._udpUnexpectedLogCount < 20 then
+        M._udpUnexpectedLogCount = M._udpUnexpectedLogCount + 1
+        log('W', logTag, 'Unexpected UDP packet type=0x' .. string.format('%02X', packetType or 0)
+          .. ' len=' .. tostring(#data)
+          .. ' hex=' .. _hexDump(data, 24))
+      end
     end
+    ::continue_udp::
   end
 end
 
@@ -1284,6 +1308,7 @@ M._onDisconnect = function(reason)
   M._pendingWorldVehicles = nil
   M._pendingWorldStateDeadline = nil
   M._pendingWorldStateLevel = nil
+  M._udpUnexpectedLogCount = 0
   M._setState(M.STATE_DISCONNECTED, "remote_disconnect")
   -- Trigger auto-reconnection if enabled
   if M._autoReconnect and M._reconnectCredentials then

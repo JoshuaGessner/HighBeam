@@ -393,6 +393,9 @@ fn relay_udp_c2s(
     let mut diag_packets: u64 = 0;
     let mut diag_timeouts: u64 = 0;
     let mut diag_send_errors: u64 = 0;
+    let mut diag_bind_packets: u64 = 0;
+    let mut diag_pos_packets: u64 = 0;
+    let mut diag_other_packets: u64 = 0;
     let mut first_packet_logged = false;
     let server_local_addr = server.local_addr().ok();
     tracing::info!(local_addr = ?server_local_addr, %remote, "Proxy UDP c2s: server socket info");
@@ -408,12 +411,18 @@ fn relay_udp_c2s(
                 packets = diag_packets,
                 timeouts = diag_timeouts,
                 send_errors = diag_send_errors,
+                bind_packets = diag_bind_packets,
+                pos_packets = diag_pos_packets,
+                other_packets = diag_other_packets,
                 client_addr = ?client_addr,
                 "Proxy UDP c2s diag"
             );
             diag_packets = 0;
             diag_timeouts = 0;
             diag_send_errors = 0;
+            diag_bind_packets = 0;
+            diag_pos_packets = 0;
+            diag_other_packets = 0;
             last_diag = now_diag;
         }
         match local.recv_from(&mut buf) {
@@ -432,6 +441,15 @@ fn relay_udp_c2s(
                 packet_counter.fetch_add(1, Ordering::Relaxed);
                 byte_counter.fetch_add(n as u64, Ordering::Relaxed);
                 diag_packets += 1;
+                if n >= 17 {
+                    match buf[16] {
+                        0x01 => diag_bind_packets += 1,
+                        0x10 | 0x11 => diag_pos_packets += 1,
+                        _ => diag_other_packets += 1,
+                    }
+                } else {
+                    diag_other_packets += 1;
+                }
                 if server.send_to(&buf[..n], remote).is_err() {
                     diag_send_errors += 1;
                 }
@@ -491,6 +509,9 @@ fn relay_udp_s2c(
     let diag_interval = Duration::from_secs(10);
     let mut diag_packets: u64 = 0;
     let mut diag_timeouts: u64 = 0;
+    let mut diag_bind_ack_packets: u64 = 0;
+    let mut diag_pos_packets: u64 = 0;
+    let mut diag_other_packets: u64 = 0;
     let mut first_packet_logged = false;
 
     loop {
@@ -503,11 +524,17 @@ fn relay_udp_s2c(
             tracing::info!(
                 packets = diag_packets,
                 timeouts = diag_timeouts,
+                bind_ack_packets = diag_bind_ack_packets,
+                pos_packets = diag_pos_packets,
+                other_packets = diag_other_packets,
                 %client_addr,
                 "Proxy UDP s2c diag"
             );
             diag_packets = 0;
             diag_timeouts = 0;
+            diag_bind_ack_packets = 0;
+            diag_pos_packets = 0;
+            diag_other_packets = 0;
             last_diag = now_diag;
         }
         match server.recv_from(&mut buf) {
@@ -522,6 +549,15 @@ fn relay_udp_s2c(
                 packet_counter.fetch_add(1, Ordering::Relaxed);
                 byte_counter.fetch_add(n as u64, Ordering::Relaxed);
                 diag_packets += 1;
+                if n >= 17 {
+                    match buf[16] {
+                        0x02 => diag_bind_ack_packets += 1,
+                        0x10 | 0x11 => diag_pos_packets += 1,
+                        _ => diag_other_packets += 1,
+                    }
+                } else {
+                    diag_other_packets += 1;
+                }
                 let _ = local.send_to(&buf[..n], client_addr);
             }
             Err(ref e)

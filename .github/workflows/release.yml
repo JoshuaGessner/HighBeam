@@ -101,6 +101,43 @@ jobs:
           Compress-Archive -Path scripts, lua, ui -DestinationPath ../launcher/payload/highbeam.zip
           Pop-Location
 
+      - name: Validate launcher payload contains required VE files
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zipPath = "launcher/payload/highbeam.zip"
+          if (-not (Test-Path $zipPath)) {
+            throw "Payload zip missing: $zipPath"
+          }
+          $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $zipPath))
+          try {
+            $entries = @{}
+            foreach ($entry in $zip.Entries) {
+              $entries[$entry.FullName] = $true
+            }
+            $required = @(
+              "scripts/modScript.lua",
+              "lua/ge/extensions/highbeam.lua",
+              "lua/vehicle/extensions/highbeam/highbeamVE.lua",
+              "lua/vehicle/extensions/highbeam/highbeamPositionVE.lua",
+              "lua/vehicle/extensions/highbeam/highbeamInputsVE.lua",
+              "lua/vehicle/extensions/highbeam/highbeamElectricsVE.lua",
+              "lua/vehicle/extensions/highbeam/highbeamPowertrainVE.lua",
+              "lua/vehicle/extensions/highbeam/highbeamDamageVE.lua"
+            )
+            $missing = @()
+            foreach ($path in $required) {
+              if (-not $entries.ContainsKey($path)) {
+                $missing += $path
+              }
+            }
+            if ($missing.Count -gt 0) {
+              throw "Payload zip missing required entries: $($missing -join ', ')"
+            }
+          } finally {
+            $zip.Dispose()
+          }
+
       - name: Validate launcher Cargo version matches release tag
         shell: pwsh
         run: |
