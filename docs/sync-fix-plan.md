@@ -1,7 +1,6 @@
 # HighBeam Vehicle Sync: Root Cause Analysis & Fix Plan
 
-> Researched 2026-04-06. Based on deep analysis of the HighBeam codebase and
-> comparison with the BeamMP reference implementation.
+> Researched 2026-04-06. Based on deep analysis of the HighBeam codebase
 
 ---
 
