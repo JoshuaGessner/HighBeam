@@ -85,13 +85,8 @@ M.encodePositionUpdate = function(sessionHash, vehicleId, pos, rot, vel, simTime
     and (inputs.steer ~= nil or inputs.throttle ~= nil or inputs.brake ~= nil)
   local typeByte = hasInputs and 0x11 or 0x10
 
-  -- P1.1: Normalize quaternion before encoding to prevent drift
-  if rot then
-    local rlen = math.sqrt(rot[1]*rot[1] + rot[2]*rot[2] + rot[3]*rot[3] + rot[4]*rot[4])
-    if rlen > 0.0001 and math.abs(rlen - 1.0) > 0.0001 then
-      rot = { rot[1]/rlen, rot[2]/rlen, rot[3]/rlen, rot[4]/rlen }
-    end
-  end
+  -- Secondary #1: Quaternion normalization removed from encode path.
+  -- Normalize once at decode time only to avoid accumulated float error.
 
   local hasAngVel = type(angVel) == "table" and (angVel[1] ~= nil or angVel[2] ~= nil or angVel[3] ~= nil)
   local expectedSize = 63

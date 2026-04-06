@@ -23,6 +23,7 @@ local MENU_ENTRY_ID = "highbeam.multiplayer"
 local OVERLAY_MENU_ENTRY_ID = "highbeam.overlay"
 local _menuRegistered = false
 local _lastLocalResetSentAt = {} -- [gameVehicleId] = os.clock()
+local _pendingResetData = {}    -- Secondary #3: [gameVehicleId] = {data=string, queuedAt=number}
 
 local function _safeRequire(moduleName)
   local ok, mod = pcall(require, moduleName)
@@ -213,6 +214,30 @@ M.onUpdate = function(dtReal, dtSim, dtRaw)
   if overlay then
     overlay.tick(dtReal)
   end
+
+  -- Secondary #3: Drain pending queued resets after debounce window expires
+  if connection and connection.getState() == connection.STATE_CONNECTED then
+    local now = os.clock()
+    local debounceSec = 0.75
+    if config and config.get then
+      debounceSec = config.get("localResetDebounceSec") or debounceSec
+    end
+    for gameVid, pending in pairs(_pendingResetData) do
+      local lastSent = _lastLocalResetSentAt[gameVid] or 0
+      if (now - lastSent) >= debounceSec then
+        _lastLocalResetSentAt[gameVid] = now
+        _pendingResetData[gameVid] = nil
+        connection._sendPacket({
+          type = "vehicle_reset",
+          vehicle_id = pending.serverVid,
+          data = pending.data,
+        })
+        if state and state.clearDamageHash then
+          state.clearDamageHash(gameVid)
+        end
+      end
+    end
+  end
 end
 
 M.onPreRender = function(dtReal, dtSim, dtRaw)
@@ -284,16 +309,6 @@ M.onVehicleResetted = function(gameVehicleId)
   if config and config.get then
     debounceSec = config.get("localResetDebounceSec") or debounceSec
   end
-  local lastSent = _lastLocalResetSentAt[gameVehicleId]
-  if lastSent and (now - lastSent) < debounceSec then
-    if config and config.get and config.get("verboseSyncLogging") == true then
-      log('D', logTag, 'Suppressed local reset packet gameVid=' .. tostring(gameVehicleId)
-        .. ' dt=' .. string.format('%.3f', now - lastSent)
-        .. 's')
-    end
-    return
-  end
-  _lastLocalResetSentAt[gameVehicleId] = now
 
   local serverVid = state.localVehicles[gameVehicleId]
   if not serverVid then return end
@@ -304,11 +319,31 @@ M.onVehicleResetted = function(gameVehicleId)
   local pos = veh:getPosition()
   local rot = veh:getRotation()
   local resetData = '{"pos":[' .. pos.x .. ',' .. pos.y .. ',' .. pos.z .. '],"rot":[' .. rot.x .. ',' .. rot.y .. ',' .. rot.z .. ',' .. rot.w .. ']}'
+
+  local lastSent = _lastLocalResetSentAt[gameVehicleId]
+  if lastSent and (now - lastSent) < debounceSec then
+    -- Secondary #3: Queue the reset instead of dropping it
+    _pendingResetData[gameVehicleId] = { data = resetData, queuedAt = now, serverVid = serverVid }
+    if config and config.get and config.get("verboseSyncLogging") == true then
+      log('D', logTag, 'Queued local reset packet gameVid=' .. tostring(gameVehicleId)
+        .. ' dt=' .. string.format('%.3f', now - lastSent)
+        .. 's')
+    end
+    return
+  end
+  _lastLocalResetSentAt[gameVehicleId] = now
+  _pendingResetData[gameVehicleId] = nil
+
   connection._sendPacket({
     type = "vehicle_reset",
     vehicle_id = serverVid,
     data = resetData,
   })
+
+  -- Bug #3a: Clear damage hash after sending reset so fresh damage is detected
+  if state and state.clearDamageHash then
+    state.clearDamageHash(gameVehicleId)
+  end
 end
 
 -- ─────────────── Vehicle-side Lua callbacks (damage/electrics) ──────────────

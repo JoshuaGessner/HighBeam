@@ -11,6 +11,13 @@ local damageTimer = 0
 local DAMAGE_SEND_INTERVAL = 1 / 15
 local dirty = false
 
+-- Bug #3c: Deformation polling state
+local deformPollCursor = 0
+local deformPollTimer = 0
+local DEFORM_POLL_INTERVAL = 0.2  -- check every 200ms
+local DEFORM_POLL_BATCH = 10      -- beams per poll cycle
+local DEFORM_THRESHOLD = 0.002    -- minimum deformation to trigger dirty
+
 local function _jsonEncode(v)
   if jsonEncode then
     local ok, out = pcall(jsonEncode, v)
@@ -36,6 +43,8 @@ function M.onInit()
   brokenGroups = {}
   damageTimer = 0
   dirty = false
+  deformPollCursor = 0
+  deformPollTimer = 0
 end
 
 function M.setActive(active, remote)
@@ -55,7 +64,35 @@ function M.onBeamBroke(beamId, energy)
 end
 
 function M.updateGFX(dt)
-  if not isActive or isRemote or not dirty then return end
+  if not isActive or isRemote then return end
+
+  -- Bug #3c: Round-robin deformation polling to catch deformation without beam breaks.
+  -- Checks a small batch of beams each cycle to avoid frame spikes.
+  deformPollTimer = deformPollTimer + (dt or 0)
+  if not dirty and deformPollTimer >= DEFORM_POLL_INTERVAL then
+    deformPollTimer = 0
+    if obj and obj.getBeamCount and obj.getBeamDeformation then
+      local okCount, beamCount = pcall(obj.getBeamCount, obj)
+      if okCount and type(beamCount) == "number" and beamCount > 0 then
+        local startIdx = deformPollCursor
+        for i = 0, DEFORM_POLL_BATCH - 1 do
+          local beamIdx = (startIdx + i) % beamCount
+          local okDef, deform = pcall(obj.getBeamDeformation, obj, beamIdx)
+          if okDef and deform and deform > DEFORM_THRESHOLD then
+            dirty = true
+            -- Also notify GE to mark dirty for the polling path
+            if obj.queueGameEngineLua then
+              obj:queueGameEngineLua("extensions.highbeam.onVEDamageDirty(" .. gameVehicleId .. ")")
+            end
+            break
+          end
+        end
+        deformPollCursor = (startIdx + DEFORM_POLL_BATCH) % beamCount
+      end
+    end
+  end
+
+  if not dirty then return end
   damageTimer = damageTimer + (dt or 0)
   if damageTimer < DAMAGE_SEND_INTERVAL then return end
   damageTimer = 0
