@@ -64,8 +64,6 @@ M._udpBindRetryTimer = 0     -- timer for UdpBind retry
 M._udpBindRetrySent = 0      -- how many UdpBind retries sent
 M._udpBindAckCount = 0       -- count of bind ACK packets received in current diag interval
 M._udpPerPlayerRx = {}       -- [playerId] = count of inbound UDP packets
-M._udpUnexpectedLogCount = 0 -- capped detailed logs for unexpected UDP packets
-M._componentRxStats = {}
 M._tcpRxTypeCounts = {}
 M._tcpTxTypeCounts = {}
 M._diagTimer = 0
@@ -82,12 +80,12 @@ local function _bumpCounter(map, key)
   map[k] = (map[k] or 0) + 1
 end
 
-local function _syncVerboseLoggingEnabled()
-  local okCfg, cfg = pcall(require, "highbeam/config")
-  return okCfg and cfg and cfg.get and cfg.get("verboseSyncLogging") == true
-end
-
 local function _formatCounterMap(map)
+  local function _syncVerboseLoggingEnabled()
+    local okCfg, cfg = pcall(require, "highbeam/config")
+    return okCfg and cfg and cfg.get and cfg.get("verboseSyncLogging") == true
+  end
+  M._componentRxStats = {}
   local keys = {}
   for k, v in pairs(map or {}) do
     if v and v > 0 then
@@ -236,13 +234,6 @@ local function _reRegisterLocalVehicles()
         -- Skip if already registered or awaiting a spawn acknowledgement.
         local inFlight = state.isSpawnInFlight and state.isSpawnInFlight(gameVid)
         if not state.localVehicles[gameVid] and not inFlight then
-          pcall(function()
-            veh:queueLuaCommand("if highbeam_highbeamVE and highbeam_highbeamVE.setActive then highbeam_highbeamVE.setActive(true, false) end")
-            veh:queueLuaCommand("if highbeam_highbeamInputsVE and highbeam_highbeamInputsVE.setActive then highbeam_highbeamInputsVE.setActive(true, false) end")
-            veh:queueLuaCommand("if highbeam_highbeamElectricsVE and highbeam_highbeamElectricsVE.setActive then highbeam_highbeamElectricsVE.setActive(true, false) end")
-            veh:queueLuaCommand("if highbeam_highbeamPowertrainVE and highbeam_highbeamPowertrainVE.setActive then highbeam_highbeamPowertrainVE.setActive(true, false) end")
-            veh:queueLuaCommand("if highbeam_highbeamDamageVE and highbeam_highbeamDamageVE.setActive then highbeam_highbeamDamageVE.setActive(true, false) end")
-          end)
           local configData = state.captureVehicleConfig(veh)
           log('I', logTag, 'Re-registering local vehicle after reconnect: gameVid=' .. tostring(gameVid))
           state.requestSpawn(gameVid, configData)
@@ -478,7 +469,6 @@ M.disconnect = function()
   M._udpBindRetrySent = 0
   M._udpBindAckCount = 0
   M._udpPerPlayerRx = {}
-  M._udpUnexpectedLogCount = 0
     M._componentRxStats = {}
   M._tcpRxTypeCounts = {}
   M._tcpTxTypeCounts = {}
@@ -586,12 +576,8 @@ M.tick = function(dt)
         M._udpBindRetryTimer = 0
         M._udpBindRetrySent = M._udpBindRetrySent + 1
         udp:send(M._sessionHash .. string.char(0x01))
-        local peerIp, peerPort = udp:getpeername()
-        local localIp, localPort = udp:getsockname()
         log('I', logTag, 'UdpBind retry #' .. tostring(M._udpBindRetrySent)
-          .. ' (no inbound UDP yet)'
-          .. ' local=' .. tostring(localIp) .. ':' .. tostring(localPort)
-          .. ' peer=' .. tostring(peerIp) .. ':' .. tostring(peerPort))
+          .. ' (no inbound UDP yet)')
       end
     end
 
@@ -656,7 +642,6 @@ M.tick = function(dt)
       M._udpUnexpectedCount = 0
       M._udpRecvPollCount = 0
       M._udpPerPlayerRx = {}
-      M._udpUnexpectedLogCount = 0
       M._tcpRxTypeCounts = {}
       M._tcpTxTypeCounts = {}
     end
@@ -725,10 +710,6 @@ M._sendPacket = function(packetTable)
   local sent, sendErr = tcp:send(header .. jsonStr)
   if not sent then
     M._reportError('W', 'send_packet', 'TCP send failed: ' .. tostring(sendErr))
-    local errStr = tostring(sendErr or ''):lower()
-    if M.state == M.STATE_CONNECTED and (errStr:find('closed', 1, true) or errStr:find('not connected', 1, true)) then
-      M._onDisconnect('TCP send failed: ' .. tostring(sendErr))
-    end
     return false
   end
   _bumpCounter(M._tcpTxTypeCounts, packetTable and packetTable.type)
@@ -885,7 +866,7 @@ M._handlePacket = function(jsonStr)
     if packet.vehicles then
       if needsLoad then
         M._pendingWorldVehicles = packet.vehicles
-        M._pendingWorldStateDeadline = os.clock() + 2.5
+        M._pendingWorldStateDeadline = os.clock() + 8.0
         M._pendingWorldStateLevel = serverLevel
         log('I', logTag, 'Deferring world vehicle spawn until map is ready count=' .. tostring(#packet.vehicles))
       else
@@ -951,15 +932,6 @@ M._handlePacket = function(jsonStr)
       end
       vehicles.resetRemote(packet.player_id, packet.vehicle_id, packet.data)
     end
-  elseif ptype == "vehicle_pose" then
-    if not vehicles then
-      _bumpCounter(M._componentRxStats, "pose_drop_no_vehicles")
-    elseif packet.player_id == M._playerId then
-      _bumpCounter(M._componentRxStats, "pose_skip_self")
-    else
-      _bumpCounter(M._componentRxStats, "pose_dispatch")
-      vehicles.applyPose(packet.player_id, packet.vehicle_id, packet.data)
-    end
   elseif ptype == "vehicle_damage" then
     if not vehicles then
       _bumpCounter(M._componentRxStats, "damage_drop_no_vehicles")
@@ -987,24 +959,6 @@ M._handlePacket = function(jsonStr)
           .. ' bytes=' .. tostring(#(packet.data or '')))
       end
       vehicles.applyElectrics(packet.player_id, packet.vehicle_id, packet.data)
-    end
-  elseif ptype == "vehicle_inputs" then
-    if not vehicles then
-      _bumpCounter(M._componentRxStats, "inputs_drop_no_vehicles")
-    elseif packet.player_id == M._playerId then
-      _bumpCounter(M._componentRxStats, "inputs_skip_self")
-    else
-      _bumpCounter(M._componentRxStats, "inputs_dispatch")
-      vehicles.applyInputs(packet.player_id, packet.vehicle_id, packet.data)
-    end
-  elseif ptype == "vehicle_powertrain" then
-    if not vehicles then
-      _bumpCounter(M._componentRxStats, "powertrain_drop_no_vehicles")
-    elseif packet.player_id == M._playerId then
-      _bumpCounter(M._componentRxStats, "powertrain_skip_self")
-    else
-      _bumpCounter(M._componentRxStats, "powertrain_dispatch")
-      vehicles.applyPowertrain(packet.player_id, packet.vehicle_id, packet.data)
     end
   elseif ptype == "vehicle_coupling" then
     if not vehicles then
@@ -1193,16 +1147,6 @@ M._tickUdp = function()
     M._udpRxTimestamps[M._udpRxTsIdx] = rxNow
     local packetType = (#data >= 17) and data:byte(17) or nil
 
-    if #data < 17 then
-      M._udpUnexpectedCount = M._udpUnexpectedCount + 1
-      if M._udpUnexpectedLogCount < 10 then
-        M._udpUnexpectedLogCount = M._udpUnexpectedLogCount + 1
-        log('W', logTag, 'UDP short packet dropped len=' .. tostring(#data)
-          .. ' hex=' .. _hexDump(data, 24))
-      end
-      goto continue_udp
-    end
-
     -- UdpBindAck format: [16B hash][0x02][1B status]
     if #data >= 18 and packetType == 0x02 then
       M._udpBindAckCount = M._udpBindAckCount + 1
@@ -1236,14 +1180,7 @@ M._tickUdp = function()
       end
     else
       M._udpUnexpectedCount = M._udpUnexpectedCount + 1
-      if _syncVerboseLoggingEnabled() and M._udpUnexpectedLogCount < 20 then
-        M._udpUnexpectedLogCount = M._udpUnexpectedLogCount + 1
-        log('W', logTag, 'Unexpected UDP packet type=0x' .. string.format('%02X', packetType or 0)
-          .. ' len=' .. tostring(#data)
-          .. ' hex=' .. _hexDump(data, 24))
-      end
     end
-    ::continue_udp::
   end
 end
 
@@ -1308,7 +1245,6 @@ M._onDisconnect = function(reason)
   M._pendingWorldVehicles = nil
   M._pendingWorldStateDeadline = nil
   M._pendingWorldStateLevel = nil
-  M._udpUnexpectedLogCount = 0
   M._setState(M.STATE_DISCONNECTED, "remote_disconnect")
   -- Trigger auto-reconnection if enabled
   if M._autoReconnect and M._reconnectCredentials then

@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-04-05
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.2-dev.21 (protocol v2)
+> **Current version:** v0.8.2-dev.15 (protocol v2)
 > **Status:** v0.8.1 released | v0.8.2 in development
 
 ---
@@ -1202,41 +1202,6 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
-
-### v0.8.2-dev.21 - 2026-04-05 (draft)
-- **VE runtime fix:** register all HighBeam VE modules as vehicle controllers during remote bootstrap to ensure `onPhysicsStep` callbacks execute reliably.
-- **VE readiness hardening:** added VE probe retries for remote vehicles so transient vlua initialization races no longer leave vehicles stuck in GE fallback forever.
-- **Remote control continuity:** fixed remote input routing so steering/throttle/brake/gear/handbrake updates continue applying when VE motion is active.
-- **Force path recovery:** added zero-node connectivity self-heal in VE velocity module to recover when early init runs before the physics mesh is ready.
-- **Payload refresh:** rebuilt launcher bundled HighBeam payload zip with the latest client VE/GE fixes.
-
-### v0.8.2-dev.20 - 2026-04-05 (draft)
-- **Release refresh after cleanup:** canceled stale `v0.8.2-dev.19` release build that was missing latest `main` commit(s), then cut a fresh dev release from cleaned `main`.
-- **Branch hygiene:** removed merged `fix/udp-sync-watchdog` branch locally and on origin.
-- **Release integrity:** dev release now includes sync-fix merge plus lockfile/version alignment commits on `main`.
-
-### v0.8.2-dev.19 - 2026-04-05 (draft)
-- **Movement desync hardening:** added sender-side forced keyframe and motion watchdog fallbacks so local vehicle UDP updates cannot remain suppressed for long unchanged windows.
-- **Local mapping self-heal:** added periodic active-player vehicle reconciliation to recover from stale local game-vehicle mappings and re-request authoritative spawn mapping when needed.
-- **Outside-force robustness:** added remote reset burst stabilization mode to reduce repeated hard snaps/teleports after clustered reset events and favor temporary smooth correction.
-- **Sync tuning expansion:** added new config keys with bounds validation for keyframe/watchdog/reconciliation/reset-stabilization behavior.
-
-### v0.8.2-dev.18 - 2026-04-05 (draft)
-- **VE sync architecture rollout:** merged per-vehicle VE modules for motion, inputs, electrics, powertrain, and damage sync (`highbeamVE`, `highbeamPositionVE`, `highbeamVelocityVE`, `highbeamInputsVE`, `highbeamElectricsVE`, `highbeamPowertrainVE`, `highbeamDamageVE`).
-- **Remote motion pipeline upgrade:** remote snapshots are now forwarded to VE PD target handlers with VE-first execution and GE interpolation fallback retained for compatibility.
-- **New component transport channels:** added `vehicle_inputs` and `vehicle_powertrain` TCP packet relays (client dispatch + server validation/ownership gate + remote apply path).
-- **Damage optimization follow-up:** added break-group aware damage replication payloads with receiver-side group expansion fallback to beam-level breaking.
-- **Payload refreshed:** launcher-bundled `highbeam.zip` now includes the VE extension tree under `lua/vehicle/extensions/highbeam/`.
-
-### v0.8.2-dev.17 - 2026-04-05 (draft)
-- **Fix join-time disconnect regression (critical):** restored `_syncVerboseLoggingEnabled` to file scope in `highbeam/connection.lua` after it was accidentally nested inside `_formatCounterMap`.
-- **Packet handling stability restored:** incoming `PingPong` and component packets no longer trigger `attempt to call global '_syncVerboseLoggingEnabled' (a nil value)` disconnects.
-- **Payload refreshed:** rebuilt launcher-bundled `highbeam.zip` with the connection handler scope fix.
-
-### v0.8.2-dev.16 - 2026-04-05 (draft)
-- **Fix fatal GE callback spam (critical):** added missing `onInputsAndRotationReport` forwarder in `highbeam.lua` so vlua input+rotation polling callbacks resolve on the loaded extension table.
-- **Input/rotation polling restored:** combined steering/throttle/brake/gear/handbrake + physics rotation reports now flow into state cache without repeated `attempt to call field 'onInputsAndRotationReport'` errors.
-- **Payload refreshed:** rebuilt launcher-bundled `highbeam.zip` with the callback wiring fix.
 
 ### v0.8.2-dev.15 - 2026-04-05 (draft)
 - **Client load fix (critical):** corrected a Lua syntax error in sync diagnostics logging that aborted HighBeam startup while loading `highbeam/connection`.
