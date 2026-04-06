@@ -837,6 +837,78 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                     );
                 }
             }
+            TcpPacket::VehicleInputs {
+                vehicle_id, data, ..
+            } => {
+                diag_component_rx += 1;
+                if let Err(e) = crate::validation::validate_vehicle_id(vehicle_id) {
+                    diag_component_reject_validation += 1;
+                    tracing::warn!(player_id, vehicle_id, error = %e, "VehicleInputs: invalid vehicle ID");
+                    continue;
+                }
+                if let Err(e) = crate::validation::validate_vehicle_config_size(&data) {
+                    diag_component_reject_validation += 1;
+                    tracing::warn!(player_id, error = %e, "VehicleInputs: invalid payload");
+                    continue;
+                }
+
+                if world.is_owner(player_id, vehicle_id) {
+                    sessions.broadcast(
+                        TcpPacket::VehicleInputs {
+                            player_id: Some(player_id),
+                            vehicle_id,
+                            data,
+                        },
+                        Some(player_id),
+                    );
+                    diag_component_relay += 1;
+                } else {
+                    diag_component_reject_owner += 1;
+                    tracing::warn!(
+                        player_id,
+                        vehicle_id,
+                        player_vehicle_count = world.vehicle_count_for_player(player_id),
+                        world_vehicle_count = world.vehicle_count(),
+                        "VehicleInputs for unowned vehicle"
+                    );
+                }
+            }
+            TcpPacket::VehiclePowertrain {
+                vehicle_id, data, ..
+            } => {
+                diag_component_rx += 1;
+                if let Err(e) = crate::validation::validate_vehicle_id(vehicle_id) {
+                    diag_component_reject_validation += 1;
+                    tracing::warn!(player_id, vehicle_id, error = %e, "VehiclePowertrain: invalid vehicle ID");
+                    continue;
+                }
+                if let Err(e) = crate::validation::validate_vehicle_config_size(&data) {
+                    diag_component_reject_validation += 1;
+                    tracing::warn!(player_id, error = %e, "VehiclePowertrain: invalid payload");
+                    continue;
+                }
+
+                if world.is_owner(player_id, vehicle_id) {
+                    sessions.broadcast(
+                        TcpPacket::VehiclePowertrain {
+                            player_id: Some(player_id),
+                            vehicle_id,
+                            data,
+                        },
+                        Some(player_id),
+                    );
+                    diag_component_relay += 1;
+                } else {
+                    diag_component_reject_owner += 1;
+                    tracing::warn!(
+                        player_id,
+                        vehicle_id,
+                        player_vehicle_count = world.vehicle_count_for_player(player_id),
+                        world_vehicle_count = world.vehicle_count(),
+                        "VehiclePowertrain for unowned vehicle"
+                    );
+                }
+            }
             TcpPacket::VehiclePose {
                 vehicle_id, data, ..
             } => {

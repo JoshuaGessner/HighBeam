@@ -64,6 +64,7 @@ M._udpBindRetryTimer = 0     -- timer for UdpBind retry
 M._udpBindRetrySent = 0      -- how many UdpBind retries sent
 M._udpBindAckCount = 0       -- count of bind ACK packets received in current diag interval
 M._udpPerPlayerRx = {}       -- [playerId] = count of inbound UDP packets
+M._componentRxStats = {}
 M._tcpRxTypeCounts = {}
 M._tcpTxTypeCounts = {}
 M._diagTimer = 0
@@ -234,6 +235,13 @@ local function _reRegisterLocalVehicles()
         -- Skip if already registered or awaiting a spawn acknowledgement.
         local inFlight = state.isSpawnInFlight and state.isSpawnInFlight(gameVid)
         if not state.localVehicles[gameVid] and not inFlight then
+          pcall(function()
+            veh:queueLuaCommand("if highbeam_highbeamVE and highbeam_highbeamVE.setActive then highbeam_highbeamVE.setActive(true, false) end")
+            veh:queueLuaCommand("if highbeam_highbeamInputsVE and highbeam_highbeamInputsVE.setActive then highbeam_highbeamInputsVE.setActive(true, false) end")
+            veh:queueLuaCommand("if highbeam_highbeamElectricsVE and highbeam_highbeamElectricsVE.setActive then highbeam_highbeamElectricsVE.setActive(true, false) end")
+            veh:queueLuaCommand("if highbeam_highbeamPowertrainVE and highbeam_highbeamPowertrainVE.setActive then highbeam_highbeamPowertrainVE.setActive(true, false) end")
+            veh:queueLuaCommand("if highbeam_highbeamDamageVE and highbeam_highbeamDamageVE.setActive then highbeam_highbeamDamageVE.setActive(true, false) end")
+          end)
           local configData = state.captureVehicleConfig(veh)
           log('I', logTag, 'Re-registering local vehicle after reconnect: gameVid=' .. tostring(gameVid))
           state.requestSpawn(gameVid, configData)
@@ -972,6 +980,24 @@ M._handlePacket = function(jsonStr)
           .. ' bytes=' .. tostring(#(packet.data or '')))
       end
       vehicles.applyElectrics(packet.player_id, packet.vehicle_id, packet.data)
+    end
+  elseif ptype == "vehicle_inputs" then
+    if not vehicles then
+      _bumpCounter(M._componentRxStats, "inputs_drop_no_vehicles")
+    elseif packet.player_id == M._playerId then
+      _bumpCounter(M._componentRxStats, "inputs_skip_self")
+    else
+      _bumpCounter(M._componentRxStats, "inputs_dispatch")
+      vehicles.applyInputs(packet.player_id, packet.vehicle_id, packet.data)
+    end
+  elseif ptype == "vehicle_powertrain" then
+    if not vehicles then
+      _bumpCounter(M._componentRxStats, "powertrain_drop_no_vehicles")
+    elseif packet.player_id == M._playerId then
+      _bumpCounter(M._componentRxStats, "powertrain_skip_self")
+    else
+      _bumpCounter(M._componentRxStats, "powertrain_dispatch")
+      vehicles.applyPowertrain(packet.player_id, packet.vehicle_id, packet.data)
     end
   elseif ptype == "vehicle_coupling" then
     if not vehicles then

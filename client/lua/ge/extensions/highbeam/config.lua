@@ -33,6 +33,19 @@ M.defaults = {
   persistRemoteDamageOnReset = true, -- Keep remote damage after reset packets
   localResetDebounceSec = 0.75,      -- Debounce local reset packet emission
   remoteResetMinIntervalSec = 0.5,   -- Suppress duplicate inbound reset bursts
+  veForceController = true,
+  vePosCorrectMul = 5,
+  vePosForceMul = 5,
+  veMaxPosForce = 100,
+  veRotCorrectMul = 7,
+  veRotForceMul = 7,
+  veMaxRotForce = 50,
+  veTeleportBaseDist = 1.0,
+  veTeleportSpeedScale = 0.1,
+  inputSyncRate = 30,
+  inputSmoothing = true,
+  inputSmoothRate = 30,
+  electricsSyncRate = 15,
 }
 
 M.current = {}
@@ -200,6 +213,42 @@ local function _sanitizeNumber(key, value)
     local out = math.max(0.0, math.min(3.0, value))
     return out, out ~= value
   end
+  if key == "vePosCorrectMul" or key == "vePosForceMul" then
+    local out = math.max(1, math.min(20, value))
+    return out, out ~= value
+  end
+  if key == "veMaxPosForce" then
+    local out = math.max(10, math.min(500, value))
+    return out, out ~= value
+  end
+  if key == "veRotCorrectMul" or key == "veRotForceMul" then
+    local out = math.max(1, math.min(20, value))
+    return out, out ~= value
+  end
+  if key == "veMaxRotForce" then
+    local out = math.max(10, math.min(200, value))
+    return out, out ~= value
+  end
+  if key == "veTeleportBaseDist" then
+    local out = math.max(0.5, math.min(10.0, value))
+    return out, out ~= value
+  end
+  if key == "veTeleportSpeedScale" then
+    local out = math.max(0.0, math.min(1.0, value))
+    return out, out ~= value
+  end
+  if key == "inputSyncRate" then
+    local out = math.max(10, math.min(60, math.floor(value + 0.5)))
+    return out, out ~= value
+  end
+  if key == "inputSmoothRate" then
+    local out = math.max(10, math.min(100, math.floor(value + 0.5)))
+    return out, out ~= value
+  end
+  if key == "electricsSyncRate" then
+    local out = math.max(5, math.min(30, math.floor(value + 0.5)))
+    return out, out ~= value
+  end
 
   return value, false
 end
@@ -347,6 +396,74 @@ M.set = function(key, value)
     local numeric = tonumber(value)
     if not numeric then return false end
     M.current.remoteResetMinIntervalSec = math.max(0.0, math.min(3.0, numeric))
+    return true
+  end
+
+  if key == "veForceController" or key == "inputSmoothing" then
+    M.current[key] = value and true or false
+    return true
+  end
+
+  if key == "vePosCorrectMul" or key == "vePosForceMul" then
+    local numeric = tonumber(value)
+    if not numeric then return false end
+    M.current[key] = math.max(1, math.min(20, numeric))
+    return true
+  end
+
+  if key == "veMaxPosForce" then
+    local numeric = tonumber(value)
+    if not numeric then return false end
+    M.current.veMaxPosForce = math.max(10, math.min(500, numeric))
+    return true
+  end
+
+  if key == "veRotCorrectMul" or key == "veRotForceMul" then
+    local numeric = tonumber(value)
+    if not numeric then return false end
+    M.current[key] = math.max(1, math.min(20, numeric))
+    return true
+  end
+
+  if key == "veMaxRotForce" then
+    local numeric = tonumber(value)
+    if not numeric then return false end
+    M.current.veMaxRotForce = math.max(10, math.min(200, numeric))
+    return true
+  end
+
+  if key == "veTeleportBaseDist" then
+    local numeric = tonumber(value)
+    if not numeric then return false end
+    M.current.veTeleportBaseDist = math.max(0.5, math.min(10.0, numeric))
+    return true
+  end
+
+  if key == "veTeleportSpeedScale" then
+    local numeric = tonumber(value)
+    if not numeric then return false end
+    M.current.veTeleportSpeedScale = math.max(0.0, math.min(1.0, numeric))
+    return true
+  end
+
+  if key == "inputSyncRate" then
+    local numeric = tonumber(value)
+    if not numeric then return false end
+    M.current.inputSyncRate = math.max(10, math.min(60, math.floor(numeric + 0.5)))
+    return true
+  end
+
+  if key == "inputSmoothRate" then
+    local numeric = tonumber(value)
+    if not numeric then return false end
+    M.current.inputSmoothRate = math.max(10, math.min(100, math.floor(numeric + 0.5)))
+    return true
+  end
+
+  if key == "electricsSyncRate" then
+    local numeric = tonumber(value)
+    if not numeric then return false end
+    M.current.electricsSyncRate = math.max(5, math.min(30, math.floor(numeric + 0.5)))
     return true
   end
 

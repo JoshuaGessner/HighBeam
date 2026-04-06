@@ -254,6 +254,15 @@ M.onVehicleSpawned = function(gameVehicleId)
   end
   log('I', logTag, 'Local vehicle spawned: gameVid=' .. tostring(gameVehicleId) .. ' model=' .. tostring(veh:getField('JBeam', '0')))
   state.requestSpawn(gameVehicleId, configData)
+
+  -- Activate per-vehicle VE sync modules for local vehicle data collection.
+  pcall(function()
+    veh:queueLuaCommand("if highbeam_highbeamVE and highbeam_highbeamVE.setActive then highbeam_highbeamVE.setActive(true, false) end")
+    veh:queueLuaCommand("if highbeam_highbeamInputsVE and highbeam_highbeamInputsVE.setActive then highbeam_highbeamInputsVE.setActive(true, false) end")
+    veh:queueLuaCommand("if highbeam_highbeamElectricsVE and highbeam_highbeamElectricsVE.setActive then highbeam_highbeamElectricsVE.setActive(true, false) end")
+    veh:queueLuaCommand("if highbeam_highbeamPowertrainVE and highbeam_highbeamPowertrainVE.setActive then highbeam_highbeamPowertrainVE.setActive(true, false) end")
+    veh:queueLuaCommand("if highbeam_highbeamDamageVE and highbeam_highbeamDamageVE.setActive then highbeam_highbeamDamageVE.setActive(true, false) end")
+  end)
 end
 
 M.onVehicleDestroyed = function(gameVehicleId)
@@ -336,6 +345,53 @@ end
 M.onVluaRotationReport = function(gameVid, rx, ry, rz, rw)
   if state and state.onVluaRotationReport then
     state.onVluaRotationReport(gameVid, rx, ry, rz, rw)
+  end
+end
+
+-- Called from vehicle-side highbeamVE.lua with per-frame data.
+M.onVEData = function(gameVid, px, py, pz, rx, ry, rz, rw, vx, vy, vz, avx, avy, avz,
+    steer, throttle, brake, gear, handbrake)
+  if state and state.onVEData then
+    state.onVEData(gameVid, px, py, pz, rx, ry, rz, rw, vx, vy, vz, avx, avy, avz,
+      steer, throttle, brake, gear, handbrake)
+  end
+end
+
+-- Teleport request coming from VE PD controller when error is too large.
+M.onVETeleportRequest = function(gameVid, px, py, pz, rx, ry, rz, rw)
+  local veh = be:getObjectByID(gameVid)
+  if veh then
+    pcall(veh.setPositionRotation, veh, px, py, pz, rx, ry, rz, rw)
+  end
+end
+
+M.onVEInputs = function(gameVid, deltaStr)
+  if state and state.onVEInputs then
+    state.onVEInputs(gameVid, deltaStr)
+  end
+end
+
+M.onVEElectrics = function(gameVid, jsonStr)
+  if state and state.onVEElectrics then
+    state.onVEElectrics(gameVid, jsonStr)
+  end
+end
+
+M.onVEPowertrain = function(gameVid, jsonStr)
+  if state and state.onVEPowertrain then
+    state.onVEPowertrain(gameVid, jsonStr)
+  end
+end
+
+M.onVEDamage = function(gameVid, jsonStr)
+  if state and state.onVEDamage then
+    state.onVEDamage(gameVid, jsonStr)
+  end
+end
+
+M.onVEDamageDirty = function(gameVid)
+  if state and state.markDamageDirty then
+    state.markDamageDirty(gameVid)
   end
 end
 

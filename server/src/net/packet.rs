@@ -167,6 +167,24 @@ pub enum TcpPacket {
         data: String,
     },
 
+    /// Input deltas (steer/throttle/brake/gear etc.) for a vehicle.
+    #[serde(rename = "vehicle_inputs")]
+    VehicleInputs {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        player_id: Option<u32>,
+        vehicle_id: u16,
+        data: String,
+    },
+
+    /// Powertrain/engine state deltas for a vehicle.
+    #[serde(rename = "vehicle_powertrain")]
+    VehiclePowertrain {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        player_id: Option<u32>,
+        vehicle_id: u16,
+        data: String,
+    },
+
     /// Coupling/trailer attachment state between two vehicles.
     #[serde(rename = "vehicle_coupling")]
     VehicleCoupling {

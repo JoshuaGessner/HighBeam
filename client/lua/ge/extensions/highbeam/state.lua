@@ -20,6 +20,11 @@ local _lastConfigs = {}  -- [gameVehicleId] = last known partConfig string
 local _electricsTimer = 0  -- timer for electrics polling
 local _inputsTimer = 0     -- timer for input polling (decoupled from electrics)
 local _lastElectrics = {}  -- [gameVehicleId] = last sent electrics state string
+local _vePos = {}          -- [gameVehicleId] = {x,y,z}
+local _veRot = {}          -- [gameVehicleId] = {x,y,z,w}
+local _veVel = {}          -- [gameVehicleId] = {x,y,z}
+local _veDataReady = {}    -- [gameVehicleId] = true if VE callback is active
+local _veLastDataAt = {}   -- [gameVehicleId] = os.clock timestamp
 M._cachedInputs = {}  -- [gameVehicleId] = {steer, throttle, brake} from vlua callback
 M._cachedVluaRot = {} -- [gameVehicleId] = {x, y, z, w} rotation from vlua physics
 M._cachedVluaRotTime = {} -- [gameVehicleId] = os.clock timestamp for cached rotation
@@ -52,6 +57,10 @@ local _componentTxStats = {
   electrics_unchanged = 0,
   electrics_no_server_vid = 0,
   electrics_send_failed = 0,
+  inputs_sent = 0,
+  inputs_send_failed = 0,
+  powertrain_sent = 0,
+  powertrain_send_failed = 0,
 }
 local _pollLuaCommandCount = 0
 local _pollLuaCommandErrorCount = 0
@@ -285,25 +294,32 @@ M.tick = function(dt)
   for gameVid, serverVid in pairs(M.localVehicles) do
     local veh = scenetree.findObjectById(gameVid)
     if veh then
-      local pos = veh:getPosition()
-      local vel = veh:getVelocity()
+      local posArr = nil
+      local rotArr = nil
+      local velArr = nil
 
-      -- Use vlua-sourced rotation (physics-accurate) with GE fallback.
-      -- veh:getRotation() returns the SceneObject transform rotation which is
-      -- stale for soft-body vehicles.  The vlua cache is populated each frame
-      -- via _pollVluaRotation → queueGameEngineLua callback.
-      local cachedRot = M._cachedVluaRot[gameVid]
-      local rot
-      if cachedRot then
-        rot = cachedRot
+      local veFresh = _veDataReady[gameVid] and _veLastDataAt[gameVid] and ((now - _veLastDataAt[gameVid]) <= 0.5)
+      if veFresh and _vePos[gameVid] and _veRot[gameVid] and _veVel[gameVid] then
+        posArr = { _vePos[gameVid][1], _vePos[gameVid][2], _vePos[gameVid][3] }
+        rotArr = syncMath.normalizeQuat({ _veRot[gameVid][1], _veRot[gameVid][2], _veRot[gameVid][3], _veRot[gameVid][4] })
+        velArr = { _veVel[gameVid][1], _veVel[gameVid][2], _veVel[gameVid][3] }
       else
-        local geRot = veh:getRotation()
-        rot = { x = geRot.x, y = geRot.y, z = geRot.z, w = geRot.w }
-      end
+        local pos = veh:getPosition()
+        local vel = veh:getVelocity()
 
-      local posArr = { pos.x, pos.y, pos.z }
-      local rotArr = syncMath.normalizeQuat({ rot.x, rot.y, rot.z, rot.w })
-      local velArr = { vel.x, vel.y, vel.z }
+        local cachedRot = M._cachedVluaRot[gameVid]
+        local rot
+        if cachedRot then
+          rot = cachedRot
+        else
+          local geRot = veh:getRotation()
+          rot = { x = geRot.x, y = geRot.y, z = geRot.z, w = geRot.w }
+        end
+
+        posArr = { pos.x, pos.y, pos.z }
+        rotArr = syncMath.normalizeQuat({ rot.x, rot.y, rot.z, rot.w })
+        velArr = { vel.x, vel.y, vel.z }
+      end
 
       -- Capture input state for input-augmented extrapolation
       -- NOTE: electrics are in vlua context, so we read from cached data
@@ -341,7 +357,7 @@ M.tick = function(dt)
           _logUdpErrorRateLimited('UDP send threw for vehicle ' .. tostring(serverVid) .. ': ' .. tostring(sendErr))
         else
           _udpSentCount = _udpSentCount + 1
-          local speed = math.sqrt(vel.x*vel.x + vel.y*vel.y + vel.z*vel.z)
+          local speed = math.sqrt((velArr[1] or 0)*(velArr[1] or 0) + (velArr[2] or 0)*(velArr[2] or 0) + (velArr[3] or 0)*(velArr[3] or 0))
           _sendSpeedAccum = _sendSpeedAccum + speed
           _sendSpeedSamples = _sendSpeedSamples + 1
           _cacheSentState(gameVid, posArr, rotArr, velArr, inputs, now)
@@ -414,6 +430,10 @@ M.tick = function(dt)
       .. ' elecSent=' .. tostring(_componentTxStats.electrics_sent)
       .. ' elecUnchanged=' .. tostring(_componentTxStats.electrics_unchanged)
       .. ' elecNoMap=' .. tostring(_componentTxStats.electrics_no_server_vid)
+      .. ' inpSent=' .. tostring(_componentTxStats.inputs_sent)
+      .. ' inpFail=' .. tostring(_componentTxStats.inputs_send_failed)
+      .. ' pwrSent=' .. tostring(_componentTxStats.powertrain_sent)
+      .. ' pwrFail=' .. tostring(_componentTxStats.powertrain_send_failed)
     )
     M._debugStats = {
       sendRateHz = updateRate,
@@ -438,6 +458,10 @@ M.tick = function(dt)
       electrics_unchanged = 0,
       electrics_no_server_vid = 0,
       electrics_send_failed = 0,
+      inputs_sent = 0,
+      inputs_send_failed = 0,
+      powertrain_sent = 0,
+      powertrain_send_failed = 0,
     }
   end
 
@@ -488,7 +512,10 @@ M.tick = function(dt)
   if _electricsTimer >= electricsInterval then
     _electricsTimer = 0
     for gameVid, serverVid in pairs(M.localVehicles) do
-      M._pollElectrics(gameVid, serverVid)
+      local veFresh = _veDataReady[gameVid] and _veLastDataAt[gameVid] and ((os.clock() - _veLastDataAt[gameVid]) <= 2.0)
+      if not veFresh then
+        M._pollElectrics(gameVid, serverVid)
+      end
     end
   end
 
@@ -498,7 +525,10 @@ M.tick = function(dt)
   if _inputsTimer >= inputPollInterval then
     _inputsTimer = 0
     for gameVid, _ in pairs(M.localVehicles) do
-      M._pollInputsAndRotation(gameVid)
+      local veFresh = _veDataReady[gameVid] and _veLastDataAt[gameVid] and ((os.clock() - _veLastDataAt[gameVid]) <= 0.5)
+      if not veFresh then
+        M._pollInputsAndRotation(gameVid)
+      end
     end
   end
 end
@@ -742,6 +772,126 @@ M.onVluaRotationReport = function(gameVid, rx, ry, rz, rw)
   M._cachedVluaRotTime[gameVid] = now
 end
 
+M.onVEData = function(gameVid, px, py, pz, rx, ry, rz, rw, vx, vy, vz, avx, avy, avz,
+    steer, throttle, brake, gear, handbrake)
+  _vePos[gameVid] = { tonumber(px) or 0, tonumber(py) or 0, tonumber(pz) or 0 }
+  _veRot[gameVid] = { tonumber(rx) or 0, tonumber(ry) or 0, tonumber(rz) or 0, tonumber(rw) or 1 }
+  _veVel[gameVid] = { tonumber(vx) or 0, tonumber(vy) or 0, tonumber(vz) or 0 }
+  _veDataReady[gameVid] = true
+  _veLastDataAt[gameVid] = os.clock()
+
+  M._cachedInputs[gameVid] = {
+    steer = tonumber(steer) or 0,
+    throttle = tonumber(throttle) or 0,
+    brake = tonumber(brake) or 0,
+    gear = tonumber(gear) or 0,
+    handbrake = tonumber(handbrake) or 0,
+  }
+
+  M._cachedVluaRot[gameVid] = {
+    x = tonumber(rx) or 0,
+    y = tonumber(ry) or 0,
+    z = tonumber(rz) or 0,
+    w = tonumber(rw) or 1,
+  }
+  M._cachedVluaRotTime[gameVid] = os.clock()
+  M._cachedAngVel[gameVid] = {
+    tonumber(avx) or 0,
+    tonumber(avy) or 0,
+    tonumber(avz) or 0,
+  }
+end
+
+local function _parseInputDeltaStr(deltaStr)
+  local out = {}
+  if type(deltaStr) ~= "string" or deltaStr == "" then
+    return out
+  end
+  for part in string.gmatch(deltaStr, "[^,]+") do
+    local key, val = string.match(part, "^([%a]+)=([^,]+)$")
+    if key and val then
+      out[key] = tonumber(val) or 0
+    end
+  end
+  return out
+end
+
+M.onVEInputs = function(gameVid, deltaStr)
+  if not connection or connection.getState() ~= connection.STATE_CONNECTED then return end
+  local serverVid = M.localVehicles[gameVid]
+  if not serverVid then return end
+  local sent = connection._sendPacket({
+    type = "vehicle_inputs",
+    vehicle_id = serverVid,
+    data = tostring(deltaStr or ""),
+  })
+  if sent then
+    _componentTxStats.inputs_sent = _componentTxStats.inputs_sent + 1
+  else
+    _componentTxStats.inputs_send_failed = _componentTxStats.inputs_send_failed + 1
+  end
+
+  local delta = _parseInputDeltaStr(deltaStr)
+  local cached = M._cachedInputs[gameVid] or { steer = 0, throttle = 0, brake = 0, gear = 0, handbrake = 0 }
+  if delta.s ~= nil then cached.steer = delta.s end
+  if delta.t ~= nil then cached.throttle = delta.t end
+  if delta.b ~= nil then cached.brake = delta.b end
+  if delta.g ~= nil then cached.gear = delta.g end
+  if delta.p ~= nil then cached.handbrake = delta.p end
+  M._cachedInputs[gameVid] = cached
+end
+
+M.onVEElectrics = function(gameVid, jsonStr)
+  if not connection or connection.getState() ~= connection.STATE_CONNECTED then return end
+  local serverVid = M.localVehicles[gameVid]
+  if not serverVid then
+    _componentTxStats.electrics_no_server_vid = _componentTxStats.electrics_no_server_vid + 1
+    return
+  end
+
+  if _lastElectrics[gameVid] == jsonStr then
+    _componentTxStats.electrics_unchanged = _componentTxStats.electrics_unchanged + 1
+    return
+  end
+  _lastElectrics[gameVid] = jsonStr
+
+  local sent = connection._sendPacket({
+    type = "vehicle_electrics",
+    vehicle_id = serverVid,
+    data = tostring(jsonStr or "{}"),
+  })
+  if sent then
+    _componentTxStats.electrics_sent = _componentTxStats.electrics_sent + 1
+  else
+    _componentTxStats.electrics_send_failed = _componentTxStats.electrics_send_failed + 1
+  end
+end
+
+M.onVEPowertrain = function(gameVid, jsonStr)
+  if not connection or connection.getState() ~= connection.STATE_CONNECTED then return end
+  local serverVid = M.localVehicles[gameVid]
+  if not serverVid then return end
+  local sent = connection._sendPacket({
+    type = "vehicle_powertrain",
+    vehicle_id = serverVid,
+    data = tostring(jsonStr or "{}"),
+  })
+  if sent then
+    _componentTxStats.powertrain_sent = _componentTxStats.powertrain_sent + 1
+  else
+    _componentTxStats.powertrain_send_failed = _componentTxStats.powertrain_send_failed + 1
+  end
+end
+
+M.onVEDamage = function(gameVid, jsonStr)
+  if not M.localVehicles[gameVid] then return end
+  local hash = tostring(jsonStr or "")
+  if _lastDamageHashes[gameVid] == hash then return end
+  _lastDamageHashes[gameVid] = hash
+  if hash == '' or hash == '{}' or hash == '{"broken":[],"deform":{}}' then return end
+  M.sendDamage(gameVid, hash)
+end
+
 -- P3.2: Mark a vehicle as needing a damage poll on the next cycle.
 -- Called from the main extension's onBeamBroke / collision hooks.
 M.markDamageDirty = function(gameVid)
@@ -937,6 +1087,11 @@ M.onDisconnect = function()
   _lastConfigs = {}
   _electricsTimer = 0
   _lastElectrics = {}
+  _vePos = {}
+  _veRot = {}
+  _veVel = {}
+  _veDataReady = {}
+  _veLastDataAt = {}
   M._cachedInputs = {}
   M._cachedVluaRot = {}
   M._cachedVluaRotTime = {}
@@ -961,6 +1116,10 @@ M.onDisconnect = function()
     electrics_unchanged = 0,
     electrics_no_server_vid = 0,
     electrics_send_failed = 0,
+    inputs_sent = 0,
+    inputs_send_failed = 0,
+    powertrain_sent = 0,
+    powertrain_send_failed = 0,
   }
   _pollLuaCommandCount = 0
   _pollLuaCommandErrorCount = 0
