@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-04-05
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.2-dev.18 (protocol v2)
+> **Current version:** v0.8.2-dev.19 (protocol v2)
 > **Status:** v0.8.1 released | v0.8.2 in development
 
 ---
@@ -1202,6 +1202,12 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.2-dev.19 - 2026-04-05 (draft)
+- **Movement desync hardening:** added sender-side forced keyframe and motion watchdog fallbacks so local vehicle UDP updates cannot remain suppressed for long unchanged windows.
+- **Local mapping self-heal:** added periodic active-player vehicle reconciliation to recover from stale local game-vehicle mappings and re-request authoritative spawn mapping when needed.
+- **Outside-force robustness:** added remote reset burst stabilization mode to reduce repeated hard snaps/teleports after clustered reset events and favor temporary smooth correction.
+- **Sync tuning expansion:** added new config keys with bounds validation for keyframe/watchdog/reconciliation/reset-stabilization behavior.
 
 ### v0.8.2-dev.18 - 2026-04-05 (draft)
 - **VE sync architecture rollout:** merged per-vehicle VE modules for motion, inputs, electrics, powertrain, and damage sync (`highbeamVE`, `highbeamPositionVE`, `highbeamVelocityVE`, `highbeamInputsVE`, `highbeamElectricsVE`, `highbeamPowertrainVE`, `highbeamDamageVE`).
