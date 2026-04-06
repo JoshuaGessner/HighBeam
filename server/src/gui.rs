@@ -99,6 +99,22 @@ fn setup_system_tray_bridge() -> TrayBridge {
     // Keep tray icon alive for the process lifetime (dropping it removes the icon).
     Box::leak(Box::new(tray));
 
+    // While hidden, keep nudging the event loop so tray commands are drained.
+    // Some platforms stop repainting aggressively for invisible windows.
+    let ctx_wake = ctx_holder.clone();
+    let hidden_wake = hidden_state.clone();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(250));
+        if !hidden_wake.load(Ordering::SeqCst) {
+            continue;
+        }
+        if let Ok(guard) = ctx_wake.lock() {
+            if let Some(ctx) = guard.as_ref() {
+                ctx.request_repaint();
+            }
+        }
+    });
+
     // Wire up menu events → TrayCommand channel + wake eframe.
     let show_hide_id = show_hide_item.id().clone();
     let quit_id = quit_item.id().clone();
@@ -905,13 +921,10 @@ impl eframe::App for ServerGuiApp {
 
         #[cfg(any(target_os = "windows", target_os = "linux"))]
         {
-            if ctx.input(|i| i.viewport().close_requested())
-                && !self.allow_window_close
-                && self.tray_bridge.available
-            {
-                // Keep server running and hide the GUI to tray.
-                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                self.hide_to_tray(ctx);
+            if ctx.input(|i| i.viewport().close_requested()) && !self.allow_window_close {
+                // Close requests should stop the server process.
+                // Hide-to-tray remains available via explicit controls only.
+                self.request_exit(ctx);
             }
         }
 

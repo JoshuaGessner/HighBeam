@@ -661,6 +661,10 @@ M.applyElectrics = function(playerId, vehicleId, electricsData)
     if elec.parkingbrake ~= nil then
       table.insert(cmds, 'electrics.values.parkingbrake = ' .. tostring(elec.parkingbrake))
     end
+    if elec.steering ~= nil then
+      table.insert(cmds, 'electrics.values.steering_input = ' .. tostring(elec.steering))
+      table.insert(cmds, 'electrics.values.steering = ' .. tostring(elec.steering))
+    end
     if elec.rpm ~= nil then
       table.insert(cmds, 'electrics.values.rpm = ' .. tostring(elec.rpm))
     end
@@ -691,6 +695,36 @@ M.applyElectrics = function(playerId, vehicleId, electricsData)
       log('D', logTag, 'electrics applied key=' .. key .. ' cmds=' .. tostring(commandCount))
     end
   end
+end
+
+-- Apply low-rate TCP pose fallback update while UDP is not yet active.
+M.applyPose = function(playerId, vehicleId, poseData)
+  local pose = _decodeJson(poseData)
+  if not pose then
+    _bumpApplyStat("pose_drop_decode")
+    return
+  end
+
+  local decoded = {
+    playerId = playerId,
+    vehicleId = vehicleId,
+    pos = pose.pos,
+    rot = pose.rot,
+    vel = pose.vel,
+    time = tonumber(pose.time) or os.clock(),
+    inputs = pose.inputs,
+    angVel = pose.angVel,
+  }
+
+  if type(decoded.pos) ~= "table" or #decoded.pos < 3
+    or type(decoded.rot) ~= "table" or #decoded.rot < 4
+    or type(decoded.vel) ~= "table" or #decoded.vel < 3 then
+    _bumpApplyStat("pose_drop_invalid")
+    return
+  end
+
+  M.updateRemote(decoded)
+  _bumpApplyStat("pose_applied")
 end
 
 -- Apply coupling/trailer state

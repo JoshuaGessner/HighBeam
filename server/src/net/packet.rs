@@ -140,6 +140,15 @@ pub enum TcpPacket {
         data: String,
     },
 
+    /// Lightweight transform update over TCP used as fallback while UDP bind is pending.
+    #[serde(rename = "vehicle_pose")]
+    VehiclePose {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        player_id: Option<u32>,
+        vehicle_id: u16,
+        data: String,
+    },
+
     /// Damage/deformation data for a vehicle.
     #[serde(rename = "vehicle_damage")]
     VehicleDamage {

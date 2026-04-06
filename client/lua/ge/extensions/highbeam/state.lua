@@ -57,12 +57,16 @@ local _pollLuaCommandCount = 0
 local _pollLuaCommandErrorCount = 0
 local _damageFallbackTimer = 0
 local _damageFallbackCursor = 0
+local _tcpPoseSentCount = 0
+local _tcpPoseSendErrorCount = 0
+local _lastTcpPoseSentAt = {}
 
 local POS_SEND_DELTA_SQ = 0.01 * 0.01
 local ROT_SEND_DELTA_RAD = math.rad(0.5)
 local VEL_SEND_DELTA_SQ = 0.05 * 0.05
 local INPUT_SEND_DELTA = 0.005
 local ABSOLUTE_SEND_RATE_CAP = 45
+local DEFAULT_TCP_POSE_FALLBACK_INTERVAL_SEC = 0.2
 
 local function _rotErrorRad(a, b)
   if not a or not b then return math.huge end
@@ -343,6 +347,49 @@ M.tick = function(dt)
           _cacheSentState(gameVid, posArr, rotArr, velArr, inputs, now)
         end
       end
+
+      if connection and connection._udpBindConfirmed == false then
+        local fallbackInterval = math.max(0.1, math.min(0.5, _getConfigNumber("tcpPoseFallbackIntervalSec", DEFAULT_TCP_POSE_FALLBACK_INTERVAL_SEC)))
+        local lastPoseAt = _lastTcpPoseSentAt[gameVid] or 0
+        if (now - lastPoseAt) >= fallbackInterval then
+          _lastTcpPoseSentAt[gameVid] = now
+
+          local poseData = '{"pos":['
+            .. tostring(posArr[1]) .. ',' .. tostring(posArr[2]) .. ',' .. tostring(posArr[3])
+            .. '],"rot":['
+            .. tostring(rotArr[1]) .. ',' .. tostring(rotArr[2]) .. ',' .. tostring(rotArr[3]) .. ',' .. tostring(rotArr[4])
+            .. '],"vel":['
+            .. tostring(velArr[1]) .. ',' .. tostring(velArr[2]) .. ',' .. tostring(velArr[3])
+            .. '],"time":' .. tostring(now)
+          if inputs then
+            poseData = poseData
+              .. ',"inputs":{"steer":' .. tostring(inputs.steer or 0)
+              .. ',"throttle":' .. tostring(inputs.throttle or 0)
+              .. ',"brake":' .. tostring(inputs.brake or 0)
+              .. ',"gear":' .. tostring(inputs.gear or 0)
+              .. ',"handbrake":' .. tostring(inputs.handbrake or 0)
+              .. '}'
+          end
+          if angVel then
+            poseData = poseData
+              .. ',"angVel":['
+              .. tostring(angVel[1] or 0) .. ',' .. tostring(angVel[2] or 0) .. ',' .. tostring(angVel[3] or 0)
+              .. ']'
+          end
+          poseData = poseData .. '}'
+
+          local sent = connection._sendPacket({
+            type = "vehicle_pose",
+            vehicle_id = serverVid,
+            data = poseData,
+          })
+          if sent then
+            _tcpPoseSentCount = _tcpPoseSentCount + 1
+          else
+            _tcpPoseSendErrorCount = _tcpPoseSendErrorCount + 1
+          end
+        end
+      end
     end
     ::continue_local_vehicle::
   end
@@ -357,6 +404,8 @@ M.tick = function(dt)
       .. ' udpSkippedUnchanged=' .. tostring(_udpSkippedUnchangedCount)
       .. ' udpEncodeErr=' .. tostring(_udpEncodeErrorCount)
       .. ' udpSendErr=' .. tostring(_udpSendErrorCount)
+      .. ' tcpPoseSent=' .. tostring(_tcpPoseSentCount)
+      .. ' tcpPoseErr=' .. tostring(_tcpPoseSendErrorCount)
       .. ' pollLuaCmd=' .. tostring(_pollLuaCommandCount)
       .. ' pollLuaErr=' .. tostring(_pollLuaCommandErrorCount)
       .. ' dmgSent=' .. tostring(_componentTxStats.damage_sent)
@@ -570,6 +619,10 @@ M._pollElectrics = function(gameVid, serverVid)
       .. 's.highbeams = e.highbeam or 0 '
       .. 's.gear = e.gear_A or 0 '
       .. 's.parkingbrake = (e.parkingbrake and e.parkingbrake > 0.5) and 1 or 0 '
+      .. 's.steering = e.steering_input or e.steering or 0 '
+      .. 's.rpm = e.rpm or 0 '
+      .. 's.wheelspeed = e.wheelspeed or 0 '
+      .. 's.clutch = e.clutch or 0 '
       .. 's.ignition = e.ignitionLevel or 0 '
       .. 'obj:queueGameEngineLua("extensions.highbeam.onElectricsReport(' .. gameVid .. ', \'" .. (jsonEncode and jsonEncode(s) or "{}") .. "\')")'
     )
@@ -913,6 +966,9 @@ M.onDisconnect = function()
   _pollLuaCommandErrorCount = 0
   _damageFallbackTimer = 0
   _damageFallbackCursor = 0
+  _tcpPoseSentCount = 0
+  _tcpPoseSendErrorCount = 0
+  _lastTcpPoseSentAt = {}
 end
 
 return M

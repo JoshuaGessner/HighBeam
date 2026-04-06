@@ -870,7 +870,7 @@ M._handlePacket = function(jsonStr)
     if packet.vehicles then
       if needsLoad then
         M._pendingWorldVehicles = packet.vehicles
-        M._pendingWorldStateDeadline = os.clock() + 8.0
+        M._pendingWorldStateDeadline = os.clock() + 2.5
         M._pendingWorldStateLevel = serverLevel
         log('I', logTag, 'Deferring world vehicle spawn until map is ready count=' .. tostring(#packet.vehicles))
       else
@@ -935,6 +935,15 @@ M._handlePacket = function(jsonStr)
           .. ' bytes=' .. tostring(#(packet.data or '')))
       end
       vehicles.resetRemote(packet.player_id, packet.vehicle_id, packet.data)
+    end
+  elseif ptype == "vehicle_pose" then
+    if not vehicles then
+      _bumpCounter(M._componentRxStats, "pose_drop_no_vehicles")
+    elseif packet.player_id == M._playerId then
+      _bumpCounter(M._componentRxStats, "pose_skip_self")
+    else
+      _bumpCounter(M._componentRxStats, "pose_dispatch")
+      vehicles.applyPose(packet.player_id, packet.vehicle_id, packet.data)
     end
   elseif ptype == "vehicle_damage" then
     if not vehicles then

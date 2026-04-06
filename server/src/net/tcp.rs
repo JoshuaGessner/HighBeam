@@ -519,6 +519,7 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
     let mut diag_reset_rx: u64 = 0;
     let mut diag_damage_rx: u64 = 0;
     let mut diag_electrics_rx: u64 = 0;
+    let mut diag_pose_rx: u64 = 0;
     let mut diag_coupling_rx: u64 = 0;
 
     loop {
@@ -533,6 +534,7 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                 reset_rx = diag_reset_rx,
                 damage_rx = diag_damage_rx,
                 electrics_rx = diag_electrics_rx,
+                pose_rx = diag_pose_rx,
                 coupling_rx = diag_coupling_rx,
                 world_vehicle_count = world.vehicle_count(),
                 player_vehicle_count = world.vehicle_count_for_player(player_id),
@@ -547,6 +549,7 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
             diag_reset_rx = 0;
             diag_damage_rx = 0;
             diag_electrics_rx = 0;
+            diag_pose_rx = 0;
             diag_coupling_rx = 0;
         }
 
@@ -831,6 +834,84 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                         player_vehicle_count = world.vehicle_count_for_player(player_id),
                         world_vehicle_count = world.vehicle_count(),
                         "VehicleElectrics for unowned vehicle"
+                    );
+                }
+            }
+            TcpPacket::VehiclePose {
+                vehicle_id, data, ..
+            } => {
+                diag_component_rx += 1;
+                diag_pose_rx += 1;
+                if let Err(e) = crate::validation::validate_vehicle_id(vehicle_id) {
+                    diag_component_reject_validation += 1;
+                    tracing::warn!(player_id, vehicle_id, error = %e, "VehiclePose: invalid vehicle ID");
+                    continue;
+                }
+                if let Err(e) = crate::validation::validate_vehicle_config_size(&data) {
+                    diag_component_reject_validation += 1;
+                    tracing::warn!(player_id, error = %e, "VehiclePose: invalid payload");
+                    continue;
+                }
+
+                if world.is_owner(player_id, vehicle_id) {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&data) {
+                        let pos_arr = val.get("pos").and_then(|v| v.as_array());
+                        let rot_arr = val.get("rot").and_then(|v| v.as_array());
+                        let vel_arr = val.get("vel").and_then(|v| v.as_array());
+                        if let (Some(pos), Some(rot), Some(vel)) = (pos_arr, rot_arr, vel_arr) {
+                            if pos.len() >= 3 && rot.len() >= 4 && vel.len() >= 3 {
+                                if let (
+                                    Some(px),
+                                    Some(py),
+                                    Some(pz),
+                                    Some(rx),
+                                    Some(ry),
+                                    Some(rz),
+                                    Some(rw),
+                                    Some(vx),
+                                    Some(vy),
+                                    Some(vz),
+                                ) = (
+                                    pos[0].as_f64(),
+                                    pos[1].as_f64(),
+                                    pos[2].as_f64(),
+                                    rot[0].as_f64(),
+                                    rot[1].as_f64(),
+                                    rot[2].as_f64(),
+                                    rot[3].as_f64(),
+                                    vel[0].as_f64(),
+                                    vel[1].as_f64(),
+                                    vel[2].as_f64(),
+                                ) {
+                                    world.update_position(
+                                        player_id,
+                                        vehicle_id,
+                                        [px as f32, py as f32, pz as f32],
+                                        [rx as f32, ry as f32, rz as f32, rw as f32],
+                                        [vx as f32, vy as f32, vz as f32],
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    sessions.broadcast(
+                        TcpPacket::VehiclePose {
+                            player_id: Some(player_id),
+                            vehicle_id,
+                            data,
+                        },
+                        Some(player_id),
+                    );
+                    diag_component_relay += 1;
+                } else {
+                    diag_component_reject_owner += 1;
+                    tracing::warn!(
+                        player_id,
+                        vehicle_id,
+                        player_vehicle_count = world.vehicle_count_for_player(player_id),
+                        world_vehicle_count = world.vehicle_count(),
+                        "VehiclePose for unowned vehicle"
                     );
                 }
             }
