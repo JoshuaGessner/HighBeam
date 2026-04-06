@@ -6,6 +6,7 @@ local isActive = false
 local gameVehicleId = 0
 
 local brokenBeams = {}
+local brokenGroups = {}
 local damageTimer = 0
 local DAMAGE_SEND_INTERVAL = 1 / 15
 local dirty = false
@@ -32,6 +33,7 @@ function M.onInit()
     gameVehicleId = obj:getID()
   end
   brokenBeams = {}
+  brokenGroups = {}
   damageTimer = 0
   dirty = false
 end
@@ -43,6 +45,12 @@ end
 
 function M.onBeamBroke(beamId, energy)
   brokenBeams[beamId] = true
+  if obj and obj.getBreakGroup then
+    local ok, group = pcall(obj.getBreakGroup, obj, beamId)
+    if ok and type(group) == "string" and group ~= "" then
+      brokenGroups[group] = true
+    end
+  end
   dirty = true
 end
 
@@ -56,6 +64,11 @@ function M.updateGFX(dt)
   local breaks = {}
   for beamId, _ in pairs(brokenBeams) do
     breaks[#breaks + 1] = beamId
+  end
+
+  local groups = {}
+  for group, _ in pairs(brokenGroups) do
+    groups[#groups + 1] = group
   end
 
   local deforms = {}
@@ -81,7 +94,7 @@ function M.updateGFX(dt)
     obj:queueGameEngineLua(string.format(
       "extensions.highbeam.onVEDamage(%d,%q)",
       gameVehicleId,
-      _jsonEncode({ broken = breaks, deform = deforms })
+      _jsonEncode({ broken = breaks, breakGroups = groups, deform = deforms })
     ))
   end
 end

@@ -606,6 +606,26 @@ M.applyDamage = function(playerId, vehicleId, damageData)
     end
   end
 
+  -- Break group optimization: break all beams that belong to each group.
+  if dmg.breakGroups then
+    local ok = pcall(function()
+      for _, groupName in ipairs(dmg.breakGroups) do
+        local g = string.format("%q", tostring(groupName))
+        veh:queueLuaCommand(
+          'local _g=' .. g .. ' '
+          .. 'for _i=0,obj:getBeamCount()-1 do '
+          .. '  local _bg=obj:getBreakGroup(_i) '
+          .. '  if _bg==_g then obj:breakBeam(_i) end '
+          .. 'end'
+        )
+        commandsQueued = commandsQueued + 1
+      end
+    end)
+    if not ok then
+      _bumpApplyStat("damage_error_break_group")
+    end
+  end
+
   -- Apply beam deformation (sender field name is 'deform')
   -- Each entry is {deformVal, restLength} or a plain number (legacy).
   -- We use obj:setBeamLength to set the physical length directly.
