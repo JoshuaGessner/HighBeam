@@ -69,6 +69,12 @@ local _damageFallbackCursor = 0
 local _tcpPoseSentCount = 0
 local _tcpPoseSendErrorCount = 0
 local _lastTcpPoseSentAt = {}
+local _forcedKeyframeCount = 0
+local _forcedWatchdogCount = 0
+local _skipStreakByVehicle = {}
+local _playerVehicleReconcileTimer = 0
+local _playerVehicleReconcileCount = 0
+local _playerVehicleReconcileDeleteCount = 0
 
 local POS_SEND_DELTA_SQ = 0.01 * 0.01
 local ROT_SEND_DELTA_RAD = math.rad(0.5)
@@ -76,6 +82,10 @@ local VEL_SEND_DELTA_SQ = 0.05 * 0.05
 local INPUT_SEND_DELTA = 0.005
 local ABSOLUTE_SEND_RATE_CAP = 45
 local DEFAULT_TCP_POSE_FALLBACK_INTERVAL_SEC = 0.2
+local DEFAULT_FORCE_KEYFRAME_INTERVAL_SEC = 0.45
+local DEFAULT_MOTION_WATCHDOG_SEC = 0.7
+local DEFAULT_MOTION_WATCHDOG_MIN_SPEED = 0.5
+local DEFAULT_LOCAL_VEHICLE_RECONCILE_SEC = 1.0
 
 local function _rotErrorRad(a, b)
   if not a or not b then return math.huge end
@@ -217,6 +227,47 @@ M._jsonStr = function(s)
   return '"' .. tostring(s):gsub('\\', '\\\\'):gsub('"', '\\"'):gsub('\n', '\\n') .. '"'
 end
 
+local function _getPlayerVehicleId()
+  if not be or not be.getPlayerVehicle then return nil end
+  local veh = be:getPlayerVehicle(0)
+  if not veh or not veh.getID then return nil end
+  local ok, vid = pcall(veh.getID, veh)
+  if not ok then return nil end
+  return vid
+end
+
+local function _reconcileLocalPlayerVehicle()
+  if not connection or connection.getState() ~= connection.STATE_CONNECTED then return end
+
+  local gameVid = _getPlayerVehicleId()
+  if not gameVid then return end
+  if M.localVehicles[gameVid] or M._inflightByGameVid[gameVid] then return end
+
+  local allowed, reason = M.canRequestSpawn(gameVid)
+  if not allowed and reason == "max_cars_reached" then
+    for mappedGameVid, _ in pairs(M.localVehicles) do
+      if mappedGameVid ~= gameVid then
+        M.requestDelete(mappedGameVid)
+        _playerVehicleReconcileDeleteCount = _playerVehicleReconcileDeleteCount + 1
+        log('W', logTag, 'Reconcile deleted stale local map gameVid=' .. tostring(mappedGameVid)
+          .. ' currentPlayerVid=' .. tostring(gameVid))
+        break
+      end
+    end
+    allowed, reason = M.canRequestSpawn(gameVid)
+  end
+
+  if not allowed then return end
+
+  local veh = be:getObjectByID(gameVid)
+  if not veh then return end
+
+  local configData = M.captureVehicleConfig(veh)
+  M.requestSpawn(gameVid, configData)
+  _playerVehicleReconcileCount = _playerVehicleReconcileCount + 1
+  log('I', logTag, 'Reconcile requested spawn for active player vehicle gameVid=' .. tostring(gameVid))
+end
+
 M.tick = function(dt)
   if not connection or connection.getState() ~= connection.STATE_CONNECTED then return end
 
@@ -245,6 +296,13 @@ M.tick = function(dt)
   end
 
   local updateRate = (config and config.get("updateRate")) or 20
+
+  _playerVehicleReconcileTimer = _playerVehicleReconcileTimer + dt
+  local reconcileInterval = math.max(0.25, math.min(5.0, _getConfigNumber("localVehicleReconcileSec", DEFAULT_LOCAL_VEHICLE_RECONCILE_SEC)))
+  if _playerVehicleReconcileTimer >= reconcileInterval then
+    _playerVehicleReconcileTimer = 0
+    _reconcileLocalPlayerVehicle()
+  end
 
   -- Adaptive send rate with conservative caps to reduce script + network load.
   -- <1 m/s = 12Hz, 1-20 m/s = 24Hz, >=20 m/s = maxAdaptiveSendRate (default 45Hz).
@@ -297,12 +355,14 @@ M.tick = function(dt)
       local posArr = nil
       local rotArr = nil
       local velArr = nil
+      local speed = 0
 
       local veFresh = _veDataReady[gameVid] and _veLastDataAt[gameVid] and ((now - _veLastDataAt[gameVid]) <= 0.5)
       if veFresh and _vePos[gameVid] and _veRot[gameVid] and _veVel[gameVid] then
         posArr = { _vePos[gameVid][1], _vePos[gameVid][2], _vePos[gameVid][3] }
         rotArr = syncMath.normalizeQuat({ _veRot[gameVid][1], _veRot[gameVid][2], _veRot[gameVid][3], _veRot[gameVid][4] })
         velArr = { _veVel[gameVid][1], _veVel[gameVid][2], _veVel[gameVid][3] }
+        speed = math.sqrt((velArr[1] or 0)*(velArr[1] or 0) + (velArr[2] or 0)*(velArr[2] or 0) + (velArr[3] or 0)*(velArr[3] or 0))
       else
         local pos = veh:getPosition()
         local vel = veh:getVelocity()
@@ -319,6 +379,7 @@ M.tick = function(dt)
         posArr = { pos.x, pos.y, pos.z }
         rotArr = syncMath.normalizeQuat({ rot.x, rot.y, rot.z, rot.w })
         velArr = { vel.x, vel.y, vel.z }
+        speed = math.sqrt((velArr[1] or 0)*(velArr[1] or 0) + (velArr[2] or 0)*(velArr[2] or 0) + (velArr[3] or 0)*(velArr[3] or 0))
       end
 
       -- Capture input state for input-augmented extrapolation
@@ -327,9 +388,32 @@ M.tick = function(dt)
       local inputs = M._cachedInputs and M._cachedInputs[gameVid] or nil
       local angVel = M._cachedAngVel and M._cachedAngVel[gameVid] or nil
 
-      if not _shouldSendDelta(gameVid, posArr, rotArr, velArr, inputs) then
+      local forceReason = nil
+      local lastSent = M._lastSentState[gameVid]
+      if lastSent then
+        local forceKeyframeInterval = math.max(0.2, math.min(2.0, _getConfigNumber("forceKeyframeIntervalSec", DEFAULT_FORCE_KEYFRAME_INTERVAL_SEC)))
+        local motionWatchdogSec = math.max(0.2, math.min(3.0, _getConfigNumber("motionWatchdogSec", DEFAULT_MOTION_WATCHDOG_SEC)))
+        local motionWatchdogMinSpeed = math.max(0.0, math.min(20.0, _getConfigNumber("motionWatchdogMinSpeed", DEFAULT_MOTION_WATCHDOG_MIN_SPEED)))
+
+        local sinceLastSent = now - (lastSent.sentAt or 0)
+        if sinceLastSent >= forceKeyframeInterval then
+          forceReason = "keyframe"
+        elseif speed >= motionWatchdogMinSpeed and sinceLastSent >= motionWatchdogSec then
+          forceReason = "watchdog"
+        end
+      end
+
+      if not forceReason and not _shouldSendDelta(gameVid, posArr, rotArr, velArr, inputs) then
         _udpSkippedUnchangedCount = _udpSkippedUnchangedCount + 1
+        _skipStreakByVehicle[gameVid] = (_skipStreakByVehicle[gameVid] or 0) + 1
         goto continue_local_vehicle
+      end
+
+      _skipStreakByVehicle[gameVid] = 0
+      if forceReason == "keyframe" then
+        _forcedKeyframeCount = _forcedKeyframeCount + 1
+      elseif forceReason == "watchdog" then
+        _forcedWatchdogCount = _forcedWatchdogCount + 1
       end
 
       local okEncode, dataOrErr = pcall(
@@ -357,7 +441,6 @@ M.tick = function(dt)
           _logUdpErrorRateLimited('UDP send threw for vehicle ' .. tostring(serverVid) .. ': ' .. tostring(sendErr))
         else
           _udpSentCount = _udpSentCount + 1
-          local speed = math.sqrt((velArr[1] or 0)*(velArr[1] or 0) + (velArr[2] or 0)*(velArr[2] or 0) + (velArr[3] or 0)*(velArr[3] or 0))
           _sendSpeedAccum = _sendSpeedAccum + speed
           _sendSpeedSamples = _sendSpeedSamples + 1
           _cacheSentState(gameVid, posArr, rotArr, velArr, inputs, now)
@@ -420,8 +503,12 @@ M.tick = function(dt)
       .. ' udpSkippedUnchanged=' .. tostring(_udpSkippedUnchangedCount)
       .. ' udpEncodeErr=' .. tostring(_udpEncodeErrorCount)
       .. ' udpSendErr=' .. tostring(_udpSendErrorCount)
+      .. ' udpForcedKeyframe=' .. tostring(_forcedKeyframeCount)
+      .. ' udpForcedWatchdog=' .. tostring(_forcedWatchdogCount)
       .. ' tcpPoseSent=' .. tostring(_tcpPoseSentCount)
       .. ' tcpPoseErr=' .. tostring(_tcpPoseSendErrorCount)
+      .. ' reconcileSpawn=' .. tostring(_playerVehicleReconcileCount)
+      .. ' reconcileDelete=' .. tostring(_playerVehicleReconcileDeleteCount)
       .. ' pollLuaCmd=' .. tostring(_pollLuaCommandCount)
       .. ' pollLuaErr=' .. tostring(_pollLuaCommandErrorCount)
       .. ' dmgSent=' .. tostring(_componentTxStats.damage_sent)
@@ -445,6 +532,10 @@ M.tick = function(dt)
     _udpSkippedUnchangedCount = 0
     _udpEncodeErrorCount = 0
     _udpSendErrorCount = 0
+    _forcedKeyframeCount = 0
+    _forcedWatchdogCount = 0
+    _playerVehicleReconcileCount = 0
+    _playerVehicleReconcileDeleteCount = 0
     _sendSpeedAccum = 0
     _sendSpeedSamples = 0
     _pollLuaCommandCount = 0

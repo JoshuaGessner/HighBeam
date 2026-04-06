@@ -530,6 +530,22 @@ M.resetRemote = function(playerId, vehicleId, data)
   rv._lastResetAt = now
   rv._lastResetPayload = data
 
+  local resetBurstWindowSec = math.max(0.2, math.min(10.0, _getConfigNumber("resetBurstWindowSec", 2.0)))
+  local resetBurstThreshold = math.max(2, math.floor(_getConfigNumber("resetBurstThreshold", 3)))
+  local resetStabilizeSec = math.max(0.2, math.min(10.0, _getConfigNumber("resetStabilizeSec", 2.0)))
+
+  local lastBurstAt = rv._resetBurstLastAt or 0
+  if (now - lastBurstAt) <= resetBurstWindowSec then
+    rv._resetBurstCount = (rv._resetBurstCount or 0) + 1
+  else
+    rv._resetBurstCount = 1
+  end
+  rv._resetBurstLastAt = now
+  if rv._resetBurstCount >= resetBurstThreshold then
+    rv._resetStabilizeUntil = now + resetStabilizeSec
+    _bumpApplyStat("reset_stabilize_enter")
+  end
+
   local cfg = _decodeJson(data)
   if not cfg then
     _bumpApplyStat("reset_drop_decode")
@@ -1088,6 +1104,12 @@ M.tick = function(dt)
       -- If the error is very large, teleport immediately.
       local finalPos = targetPos
       local finalRot = targetRot
+      local correctionBlendCurrent = correctionBlend
+      local teleportDistSqCurrent = teleportDistSq
+      if rv._resetStabilizeUntil and now < rv._resetStabilizeUntil then
+        correctionBlendCurrent = math.min(1.0, correctionBlendCurrent * 2.5)
+        teleportDistSqCurrent = (teleportDist * 3.0) * (teleportDist * 3.0)
+      end
       if rv._lastAppliedPos then
         local errX = targetPos[1] - rv._lastAppliedPos[1]
         local errY = targetPos[2] - rv._lastAppliedPos[2]
@@ -1105,12 +1127,12 @@ M.tick = function(dt)
           _correctionRotSum = _correctionRotSum + math.sqrt(dqx*dqx + dqy*dqy + dqz*dqz + dqw*dqw)
         end
 
-        if errSq > teleportDistSq then
+        if errSq > teleportDistSqCurrent then
           -- Large error: teleport instantly
           _teleportCount = _teleportCount + 1
         elseif errSq > POS_DELTA_SQ_THRESHOLD then
           -- Small-to-medium error: blend toward target
-          local blend = math.min(1.0, correctionBlend * dt * 60)  -- normalize to ~60fps
+          local blend = math.min(1.0, correctionBlendCurrent * dt * 60)  -- normalize to ~60fps
           finalPos = {
             rv._lastAppliedPos[1] + errX * blend,
             rv._lastAppliedPos[2] + errY * blend,
