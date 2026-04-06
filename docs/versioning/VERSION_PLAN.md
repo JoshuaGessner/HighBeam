@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-04-05
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.2-dev.19 (protocol v2)
+> **Current version:** v0.8.2-dev.20 (protocol v2)
 > **Status:** v0.8.1 released | v0.8.2 in development
 
 ---
@@ -1202,6 +1202,11 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.2-dev.20 - 2026-04-05 (draft)
+- **Release refresh after cleanup:** canceled stale `v0.8.2-dev.19` release build that was missing latest `main` commit(s), then cut a fresh dev release from cleaned `main`.
+- **Branch hygiene:** removed merged `fix/udp-sync-watchdog` branch locally and on origin.
+- **Release integrity:** dev release now includes sync-fix merge plus lockfile/version alignment commits on `main`.
 
 ### v0.8.2-dev.19 - 2026-04-05 (draft)
 - **Movement desync hardening:** added sender-side forced keyframe and motion watchdog fallbacks so local vehicle UDP updates cannot remain suppressed for long unchanged windows.
