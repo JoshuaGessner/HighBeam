@@ -9,7 +9,7 @@
 Five critical bugs and three secondary issues collectively cause the reported symptoms:
 vehicles not visibly moving, only updating position on reset, cars sticking inside each
 other with no collision response, and damage not reflecting on remote clients. All fixes
-use standard BeamNG.drive APIs and general game-networking techniques—no BeamMP code
+use standard BeamNG.drive APIs and general game-networking techniques—no external mod code
 is copied or adapted.
 
 ---
@@ -360,7 +360,7 @@ Keep existing `addVelocity` and `addAngularVelocity` for incremental corrections
 - The techniques used — cluster-relative positioning, velocity correction, node-based
   damage sync, PD control, delta encoding — are standard game-networking patterns
   documented in academic literature and GDC talks.
-- No code is copied from BeamMP. All implementations must be written from scratch
+- No code is copied from external multiplayer mods. All implementations are written from scratch
   following these architectural patterns.
-- The packet format remains HighBeam's own binary UDP protocol, distinct from BeamMP's
-  text-based JSON protocol.
+- The packet format remains HighBeam's own binary UDP protocol, distinct from text-based
+  JSON protocol designs.
