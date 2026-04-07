@@ -291,4 +291,8 @@ function M.onPhysicsStep(dtSim)
   end
 end
 
+-- Controller system dispatches init/update, not onInit/onPhysicsStep.
+M.init = M.onInit
+M.update = M.onPhysicsStep
+
 return M
