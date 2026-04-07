@@ -292,8 +292,11 @@ M.onVehicleSpawned = function(gameVehicleId)
         "highbeam/highbeamPowertrainVE",
         "highbeam/highbeamDamageVE",
       }
-      if extensions and extensions.load then
-        for _, m in ipairs(_mods) do pcall(extensions.load, m) end
+      if controller and controller.loadControllerExternal then
+        for _, m in ipairs(_mods) do
+          local _name = string.gsub(m, "^highbeam/", "highbeam_")
+          pcall(controller.loadControllerExternal, m, _name)
+        end
       end
       if highbeam_highbeamVE and highbeam_highbeamVE.setActive then highbeam_highbeamVE.setActive(true, false) end
       if highbeam_highbeamInputsVE and highbeam_highbeamInputsVE.setActive then highbeam_highbeamInputsVE.setActive(true, false) end
