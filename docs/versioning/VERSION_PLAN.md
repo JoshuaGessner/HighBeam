@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-04-06
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.2-dev.22 (protocol v2)
+> **Current version:** v0.8.2-dev.23 (protocol v2)
 > **Status:** v0.8.1 released | v0.8.2 in development
 
 ---
@@ -1202,6 +1202,12 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.2-dev.23 - 2026-04-06 (draft)
+- **Release integrity gate:** verified release source is `origin/main` with no unmerged feature-branch commits remaining outside `main`.
+- **Branch hygiene follow-up:** cleaned merged remote work branches and validated only long-lived remote refs remain.
+- **Payload parity verification:** rebuilt launcher-bundled `highbeam.zip` from `client/` and verified runtime sync files match current source content.
+- **Sync packaging assurance:** confirmed current VE/GE sync fixes are included in the packaged client payload for the next dev release.
 
 ### v0.8.2-dev.22 - 2026-04-06 (draft)
 - **Vehicle sync overhaul:** replaced remote motion handling with VE-first positioning, velocity correction, collision-aware thresholds, and quaternion-based rotation error correction for stable multiplayer driving behavior.
