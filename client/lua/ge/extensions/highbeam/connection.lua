@@ -237,11 +237,25 @@ local function _reRegisterLocalVehicles()
         local inFlight = state.isSpawnInFlight and state.isSpawnInFlight(gameVid)
         if not state.localVehicles[gameVid] and not inFlight then
           pcall(function()
-            veh:queueLuaCommand("if highbeam_highbeamVE and highbeam_highbeamVE.setActive then highbeam_highbeamVE.setActive(true, false) end")
-            veh:queueLuaCommand("if highbeam_highbeamInputsVE and highbeam_highbeamInputsVE.setActive then highbeam_highbeamInputsVE.setActive(true, false) end")
-            veh:queueLuaCommand("if highbeam_highbeamElectricsVE and highbeam_highbeamElectricsVE.setActive then highbeam_highbeamElectricsVE.setActive(true, false) end")
-            veh:queueLuaCommand("if highbeam_highbeamPowertrainVE and highbeam_highbeamPowertrainVE.setActive then highbeam_highbeamPowertrainVE.setActive(true, false) end")
-            veh:queueLuaCommand("if highbeam_highbeamDamageVE and highbeam_highbeamDamageVE.setActive then highbeam_highbeamDamageVE.setActive(true, false) end")
+            veh:queueLuaCommand([[ 
+              local _mods = {
+                "highbeam/highbeamVE",
+                "highbeam/highbeamPositionVE",
+                "highbeam/highbeamVelocityVE",
+                "highbeam/highbeamInputsVE",
+                "highbeam/highbeamElectricsVE",
+                "highbeam/highbeamPowertrainVE",
+                "highbeam/highbeamDamageVE",
+              }
+              if extensions and extensions.load then
+                for _, m in ipairs(_mods) do pcall(extensions.load, m) end
+              end
+              if highbeam_highbeamVE and highbeam_highbeamVE.setActive then highbeam_highbeamVE.setActive(true, false) end
+              if highbeam_highbeamInputsVE and highbeam_highbeamInputsVE.setActive then highbeam_highbeamInputsVE.setActive(true, false) end
+              if highbeam_highbeamElectricsVE and highbeam_highbeamElectricsVE.setActive then highbeam_highbeamElectricsVE.setActive(true, false) end
+              if highbeam_highbeamPowertrainVE and highbeam_highbeamPowertrainVE.setActive then highbeam_highbeamPowertrainVE.setActive(true, false) end
+              if highbeam_highbeamDamageVE and highbeam_highbeamDamageVE.setActive then highbeam_highbeamDamageVE.setActive(true, false) end
+            ]])
           end)
           local configData = state.captureVehicleConfig(veh)
           log('I', logTag, 'Re-registering local vehicle after reconnect: gameVid=' .. tostring(gameVid))
