@@ -112,4 +112,7 @@ function M.updateGFX(dt)
   end
 end
 
+-- Controller system dispatches init(), not onInit().
+M.init = M.onInit
+
 return M
