@@ -203,7 +203,8 @@ local function _queueRemoteVeBootstrap(rv, key)
     vehObj:queueLuaCommand([[
       local _missing = {}
 
-      -- Ensure VE modules are loaded from lua/vehicle/extensions/highbeam.
+      -- Register VE modules as controllers so physics callbacks (onPhysicsStep)
+      -- are guaranteed to execute for remote simulation.
       local _veModules = {
         {"highbeam/highbeamVE", "highbeam_highbeamVE"},
         {"highbeam/highbeamPositionVE", "highbeam_highbeamPositionVE"},
@@ -213,10 +214,13 @@ local function _queueRemoteVeBootstrap(rv, key)
         {"highbeam/highbeamPowertrainVE", "highbeam_highbeamPowertrainVE"},
         {"highbeam/highbeamDamageVE", "highbeam_highbeamDamageVE"},
       }
-      if extensions and extensions.load then
+      local _controllerLoader = controller and controller.loadControllerExternal
+      if _controllerLoader then
         for _, entry in ipairs(_veModules) do
-          pcall(extensions.load, entry[1])
+          pcall(_controllerLoader, entry[1], entry[2])
         end
+      else
+        table.insert(_missing, "controller.loadControllerExternal")
       end
 
       local _hasVE = highbeam_highbeamVE and highbeam_highbeamVE.setActive
@@ -235,7 +239,7 @@ local function _queueRemoteVeBootstrap(rv, key)
       if not _hasPowertrain then table.insert(_missing, "highbeam_highbeamPowertrainVE") end
       if not _hasDamage then table.insert(_missing, "highbeam_highbeamDamageVE") end
 
-      local _ready = (_hasVE and _hasPos and _hasVel and _hasInputs and _hasElectrics and _hasPowertrain and _hasDamage) and true or false
+      local _ready = (_controllerLoader and _hasVE and _hasPos and _hasVel and _hasInputs and _hasElectrics and _hasPowertrain and _hasDamage) and true or false
 
       if _ready then
         highbeam_highbeamVE.setActive(true, true)
