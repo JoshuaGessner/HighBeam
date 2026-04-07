@@ -298,6 +298,12 @@ M.onVehicleSpawned = function(gameVehicleId)
           pcall(controller.loadControllerExternal, m, _name)
         end
       end
+      -- Defensive: call init() explicitly in case controller system defers dispatch.
+      for _, m in ipairs(_mods) do
+        local _name = string.gsub(m, "^highbeam/", "highbeam_")
+        local _mod = rawget(_G, _name)
+        if _mod and _mod.init then pcall(_mod.init) end
+      end
       if highbeam_highbeamVE and highbeam_highbeamVE.setActive then highbeam_highbeamVE.setActive(true, false) end
       if highbeam_highbeamInputsVE and highbeam_highbeamInputsVE.setActive then highbeam_highbeamInputsVE.setActive(true, false) end
       if highbeam_highbeamElectricsVE and highbeam_highbeamElectricsVE.setActive then highbeam_highbeamElectricsVE.setActive(true, false) end

@@ -112,23 +112,10 @@ local function _shouldApplyPosRot(rv, pos, rot)
 end
 
 local function _applyPosRot(rv, pos, rot, vel)
-  -- When VE is active, send target to VE via queueLuaCommand instead of
-  -- hard-teleporting with setPositionRotation (which resets velocity).
+  -- When VE is active, updateRemote() already sends raw setTarget directly.
+  -- Only update tracking state here; skip the redundant queueLuaCommand to
+  -- avoid double-smoothing (GE interpolation + VE PD correction).
   if rv._hasVE and rv.gameVehicle then
-    local vx, vy, vz = 0, 0, 0
-    if vel then vx, vy, vz = vel[1] or 0, vel[2] or 0, vel[3] or 0 end
-    local ax, ay, az = 0, 0, 0
-    if rv._lastAngVel then ax, ay, az = rv._lastAngVel[1] or 0, rv._lastAngVel[2] or 0, rv._lastAngVel[3] or 0 end
-    pcall(function()
-      rv.gameVehicle:queueLuaCommand(string.format(
-        "if highbeam_highbeamPositionVE and highbeam_highbeamPositionVE.setTarget then highbeam_highbeamPositionVE.setTarget(%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f,%.4f,%.4f) end",
-        pos[1], pos[2], pos[3],
-        vx, vy, vz,
-        rot[1], rot[2], rot[3], rot[4],
-        ax, ay, az,
-        rv._lastTargetTime or 0
-      ))
-    end)
     rv._lastAppliedPos = { pos[1], pos[2], pos[3] }
     rv._lastAppliedRot = { rot[1], rot[2], rot[3], rot[4] }
     return
@@ -242,6 +229,11 @@ local function _queueRemoteVeBootstrap(rv, key)
       local _ready = (_controllerLoader and _hasVE and _hasPos and _hasVel and _hasInputs and _hasElectrics and _hasPowertrain and _hasDamage) and true or false
 
       if _ready then
+        -- Defensive: call init() explicitly in case controller system defers dispatch.
+        for _, entry in ipairs(_veModules) do
+          local _mod = rawget(_G, entry[2])
+          if _mod and _mod.init then pcall(_mod.init) end
+        end
         highbeam_highbeamVE.setActive(true, true)
         highbeam_highbeamPositionVE.setRemote(true)
         highbeam_highbeamInputsVE.setActive(true, true)
@@ -679,6 +671,17 @@ M.resetRemote = function(playerId, vehicleId, data)
     end)
     if not okPos then
       _bumpApplyStat("reset_error_pose")
+    end
+    -- Notify VE positionVE so it targets the reset pose instead of snapping back.
+    if rv._hasVE and rv.gameVehicle then
+      pcall(function()
+        rv.gameVehicle:queueLuaCommand(string.format(
+          "if highbeam_highbeamPositionVE and highbeam_highbeamPositionVE.setTarget then highbeam_highbeamPositionVE.setTarget(%.4f,%.4f,%.4f,0,0,0,%.6f,%.6f,%.6f,%.6f,0,0,0,%.4f) end",
+          cfg.pos[1], cfg.pos[2], cfg.pos[3],
+          cfg.rot[1], cfg.rot[2], cfg.rot[3], cfg.rot[4],
+          os.clock()
+        ))
+      end)
     end
   else
     _bumpApplyStat("reset_no_pose")
