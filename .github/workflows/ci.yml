@@ -18,8 +18,15 @@ jobs:
   build:
     name: Build (${{ matrix.os }})
     if: |
-      !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'release/')) &&
-      !(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(release):'))
+      !(github.event_name == 'pull_request' && (
+        startsWith(github.head_ref, 'release/') ||
+        startsWith(github.head_ref, 'chore/')
+      )) &&
+      !(github.event_name == 'push' && (
+        startsWith(github.event.head_commit.message, 'chore(release):') ||
+        contains(github.event.head_commit.message, 'chore/dev-') ||
+        contains(github.event.head_commit.message, 'chore(release)')
+      ))
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
