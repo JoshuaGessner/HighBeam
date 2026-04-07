@@ -203,9 +203,7 @@ local function _queueRemoteVeBootstrap(rv, key)
     vehObj:queueLuaCommand([[
       local _missing = {}
 
-      -- Ensure VE modules are registered as controllers so onPhysicsStep fires.
-      -- Auto-loaded globals from lua/vehicle/extensions/ may not receive physics
-      -- callbacks unless explicitly loaded as controllers.
+      -- Ensure VE modules are loaded from lua/vehicle/extensions/highbeam.
       local _veModules = {
         {"highbeam/highbeamVE", "highbeam_highbeamVE"},
         {"highbeam/highbeamPositionVE", "highbeam_highbeamPositionVE"},
@@ -215,9 +213,9 @@ local function _queueRemoteVeBootstrap(rv, key)
         {"highbeam/highbeamPowertrainVE", "highbeam_highbeamPowertrainVE"},
         {"highbeam/highbeamDamageVE", "highbeam_highbeamDamageVE"},
       }
-      if controller and controller.loadControllerExternal then
+      if extensions and extensions.load then
         for _, entry in ipairs(_veModules) do
-          pcall(controller.loadControllerExternal, entry[1], entry[2])
+          pcall(extensions.load, entry[1])
         end
       end
 

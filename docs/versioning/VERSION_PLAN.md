@@ -1,8 +1,8 @@
 # HighBeam Version Plan
 
-> **Last updated:** 2026-04-05
+> **Last updated:** 2026-04-06
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.2-dev.15 (protocol v2)
+> **Current version:** v0.8.2-dev.22 (protocol v2)
 > **Status:** v0.8.1 released | v0.8.2 in development
 
 ---
@@ -1203,6 +1203,48 @@ Ideas for future development (not committed):
 
 ## Recent Release Notes
 
+### v0.8.2-dev.22 - 2026-04-06 (draft)
+- **Vehicle sync overhaul:** replaced remote motion handling with VE-first positioning, velocity correction, collision-aware thresholds, and quaternion-based rotation error correction for stable multiplayer driving behavior.
+- **Damage sync hardening:** added reset hash clearing, node-position damage replication, and deformation polling improvements to better preserve visible remote damage state.
+- **Protocol/path cleanup:** removed redundant encode-time quaternion normalization and retained decode-time normalization only.
+- **Documentation sweep:** removed legacy third-party mod naming from markdown documentation and standardized wording around HighBeam-native architecture.
+- **Payload refreshed:** rebuilt launcher-bundled `highbeam.zip` with the latest client sync updates.
+
+### v0.8.2-dev.21 - 2026-04-05 (draft)
+- **VE runtime fix:** register all HighBeam VE modules as vehicle controllers during remote bootstrap to ensure `onPhysicsStep` callbacks execute reliably.
+- **VE readiness hardening:** added VE probe retries for remote vehicles so transient vlua initialization races no longer leave vehicles stuck in GE fallback forever.
+- **Remote control continuity:** fixed remote input routing so steering/throttle/brake/gear/handbrake updates continue applying when VE motion is active.
+- **Force path recovery:** added zero-node connectivity self-heal in VE velocity module to recover when early init runs before the physics mesh is ready.
+- **Payload refresh:** rebuilt launcher bundled HighBeam payload zip with the latest client VE/GE fixes.
+
+### v0.8.2-dev.20 - 2026-04-05 (draft)
+- **Release refresh after cleanup:** canceled stale `v0.8.2-dev.19` release build that was missing latest `main` commit(s), then cut a fresh dev release from cleaned `main`.
+- **Branch hygiene:** removed merged `fix/udp-sync-watchdog` branch locally and on origin.
+- **Release integrity:** dev release now includes sync-fix merge plus lockfile/version alignment commits on `main`.
+
+### v0.8.2-dev.19 - 2026-04-05 (draft)
+- **Movement desync hardening:** added sender-side forced keyframe and motion watchdog fallbacks so local vehicle UDP updates cannot remain suppressed for long unchanged windows.
+- **Local mapping self-heal:** added periodic active-player vehicle reconciliation to recover from stale local game-vehicle mappings and re-request authoritative spawn mapping when needed.
+- **Outside-force robustness:** added remote reset burst stabilization mode to reduce repeated hard snaps/teleports after clustered reset events and favor temporary smooth correction.
+- **Sync tuning expansion:** added new config keys with bounds validation for keyframe/watchdog/reconciliation/reset-stabilization behavior.
+
+### v0.8.2-dev.18 - 2026-04-05 (draft)
+- **VE sync architecture rollout:** merged per-vehicle VE modules for motion, inputs, electrics, powertrain, and damage sync (`highbeamVE`, `highbeamPositionVE`, `highbeamVelocityVE`, `highbeamInputsVE`, `highbeamElectricsVE`, `highbeamPowertrainVE`, `highbeamDamageVE`).
+- **Remote motion pipeline upgrade:** remote snapshots are now forwarded to VE PD target handlers with VE-first execution and GE interpolation fallback retained for compatibility.
+- **New component transport channels:** added `vehicle_inputs` and `vehicle_powertrain` TCP packet relays (client dispatch + server validation/ownership gate + remote apply path).
+- **Damage optimization follow-up:** added break-group aware damage replication payloads with receiver-side group expansion fallback to beam-level breaking.
+- **Payload refreshed:** launcher-bundled `highbeam.zip` now includes the VE extension tree under `lua/vehicle/extensions/highbeam/`.
+
+### v0.8.2-dev.17 - 2026-04-05 (draft)
+- **Fix join-time disconnect regression (critical):** restored `_syncVerboseLoggingEnabled` to file scope in `highbeam/connection.lua` after it was accidentally nested inside `_formatCounterMap`.
+- **Packet handling stability restored:** incoming `PingPong` and component packets no longer trigger `attempt to call global '_syncVerboseLoggingEnabled' (a nil value)` disconnects.
+- **Payload refreshed:** rebuilt launcher-bundled `highbeam.zip` with the connection handler scope fix.
+
+### v0.8.2-dev.16 - 2026-04-05 (draft)
+- **Fix fatal GE callback spam (critical):** added missing `onInputsAndRotationReport` forwarder in `highbeam.lua` so vlua input+rotation polling callbacks resolve on the loaded extension table.
+- **Input/rotation polling restored:** combined steering/throttle/brake/gear/handbrake + physics rotation reports now flow into state cache without repeated `attempt to call field 'onInputsAndRotationReport'` errors.
+- **Payload refreshed:** rebuilt launcher-bundled `highbeam.zip` with the callback wiring fix.
+
 ### v0.8.2-dev.15 - 2026-04-05 (draft)
 - **Client load fix (critical):** corrected a Lua syntax error in sync diagnostics logging that aborted HighBeam startup while loading `highbeam/connection`.
 - **Connection diagnostics restored:** periodic sync diagnostic logging now runs normally again, including per-component RX counters and reconnect metadata.
@@ -1235,8 +1277,8 @@ Ideas for future development (not committed):
 - **Updated SYNC_FIX_PLAN.md:** revised RC3 analysis (vlua velocity methods never worked), added RC4 (stale `getRotation()` source) and RC5 (non-existent vlua API table), marked F4 as revised with full dev.6→dev.9 history, updated implementation order table with completion status for all fixes.
 
 ### v0.8.2-dev.9 — 2026-04-05 (draft)
-- **Fix FATAL vlua errors on every position update (critical):** removed `obj:setVelocity()` and `obj:setAngularVelocity()` calls from `_applyPosRot` — these methods do not exist in BeamNG's vehicle Lua (vlua) context. Every remote vehicle position update was throwing FATAL LUA ERROR, preventing velocity/angular velocity injection entirely. BeamMP solves this with per-node `obj:applyForceVector()` in a dedicated velocityVE extension; HighBeam now relies on GE-side `setPositionRotation()` interpolation until a force-based system is added.
-- **Fix stale rotation data (critical):** `veh:getRotation()` in the GE context returns the SceneObject transform rotation, which does NOT track physics orientation for soft-body vehicles — quaternion values were constant across all diagnostic windows (`avgRot=0.00000`). Replaced with vlua-sourced rotation using `quatFromDir(-obj:getDirectionVector(), obj:getDirectionVectorUp())` polled via `queueLuaCommand` → `queueGameEngineLua` callback (same approach as BeamMP's positionVE.lua).
+- **Fix FATAL vlua errors on every position update (critical):** removed `obj:setVelocity()` and `obj:setAngularVelocity()` calls from `_applyPosRot` — these methods do not exist in BeamNG's vehicle Lua (vlua) context. Every remote vehicle position update was throwing FATAL LUA ERROR, preventing velocity/angular velocity injection entirely. HighBeam now relies on GE-side `setPositionRotation()` interpolation until a force-based system is added.
+- **Fix stale rotation data (critical):** `veh:getRotation()` in the GE context returns the SceneObject transform rotation, which does NOT track physics orientation for soft-body vehicles — quaternion values were constant across all diagnostic windows (`avgRot=0.00000`). Replaced with vlua-sourced rotation using `quatFromDir(-obj:getDirectionVector(), obj:getDirectionVectorUp())` polled via `queueLuaCommand` → `queueGameEngineLua` callback.
 - **Fix beamDeformed vlua error (moderate):** removed calls to `beamstate.beamDeformed()` which does not exist in BeamNG's vlua. Beam deformation sync now uses `obj:setBeamLength()` only, which handles both the physical and visual deformation.
 
 ### v0.8.2-dev.8 — 2026-04-05 (draft)

@@ -110,7 +110,7 @@ When a player has multiple vehicles, all share one relay budget, causing dropped
 
 ---
 
-## BeamNG/BeamMP Lifecycle Expectations (Why This Matters)
+## BeamNG Lifecycle Expectations (Why This Matters)
 
 1. BeamNG can trigger vehicle spawn lifecycle hooks in cases beyond "new user intentionally spawned a new car" (loading, reconnect flow, internal recreate/reset patterns).
 2. A multiplayer mod should treat local vehicle registration as idempotent per game vehicle ID.
