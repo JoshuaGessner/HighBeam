@@ -2,6 +2,7 @@ local M = {}
 M.name = "highbeam_highbeamPositionVE"
 
 local velocityVE
+local inputsVE
 
 local targetPos = { 0, 0, 0 }
 local targetVel = { 0, 0, 0 }
@@ -46,11 +47,23 @@ local function _getVelocityModule()
   return nil
 end
 
-local function _now()
-  if obj and obj.getSimTime then
-    local ok, t = pcall(obj.getSimTime, obj)
-    if ok and type(t) == "number" then return t end
+local function _getInputsModule()
+  if inputsVE then return inputsVE end
+  if controller and controller.getController then
+    local ok, mod = pcall(controller.getController, "highbeam_highbeamInputsVE")
+    if ok and mod then
+      inputsVE = mod
+      return inputsVE
+    end
   end
+  if rawget(_G, "highbeam_highbeamInputsVE") then
+    inputsVE = rawget(_G, "highbeam_highbeamInputsVE")
+    return inputsVE
+  end
+  return nil
+end
+
+local function _now()
   return os.clock()
 end
 
@@ -130,6 +143,7 @@ end
 
 function M.onInit()
   _getVelocityModule()
+  _getInputsModule()
   refNodeId = 0
 end
 
@@ -246,12 +260,19 @@ function M.onPhysicsStep(dtSim)
   local velErrY = targetVel[2] - (curVel.y or 0)
   local velErrZ = targetVel[3] - (curVel.z or 0)
 
-  local accX = errX * POS_CORRECT_GAIN + velErrX * VEL_CORRECT_GAIN
-  local accY = errY * POS_CORRECT_GAIN + velErrY * VEL_CORRECT_GAIN
-  local accZ = errZ * POS_CORRECT_GAIN + velErrZ * VEL_CORRECT_GAIN
+  -- Scale down PD correction when vehicle is under driver input to avoid
+  -- body forces fighting engine/tire physics.
+  local inMod = _getInputsModule()
+  local inputActivity = (inMod and inMod.getInputActivity) and inMod.getInputActivity() or 0
+  local posGainScale = 1.0 - 0.5 * inputActivity   -- 100% at rest, 50% at full input
+  local velGainScale = 1.0 - 0.7 * inputActivity   -- 100% at rest, 30% at full input
+
+  local accX = errX * POS_CORRECT_GAIN * posGainScale + velErrX * VEL_CORRECT_GAIN * velGainScale
+  local accY = errY * POS_CORRECT_GAIN * posGainScale + velErrY * VEL_CORRECT_GAIN * velGainScale
+  local accZ = errZ * POS_CORRECT_GAIN * posGainScale + velErrZ * VEL_CORRECT_GAIN * velGainScale
 
   local accMag = math.sqrt(accX * accX + accY * accY + accZ * accZ)
-  local clamp = CORRECTION_ACCEL_CLAMP
+  local clamp = CORRECTION_ACCEL_CLAMP * (1.0 - 0.5 * inputActivity)
   if errDist < SMALL_ERROR_THRESHOLD then
     clamp = clamp * 0.5
   end
