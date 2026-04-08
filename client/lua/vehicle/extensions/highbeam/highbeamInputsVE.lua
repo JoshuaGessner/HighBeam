@@ -135,12 +135,19 @@ function M.applyInputs(data)
       end
 
       if input and input.event then
-        pcall(input.event, inputName, smoothing[key], FILTER_DIRECT, nil, nil, nil, "HighBeam")
+        pcall(input.event, inputName, smoothing[key], 1, nil, nil, nil, "HighBeam")
       end
     elseif key == "g" then
       M._applyGear(tonumber(target) or 0)
     end
   end
+end
+
+function M.getInputActivity()
+  if not isRemote then return 0 end
+  local t = math.abs(smoothing.t or 0)
+  local b = math.abs(smoothing.b or 0)
+  return math.max(t, b)
 end
 
 -- Controller system dispatches init(), not onInit().

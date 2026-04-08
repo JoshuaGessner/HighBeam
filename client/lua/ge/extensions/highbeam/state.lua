@@ -322,7 +322,7 @@ M.tick = function(dt)
     end
     local maxSpeed = math.sqrt(maxSpeedSq)
     if maxSpeed < 1.0 then
-      updateRate = 12
+      updateRate = 20
     elseif maxSpeed < 20.0 then
       updateRate = 24
     else

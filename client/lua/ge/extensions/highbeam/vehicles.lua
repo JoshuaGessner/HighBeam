@@ -240,6 +240,14 @@ local function _queueRemoteVeBootstrap(rv, key)
         highbeam_highbeamElectricsVE.setActive(true, true)
         highbeam_highbeamPowertrainVE.setActive(true, true)
         highbeam_highbeamDamageVE.setActive(true, true)
+
+        -- Force engine on immediately so inputs produce force from the start
+        if electrics and electrics.values then
+          electrics.values.ignitionLevel = 2
+        end
+        if electrics and electrics.setIgnitionLevel then
+          pcall(electrics.setIgnitionLevel, 2)
+        end
       end
 
       local _missingCsv = table.concat(_missing, ",")
@@ -1163,7 +1171,8 @@ M.tick = function(dt)
     -- Skip LOD throttling when VE is active since VE handles its own rate.
 
     -- P3.4: LOD skip — for very distant vehicles, reduce update frequency
-    if rv.gameVehicle and camX and rv._lastAppliedPos then
+    -- Skip LOD throttling when VE is active; VE handles physics-rate positioning.
+    if not rv._hasVE and rv.gameVehicle and camX and rv._lastAppliedPos then
       local dx = rv._lastAppliedPos[1] - camX
       local dy = rv._lastAppliedPos[2] - camY
       local dz = rv._lastAppliedPos[3] - camZ
@@ -1185,7 +1194,7 @@ M.tick = function(dt)
       end
     end
 
-    if rv.gameVehicle and #rv.snapshots >= 2 and interpolationEnabled then
+    if rv.gameVehicle and #rv.snapshots >= 2 and interpolationEnabled and not rv._hasVE then
       local s1 = nil
       local s2 = nil
 
@@ -1291,7 +1300,7 @@ M.tick = function(dt)
       if _shouldApplyPosRot(rv, finalPos, finalRot) then
         _applyPosRot(rv, finalPos, finalRot, interpVel)
       end
-    elseif rv.gameVehicle and #rv.snapshots >= 1 then
+    elseif rv.gameVehicle and #rv.snapshots >= 1 and not rv._hasVE then
       local latest = rv.snapshots[#rv.snapshots]
       local latestPos = latest.pos
       local latestRot = latest.rot
