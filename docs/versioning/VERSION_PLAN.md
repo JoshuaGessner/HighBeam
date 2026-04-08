@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-04-07
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.2-dev.28 (protocol v2)
+> **Current version:** v0.8.2-dev.29 (protocol v2)
 > **Status:** v0.8.1 released | v0.8.2 in development
 
 ---
@@ -1202,6 +1202,12 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.2-dev.29 - 2026-04-07 (draft)
+- **VE module path fix (critical):** moved all 7 VE modules from `lua/vehicle/extensions/highbeam/` to `lua/vehicle/controller/highbeam/` — `controller.loadControllerExternal` was searching `controller/` prefixed paths, causing ALL VE modules to fail loading on every vehicle. The entire VE runtime (PD correction, physics-rate inputs, velocity forces, damage sync) was non-functional since introduction.
+- **GE input guard when VE active:** GE-level input application (steering/throttle/brake from UDP snapshots) now skips when VE is active, preventing competing writes between GE and VE input paths.
+- **CI path update:** release workflow payload validation updated to match new `controller/` file locations.
+- **Payload rebuilt:** launcher-bundled `highbeam.zip` now contains VE modules at the correct controller path.
 
 ### v0.8.2-dev.28 - 2026-04-07 (draft)
 - **Input injection fix (critical):** replaced undefined `FILTER_DIRECT` global with literal `1` in VE input injection — remote vehicle throttle/brake/steering were silently failing, causing the "sliding vehicle" symptom.

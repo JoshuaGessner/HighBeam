@@ -1310,7 +1310,10 @@ M.tick = function(dt)
     end
 
     -- Apply steering/throttle/brake inputs to remote vehicle
-    if rv.gameVehicle and rv.snapshots and #rv.snapshots >= 1 then
+    -- Skip GE-level input application when VE is active — VE handles inputs
+    -- at physics rate via highbeamInputsVE.applyInputs(), so GE-level writes
+    -- would compete and cause jitter.
+    if rv.gameVehicle and not rv._hasVE and rv.snapshots and #rv.snapshots >= 1 then
       local latestSnap = rv.snapshots[#rv.snapshots]
       if latestSnap.inputs then
         local inp = latestSnap.inputs
