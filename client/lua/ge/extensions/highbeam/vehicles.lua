@@ -190,6 +190,17 @@ local function _queueRemoteVeBootstrap(rv, key)
     vehObj:queueLuaCommand([[
       local _missing = {}
 
+      -- Helper: retrieve a controller module by name.
+      -- controller.loadControllerExternal does NOT create globals;
+      -- the only reliable accessor is controller.getController().
+      local function _gc(name)
+        if controller and controller.getController then
+          local ok, mod = pcall(controller.getController, name)
+          if ok and mod then return mod end
+        end
+        return nil
+      end
+
       -- Register VE modules as controllers so physics callbacks (onPhysicsStep)
       -- are guaranteed to execute for remote simulation.
       local _veModules = {
@@ -204,19 +215,31 @@ local function _queueRemoteVeBootstrap(rv, key)
       local _controllerLoader = controller and controller.loadControllerExternal
       if _controllerLoader then
         for _, entry in ipairs(_veModules) do
-          pcall(_controllerLoader, entry[1], entry[2])
+          -- Skip if already registered (avoids "duplicate controller" error on retry)
+          if not _gc(entry[2]) then
+            pcall(_controllerLoader, entry[1], entry[2])
+          end
         end
       else
         table.insert(_missing, "controller.loadControllerExternal")
       end
 
-      local _hasVE = highbeam_highbeamVE and highbeam_highbeamVE.setActive
-      local _hasPos = highbeam_highbeamPositionVE and highbeam_highbeamPositionVE.setRemote and highbeam_highbeamPositionVE.setTarget
-      local _hasVel = highbeam_highbeamVelocityVE and highbeam_highbeamVelocityVE.addVelocity
-      local _hasInputs = highbeam_highbeamInputsVE and highbeam_highbeamInputsVE.setActive
-      local _hasElectrics = highbeam_highbeamElectricsVE and highbeam_highbeamElectricsVE.setActive
-      local _hasPowertrain = highbeam_highbeamPowertrainVE and highbeam_highbeamPowertrainVE.setActive
-      local _hasDamage = highbeam_highbeamDamageVE and highbeam_highbeamDamageVE.setActive
+      -- Probe via controller.getController — NOT globals
+      local _mVE         = _gc("highbeam_highbeamVE")
+      local _mPos        = _gc("highbeam_highbeamPositionVE")
+      local _mVel        = _gc("highbeam_highbeamVelocityVE")
+      local _mInputs     = _gc("highbeam_highbeamInputsVE")
+      local _mElectrics  = _gc("highbeam_highbeamElectricsVE")
+      local _mPowertrain = _gc("highbeam_highbeamPowertrainVE")
+      local _mDamage     = _gc("highbeam_highbeamDamageVE")
+
+      local _hasVE         = _mVE and _mVE.setActive
+      local _hasPos        = _mPos and _mPos.setRemote and _mPos.setTarget
+      local _hasVel        = _mVel and _mVel.addVelocity
+      local _hasInputs     = _mInputs and _mInputs.setActive
+      local _hasElectrics  = _mElectrics and _mElectrics.setActive
+      local _hasPowertrain = _mPowertrain and _mPowertrain.setActive
+      local _hasDamage     = _mDamage and _mDamage.setActive
 
       if not _hasVE then table.insert(_missing, "highbeam_highbeamVE") end
       if not _hasPos then table.insert(_missing, "highbeam_highbeamPositionVE") end
@@ -231,15 +254,15 @@ local function _queueRemoteVeBootstrap(rv, key)
       if _ready then
         -- Defensive: call init() explicitly in case controller system defers dispatch.
         for _, entry in ipairs(_veModules) do
-          local _mod = rawget(_G, entry[2])
+          local _mod = _gc(entry[2])
           if _mod and _mod.init then pcall(_mod.init) end
         end
-        highbeam_highbeamVE.setActive(true, true)
-        highbeam_highbeamPositionVE.setRemote(true)
-        highbeam_highbeamInputsVE.setActive(true, true)
-        highbeam_highbeamElectricsVE.setActive(true, true)
-        highbeam_highbeamPowertrainVE.setActive(true, true)
-        highbeam_highbeamDamageVE.setActive(true, true)
+        _mVE.setActive(true, true)
+        _mPos.setRemote(true)
+        _mInputs.setActive(true, true)
+        _mElectrics.setActive(true, true)
+        _mPowertrain.setActive(true, true)
+        _mDamage.setActive(true, true)
 
         -- Force engine on immediately so inputs produce force from the start
         if electrics and electrics.values then
@@ -550,7 +573,7 @@ M.updateRemote = function(decoded)
     local az = decoded.angVel and decoded.angVel[3] or 0
     pcall(function()
       rv.gameVehicle:queueLuaCommand(string.format(
-        "if highbeam_highbeamPositionVE and highbeam_highbeamPositionVE.setTarget then highbeam_highbeamPositionVE.setTarget(%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f,%.4f,%.4f) end",
+        "local _p = controller and controller.getController and controller.getController('highbeam_highbeamPositionVE'); if _p and _p.setTarget then _p.setTarget(%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f,%.4f,%.4f) end",
         decoded.pos[1], decoded.pos[2], decoded.pos[3],
         decoded.vel[1], decoded.vel[2], decoded.vel[3],
         decoded.rot[1], decoded.rot[2], decoded.rot[3], decoded.rot[4],
@@ -684,7 +707,7 @@ M.resetRemote = function(playerId, vehicleId, data)
     if rv._hasVE and rv.gameVehicle then
       pcall(function()
         rv.gameVehicle:queueLuaCommand(string.format(
-          "if highbeam_highbeamPositionVE and highbeam_highbeamPositionVE.setTarget then highbeam_highbeamPositionVE.setTarget(%.4f,%.4f,%.4f,0,0,0,%.6f,%.6f,%.6f,%.6f,0,0,0,%.4f) end",
+          "local _p = controller and controller.getController and controller.getController('highbeam_highbeamPositionVE'); if _p and _p.setTarget then _p.setTarget(%.4f,%.4f,%.4f,0,0,0,%.6f,%.6f,%.6f,%.6f,0,0,0,%.4f) end",
           cfg.pos[1], cfg.pos[2], cfg.pos[3],
           cfg.rot[1], cfg.rot[2], cfg.rot[3], cfg.rot[4],
           os.clock()
@@ -828,7 +851,7 @@ M.applyElectrics = function(playerId, vehicleId, electricsData)
   if M.remoteVehicles[key] and M.remoteVehicles[key]._hasVE then
     local jsonPayload = string.format("%q", tostring(electricsData or "{}"))
     local okForward = pcall(function()
-      veh:queueLuaCommand("if highbeam_highbeamElectricsVE and highbeam_highbeamElectricsVE.applyElectrics then local _hbj=" .. jsonPayload .. "; local _hbt=(jsonDecode and jsonDecode(_hbj)) or {}; highbeam_highbeamElectricsVE.applyElectrics(_hbt) end")
+      veh:queueLuaCommand("local _m = controller and controller.getController and controller.getController('highbeam_highbeamElectricsVE'); if _m and _m.applyElectrics then local _hbj=" .. jsonPayload .. "; local _hbt=(jsonDecode and jsonDecode(_hbj)) or {}; _m.applyElectrics(_hbt) end")
     end)
     if okForward then
       _bumpApplyStat("electrics_applied")
@@ -923,7 +946,7 @@ M.applyInputs = function(playerId, vehicleId, deltaStr)
   end
 
   local ok = pcall(function()
-    veh:queueLuaCommand("if highbeam_highbeamInputsVE and highbeam_highbeamInputsVE.applyInputs then local d={} for part in string.gmatch(" .. escapeLuaString(deltaStr) .. ",'[^,]+') do local k,v=string.match(part,'^([%a]+)=([^,]+)$'); if k then d[k]=tonumber(v) or 0 end end highbeam_highbeamInputsVE.applyInputs(d) end")
+    veh:queueLuaCommand("local _m = controller and controller.getController and controller.getController('highbeam_highbeamInputsVE'); if _m and _m.applyInputs then local d={} for part in string.gmatch(" .. escapeLuaString(deltaStr) .. ",'[^,]+') do local k,v=string.match(part,'^([%a]+)=([^,]+)$'); if k then d[k]=tonumber(v) or 0 end end _m.applyInputs(d) end")
   end)
   if ok then
     _bumpApplyStat("inputs_applied")
@@ -942,7 +965,7 @@ M.applyPowertrain = function(playerId, vehicleId, powertrainData)
 
   local jsonPayload = string.format("%q", tostring(powertrainData or "{}"))
   local ok = pcall(function()
-    veh:queueLuaCommand("if highbeam_highbeamPowertrainVE and highbeam_highbeamPowertrainVE.applyPowertrain then local _hbj=" .. jsonPayload .. "; local _hbt=(jsonDecode and jsonDecode(_hbj)) or {}; highbeam_highbeamPowertrainVE.applyPowertrain(_hbt) end")
+    veh:queueLuaCommand("local _m = controller and controller.getController and controller.getController('highbeam_highbeamPowertrainVE'); if _m and _m.applyPowertrain then local _hbj=" .. jsonPayload .. "; local _hbt=(jsonDecode and jsonDecode(_hbj)) or {}; _m.applyPowertrain(_hbt) end")
   end)
   if ok then
     _bumpApplyStat("powertrain_applied")
