@@ -1,6 +1,6 @@
 # HighBeam Version Plan
 
-> **Last updated:** 2026-04-06
+> **Last updated:** 2026-04-07
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
 > **Current version:** v0.8.2-dev.28 (protocol v2)
 > **Status:** v0.8.1 released | v0.8.2 in development
@@ -1203,11 +1203,19 @@ Ideas for future development (not committed):
 
 ## Recent Release Notes
 
-### v0.8.2-dev.24 - 2026-04-06 (draft)
-- **Controller-only VE registration:** enforced `controller.loadControllerExternal` for HighBeam VE module registration across local spawn, remote bootstrap, and reconnect flows.
-- **Primary path integrity:** removed VE runtime fallback loading from registration paths so physics callback execution relies on the single controller-registration mechanism.
-- **Remote readiness hardening:** updated remote VE readiness to require controller loader availability before enabling VE-active remote simulation.
-- **Payload refresh:** rebuilt launcher-bundled `highbeam.zip` from `client/` and verified packaged sync files match source content.
+### v0.8.2-dev.28 - 2026-04-07 (draft)
+- **Input injection fix (critical):** replaced undefined `FILTER_DIRECT` global with literal `1` in VE input injection — remote vehicle throttle/brake/steering were silently failing, causing the "sliding vehicle" symptom.
+- **Engine ignition on spawn:** force `ignitionLevel = 2` during remote VE bootstrap so engine produces force from the first frame.
+- **PD gain scaling under input:** PD correction gains now scale down proportionally when throttle/brake are active, preventing body forces from fighting engine/tire physics.
+- **Clock consistency:** VE `_now()` now uses `os.clock()` exclusively, matching the sender timebase (previously preferred `obj:getSimTime()` which has a different origin).
+- **Minimum send rate raised:** adaptive send floor increased from 12 Hz to 20 Hz for better prediction accuracy during low-speed driving.
+- **Skip GE interpolation for VE vehicles:** LOD throttling and Hermite/slerp interpolation no longer run for VE-active remote vehicles, avoiding wasted computation.
+- **Payload refreshed:** rebuilt launcher-bundled `highbeam.zip` with all sync fixes.
+
+### v0.8.2-dev.27 - 2026-04-06 (draft)
+- **Roll-up of dev.24 through dev.26 fixes:** merged controller-only VE registration, controller hook aliases, defensive VE init, reset VE notify, and double-smoothing removal into main.
+- **Fresh payload rebuild:** rebuilt launcher-bundled `highbeam.zip` from `client/` to incorporate all accumulated sync fixes.
+- **CI workflow optimization:** broadened CI skip filter to avoid redundant workflow runs on chore PR branches and merge commits.
 
 ### v0.8.2-dev.23 - 2026-04-06 (draft)
 - **Release integrity gate:** verified release source is `origin/main` with no unmerged feature-branch commits remaining outside `main`.

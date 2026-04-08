@@ -1,9 +1,9 @@
 # Sync Fix Plan - HighBeam
 
 > Created: 2025-07-18
-> Last updated: 2026-04-05
-> Current version under test: v0.8.2-dev.12
-> Status: Core fixes implemented in dev.11/dev.12; this document now tracks validation outcomes.
+> Last updated: 2026-04-07
+> Current version under test: v0.8.2-dev.28
+> Status: Input injection + PD correction fixes in dev.28; further validation pending.
 
 ---
 
