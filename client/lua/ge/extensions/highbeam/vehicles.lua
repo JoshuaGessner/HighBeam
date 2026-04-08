@@ -291,6 +291,7 @@ M.onRemoteVEReady = function(gameVehicleId, ready, missingCsv)
     if rv and rv.gameVehicleId == gameVehicleId then
       rv._hasVE = readyBool
       rv._veReadyAt = os.clock()
+      rv._veLastHeartbeat = os.clock()
       rv._veProbeMissing = missingCsv
       if readyBool then
         rv._veProbeRetries = VE_PROBE_MAX_RETRIES  -- stop retrying
@@ -311,6 +312,19 @@ M.onRemoteVEReady = function(gameVehicleId, ready, missingCsv)
             .. ' missing=' .. (missing ~= '' and missing or 'unknown'))
         end
       end
+      return
+    end
+  end
+end
+
+-- Receive heartbeat from remote vehicle's positionVE (sent every ~1s while vlua alive).
+-- Updates _veLastHeartbeat timestamp used by death detection in onUpdate.
+local VE_DEATH_TIMEOUT_SEC = 3.0
+M.onVEHeartbeat = function(gameVehicleId)
+  if not gameVehicleId then return end
+  for _, rv in pairs(M.remoteVehicles) do
+    if rv and rv.gameVehicleId == gameVehicleId and rv._hasVE then
+      rv._veLastHeartbeat = os.clock()
       return
     end
   end
@@ -906,9 +920,9 @@ M.applyElectrics = function(playerId, vehicleId, electricsData)
     if elec.clutch ~= nil then
       table.insert(cmds, 'electrics.values.clutch = ' .. tostring(elec.clutch))
     end
-    if elec.ignition ~= nil then
-      table.insert(cmds, 'electrics.values.ignitionLevel = ' .. tostring(elec.ignition))
-    end
+    -- ignitionLevel is intentionally omitted from this fallback path.
+    -- It is handled exclusively by powertrainVE's warmup-guarded logic
+    -- to prevent gearbox crashes (automaticGearbox.desiredGearRatio nil).
     if #cmds > 0 then
       commandCount = #cmds
       veh:queueLuaCommand(table.concat(cmds, ' '))
@@ -1181,6 +1195,29 @@ M.tick = function(dt)
           log('D', logTag, 'VE probe retry #' .. tostring(rv._veProbeRetries) .. ' key=' .. key)
         end
         _queueRemoteVeBootstrap(rv, key)
+      end
+    end
+
+    -- VE death detection: if heartbeat stops arriving for VE_DEATH_TIMEOUT_SEC,
+    -- the remote vlua has crashed. Reset _hasVE to re-enable GE fallback positioning.
+    if rv._hasVE and rv._veLastHeartbeat then
+      local hbAge = now - rv._veLastHeartbeat
+      if hbAge > VE_DEATH_TIMEOUT_SEC then
+        local key = tostring(rv.playerId) .. '_' .. tostring(rv.vehicleId)
+        log('W', logTag, 'VE death detected: heartbeat timeout key=' .. key
+          .. ' gameVid=' .. tostring(rv.gameVehicleId)
+          .. ' lastHB=' .. string.format('%.2f', rv._veLastHeartbeat)
+          .. ' age=' .. string.format('%.2f', hbAge) .. 's'
+          .. ' readyAt=' .. string.format('%.2f', rv._veReadyAt or 0))
+        rv._hasVE = false
+        rv._veDeathAt = now
+        rv._veDeathCount = (rv._veDeathCount or 0) + 1
+        -- Re-queue VE bootstrap to attempt recovery
+        rv._veProbeRetries = 0
+        rv._veProbeQueuedAt = nil
+        _queueRemoteVeBootstrap(rv, key)
+        log('I', logTag, 'VE recovery queued key=' .. key
+          .. ' deathCount=' .. tostring(rv._veDeathCount))
       end
     end
 
@@ -1472,6 +1509,30 @@ M.tick = function(dt)
     _correctionRotSum = 0
     _correctionCount = 0
     _teleportCount = 0
+
+    -- VE health dump: log per-vehicle VE state for diagnostics
+    for key, rv in pairs(M.remoteVehicles) do
+      if rv.gameVehicleId then
+        local veInfo = 'hasVE=' .. tostring(rv._hasVE)
+        if rv._veReadyAt then
+          veInfo = veInfo .. ' readyAge=' .. string.format('%.1f', now - rv._veReadyAt) .. 's'
+        end
+        if rv._veLastHeartbeat then
+          veInfo = veInfo .. ' hbAge=' .. string.format('%.1f', now - rv._veLastHeartbeat) .. 's'
+        else
+          veInfo = veInfo .. ' hbAge=never'
+        end
+        if rv._veDeathCount and rv._veDeathCount > 0 then
+          veInfo = veInfo .. ' deaths=' .. tostring(rv._veDeathCount)
+        end
+        if rv._veDeathAt then
+          veInfo = veInfo .. ' lastDeath=' .. string.format('%.1f', now - rv._veDeathAt) .. 's_ago'
+        end
+        log('I', logTag, 'VE diag key=' .. tostring(key)
+          .. ' gvid=' .. tostring(rv.gameVehicleId)
+          .. ' ' .. veInfo)
+      end
+    end
   end
 end
 

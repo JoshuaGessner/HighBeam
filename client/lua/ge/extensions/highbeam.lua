@@ -478,6 +478,13 @@ M.onRemoteVEReady = function(gameVid, ready, missingCsv)
   end
 end
 
+-- Called from remote vehicle-side positionVE heartbeat (every ~1s while vlua alive).
+M.onVEHeartbeat = function(gameVid)
+  if vehicles and vehicles.onVEHeartbeat then
+    vehicles.onVEHeartbeat(gameVid)
+  end
+end
+
 -- ─────────────── Coupling/trailer hooks ─────────────────────────────────────
 
 M.onCouplerAttached = function(objId1, objId2, nodeId, obj2nodeId)

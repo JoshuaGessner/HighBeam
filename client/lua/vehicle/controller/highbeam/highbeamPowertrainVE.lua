@@ -13,6 +13,27 @@ local lastIgnitionLevel = -1
 local resyncTimer = 0
 local RESYNC_INTERVAL = 10.0
 
+-- Warmup timers to prevent gearbox crash on remote vehicles.
+-- BeamNG's automaticGearbox needs time after spawn to compute desiredGearRatio;
+-- setting device modes or ignition before that causes FATAL LUA ERROR.
+local activationTime = 0           -- os.clock() when setActive(true, true) was called
+local WARMUP_FULL_SEC = 1.0        -- block ALL powertrain writes for this long
+local WARMUP_GEARBOX_SEC = 3.0     -- block gearbox setMode for this long
+local WARMUP_IGNITION_PHASE1_SEC = 2.0  -- allow ignLevel<=1 after FULL; ignLevel 2 after this
+
+local GEARBOX_TYPES = {
+  automaticGearbox = true,
+  manualGearbox = true,
+  dctGearbox = true,
+  cvtGearbox = true,
+}
+
+local _applyBlockedCount = 0
+local _applyGearboxBlockedCount = 0
+local _applyIgnitionClampedCount = 0
+local _applySuccessCount = 0
+local _warmupPhaseLogged = 0  -- tracks which phase transitions have been logged
+
 local function _jsonEncode(v)
   if jsonEncode then
     local ok, out = pcall(jsonEncode, v)
@@ -51,6 +72,14 @@ end
 function M.setActive(active, remote)
   isActive = active and true or false
   isRemote = remote and true or false
+  if isActive and isRemote then
+    activationTime = os.clock()
+    _applyBlockedCount = 0
+    _applyGearboxBlockedCount = 0
+    _applyIgnitionClampedCount = 0
+    _applySuccessCount = 0
+    _warmupPhaseLogged = 0
+  end
 end
 
 function M.updateGFX(dt)
@@ -114,20 +143,74 @@ end
 function M.applyPowertrain(data)
   if not isRemote or type(data) ~= "table" then return end
 
+  local now = os.clock()
+  local elapsed = now - activationTime
+
+  -- Phase 1: Block ALL writes for WARMUP_FULL_SEC after activation.
+  -- This gives BeamNG's stock powertrain time to fully initialize.
+  if elapsed < WARMUP_FULL_SEC then
+    _applyBlockedCount = _applyBlockedCount + 1
+    return
+  end
+
+  -- Log phase transitions (once each)
+  if _warmupPhaseLogged < 1 and elapsed >= WARMUP_FULL_SEC then
+    _warmupPhaseLogged = 1
+    if obj and obj.queueGameEngineLua then
+      obj:queueGameEngineLua(string.format(
+        "log('I','highbeamPowertrainVE','warmup phase 1 complete (%.2fs) vid=%d blocked=%d')",
+        elapsed, gameVehicleId, _applyBlockedCount
+      ))
+    end
+  end
+
   for key, val in pairs(data) do
     if key:sub(1, 4) == "dev_" then
       local devName = key:sub(5)
       if powertrain and powertrain.getDevice then
         local ok, dev = pcall(powertrain.getDevice, devName)
         if ok and dev and dev.setMode then
-          pcall(dev.setMode, dev, val)
+          -- Phase 2: Block gearbox mode changes until WARMUP_GEARBOX_SEC.
+          -- automaticGearbox.desiredGearRatio is nil until the gearbox runs
+          -- its own updateGFX cycle several times after ignition.
+          if dev.type and GEARBOX_TYPES[dev.type] and elapsed < WARMUP_GEARBOX_SEC then
+            _applyGearboxBlockedCount = _applyGearboxBlockedCount + 1
+          else
+            if _warmupPhaseLogged < 3 and dev.type and GEARBOX_TYPES[dev.type] and elapsed >= WARMUP_GEARBOX_SEC then
+              _warmupPhaseLogged = 3
+              if obj and obj.queueGameEngineLua then
+                obj:queueGameEngineLua(string.format(
+                  "log('I','highbeamPowertrainVE','gearbox warmup complete (%.2fs) vid=%d gearboxBlocked=%d')",
+                  elapsed, gameVehicleId, _applyGearboxBlockedCount
+                ))
+              end
+            end
+            pcall(dev.setMode, dev, val)
+            _applySuccessCount = _applySuccessCount + 1
+          end
         end
       end
     elseif key == "ignLevel" then
+      -- Phase 3: Clamp ignition level during warmup.
+      -- Allow ignLevel 0-1 after WARMUP_FULL_SEC (accessories on).
+      -- Allow ignLevel 2 (crank/run) only after WARMUP_IGNITION_PHASE1_SEC.
+      local level = tonumber(val) or 0
+      if level >= 2 and elapsed < WARMUP_IGNITION_PHASE1_SEC then
+        level = 1
+        _applyIgnitionClampedCount = _applyIgnitionClampedCount + 1
+      elseif _warmupPhaseLogged < 2 and level >= 2 and elapsed >= WARMUP_IGNITION_PHASE1_SEC then
+        _warmupPhaseLogged = math.max(_warmupPhaseLogged, 2)
+        if obj and obj.queueGameEngineLua then
+          obj:queueGameEngineLua(string.format(
+            "log('I','highbeamPowertrainVE','ignition phase complete (%.2fs) vid=%d clamped=%d')",
+            elapsed, gameVehicleId, _applyIgnitionClampedCount
+          ))
+        end
+      end
       if electrics and electrics.setIgnitionLevel then
-        pcall(electrics.setIgnitionLevel, val)
+        pcall(electrics.setIgnitionLevel, level)
       elseif electrics and electrics.values then
-        electrics.values.ignitionLevel = val
+        electrics.values.ignitionLevel = level
       end
     elseif key == "ignCoef" then
       local eng = _findEngine()
@@ -145,6 +228,19 @@ function M.applyPowertrain(data)
       end
     end
   end
+end
+
+function M.getWarmupDiag()
+  local now = os.clock()
+  local elapsed = now - activationTime
+  return {
+    elapsed = elapsed,
+    fullBlocked = _applyBlockedCount,
+    gearboxBlocked = _applyGearboxBlockedCount,
+    ignitionClamped = _applyIgnitionClampedCount,
+    applied = _applySuccessCount,
+    warmupDone = elapsed >= WARMUP_GEARBOX_SEC,
+  }
 end
 
 -- Controller system dispatches init(), not onInit().

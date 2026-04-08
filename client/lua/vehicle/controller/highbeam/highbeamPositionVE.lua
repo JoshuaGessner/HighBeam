@@ -24,6 +24,9 @@ local VEL_CORRECT_GAIN = 4.0
 
 local teleportTimer = 0
 
+local heartbeatTimer = 0
+local HEARTBEAT_INTERVAL = 1.0
+
 local timeOffset = 0
 local offsetSamples = {}
 local offsetSampleIdx = 1
@@ -188,6 +191,19 @@ function M.onPhysicsStep(dtSim)
   local velMod = _getVelocityModule()
   if not isRemote or not hasTarget then return end
   if not obj then return end
+
+  -- VE heartbeat: signal GE that this vlua is alive.
+  -- If the vlua crashes (e.g. gearbox FATAL), this stops, and GE detects death.
+  local d0 = dtSim or 0.0005
+  heartbeatTimer = heartbeatTimer + d0
+  if heartbeatTimer >= HEARTBEAT_INTERVAL then
+    heartbeatTimer = 0
+    if obj.queueGameEngineLua then
+      obj:queueGameEngineLua(string.format(
+        "extensions.highbeam.onVEHeartbeat(%d)", obj:getID()
+      ))
+    end
+  end
 
   local curPos = obj:getPosition()
   local curVel = obj:getVelocity()
