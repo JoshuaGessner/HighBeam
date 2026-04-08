@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-04-07
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.2-dev.30 (protocol v2)
+> **Current version:** v0.8.2-dev.31 (protocol v2)
 > **Status:** v0.8.1 released | v0.8.2 in development
 
 ---
@@ -1202,6 +1202,11 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.2-dev.31 - 2026-04-07 (draft)
+- **VE controller access fix (critical):** replaced all bare global variable access to VE modules (e.g. `highbeam_highbeamVE.setActive(...)`) with `controller.getController("name")` across vehicles.lua, highbeam.lua, and connection.lua — `controller.loadControllerExternal()` registers modules in an internal registry but does NOT create globals, so the entire VE runtime (remote probe, local activation, reconnect, per-frame position/velocity/input/electrics/powertrain data forwarding) was dead code returning nil on every call.
+- **Duplicate controller guard:** VE bootstrap now checks `controller.getController(name)` before calling `loadControllerExternal()`, suppressing the "Controller with same name is already existing" error on probe retries.
+- **Defence-in-depth init:** explicit `init()` calls now use `controller.getController()` instead of `rawget(_G, name)` which always returned nil.
 
 ### v0.8.2-dev.30 - 2026-04-07 (draft)
 - **Launcher validation path fix:** updated `installer.rs` zip validation to check VE modules at `lua/vehicle/controller/highbeam/` instead of the old `lua/vehicle/extensions/highbeam/` path — the launcher was refusing to install the mod because the payload (correctly) moved VE files to the controller directory in dev.29 but the validator was not updated.
