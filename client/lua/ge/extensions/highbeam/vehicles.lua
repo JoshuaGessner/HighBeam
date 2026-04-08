@@ -264,13 +264,9 @@ local function _queueRemoteVeBootstrap(rv, key)
         _mPowertrain.setActive(true, true)
         _mDamage.setActive(true, true)
 
-        -- Force engine on immediately so inputs produce force from the start
-        if electrics and electrics.values then
-          electrics.values.ignitionLevel = 2
-        end
-        if electrics and electrics.setIgnitionLevel then
-          pcall(electrics.setIgnitionLevel, 2)
-        end
+        -- Ignition is synced via powertrain/electrics VE channels.
+        -- Do NOT force ignitionLevel here — it races with gearbox init
+        -- and causes FATAL: automaticGearbox desiredGearRatio nil.
       end
 
       local _missingCsv = table.concat(_missing, ",")

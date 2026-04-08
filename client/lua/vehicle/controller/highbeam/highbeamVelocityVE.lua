@@ -109,7 +109,7 @@ function M.addVelocity(vx, vy, vz)
   if obj.applyClusterLinearAngularAccel and connectedNodeCount > 0 and obj.getNodeCount then
     local okNodeCount, nodeCount = pcall(obj.getNodeCount, obj)
     if okNodeCount and nodeCount and nodeCount > 0 and (connectedNodeCount / nodeCount) > 0.9 then
-      pcall(obj.applyClusterLinearAngularAccel, obj, vx * physicsFps, vy * physicsFps, vz * physicsFps, 0, 0, 0)
+      pcall(obj.applyClusterLinearAngularAccel, obj, float3(vx * physicsFps, vy * physicsFps, vz * physicsFps), float3(0, 0, 0))
       return
     end
   end
@@ -140,7 +140,7 @@ function M.addAngularVelocity(avx, avy, avz, px, py, pz)
   if obj.applyClusterLinearAngularAccel and connectedNodeCount > 0 and obj.getNodeCount then
     local okNodeCount, nodeCount = pcall(obj.getNodeCount, obj)
     if okNodeCount and nodeCount and nodeCount > 0 and (connectedNodeCount / nodeCount) > 0.9 then
-      pcall(obj.applyClusterLinearAngularAccel, obj, 0, 0, 0, avx * physicsFps, avy * physicsFps, avz * physicsFps)
+      pcall(obj.applyClusterLinearAngularAccel, obj, float3(0, 0, 0), float3(avx * physicsFps, avy * physicsFps, avz * physicsFps))
       return
     end
   end
