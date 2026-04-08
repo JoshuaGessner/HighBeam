@@ -224,6 +224,24 @@ local function _queueRemoteVeBootstrap(rv, key)
         table.insert(_missing, "controller.loadControllerExternal")
       end
 
+      -- CRITICAL: loadControllerExternal can trigger powertrain re-init that
+      -- clears desiredGearRatio on gearbox devices. Patch it before the next
+      -- powertrain.updateGFX tick to prevent FATAL nil arithmetic crash.
+      -- Also kill ignition so the gearbox sits idle until warmup phases it in.
+      if powertrain and powertrain.getDevices then
+        local _pok, _pdevs = pcall(powertrain.getDevices)
+        if _pok and _pdevs then
+          for _, _pdev in pairs(_pdevs) do
+            if _pdev.desiredGearRatio == nil then
+              _pdev.desiredGearRatio = _pdev.gearRatio or 0
+            end
+          end
+        end
+      end
+      if electrics and electrics.values then
+        electrics.values.ignitionLevel = 0
+      end
+
       -- Probe via controller.getController — NOT globals
       local _mVE         = _gc("highbeam_highbeamVE")
       local _mPos        = _gc("highbeam_highbeamPositionVE")
@@ -264,9 +282,20 @@ local function _queueRemoteVeBootstrap(rv, key)
         _mPowertrain.setActive(true, true)
         _mDamage.setActive(true, true)
 
-        -- Ignition is synced via powertrain/electrics VE channels.
-        -- Do NOT force ignitionLevel here — it races with gearbox init
-        -- and causes FATAL: automaticGearbox desiredGearRatio nil.
+        -- Re-patch gearbox after activation in case setActive triggered
+        -- another powertrain reinit cycle.
+        if powertrain and powertrain.getDevices then
+          local _pok2, _pdevs2 = pcall(powertrain.getDevices)
+          if _pok2 and _pdevs2 then
+            for _, _pdev2 in pairs(_pdevs2) do
+              if _pdev2.desiredGearRatio == nil then
+                _pdev2.desiredGearRatio = _pdev2.gearRatio or 0
+              end
+            end
+          end
+        end
+        -- Ignition forced to 0 above; warmup guard in powertrainVE will
+        -- phase it back 0→1→2 as server sync data arrives.
       end
 
       local _missingCsv = table.concat(_missing, ",")
@@ -493,6 +522,27 @@ M.spawnRemote = function(playerId, vehicleId, configData, snapshot)
   end
 
   if vid then
+    -- Immediate safety: kill ignition and patch gearbox BEFORE VE bootstrap.
+    -- The vehicle inherits the sender's running state (ignition=2, gearbox in
+    -- drive). Stock automaticGearbox.updateGFX crashes if desiredGearRatio is
+    -- nil after spawn. This runs on the first available vlua tick.
+    pcall(function()
+      vehObj:queueLuaCommand([[
+        if electrics and electrics.values then
+          electrics.values.ignitionLevel = 0
+        end
+        if powertrain and powertrain.getDevices then
+          local ok, devs = pcall(powertrain.getDevices)
+          if ok and devs then
+            for _, dev in pairs(devs) do
+              if dev.desiredGearRatio == nil then
+                dev.desiredGearRatio = dev.gearRatio or 0
+              end
+            end
+          end
+        end
+      ]])
+    end)
     _queueRemoteVeBootstrap(M.remoteVehicles[key], key)
     log('I', logTag, 'Spawned remote vehicle: ' .. key .. ' gameVid=' .. tostring(vid))
   else
