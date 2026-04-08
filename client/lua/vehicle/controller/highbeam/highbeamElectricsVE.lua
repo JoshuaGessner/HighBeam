@@ -30,6 +30,7 @@ local DENY_LIST = {
   dseColor = true, isShifting = true,
   checkengine = true, lowfuel = true, lowpressure = true,
   brakelights = true,
+  ignitionLevel = true,
 }
 
 local function _jsonEncode(v)
@@ -104,12 +105,26 @@ end
 function M.applyElectrics(data)
   if not isRemote or type(data) ~= "table" or not electrics or not electrics.values then return end
 
+  local appliedCount = 0
+  local deniedCount = 0
   for key, val in pairs(data) do
-    if val == "isnil" then
+    if DENY_LIST[key] then
+      deniedCount = deniedCount + 1
+    elseif val == "isnil" then
       electrics.values[key] = nil
+      appliedCount = appliedCount + 1
     else
       electrics.values[key] = val
+      appliedCount = appliedCount + 1
     end
+  end
+
+  -- Report via GE if any keys were unexpectedly denied (debugging aid)
+  if deniedCount > 0 and obj and obj.queueGameEngineLua then
+    obj:queueGameEngineLua(string.format(
+      "log('D','highbeamElectricsVE','applied=%d denied=%d vid=%d')",
+      appliedCount, deniedCount, gameVehicleId
+    ))
   end
 end
 
