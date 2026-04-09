@@ -671,7 +671,7 @@ M.applyElectrics = function(playerId, vehicleId, electricsData)
   if M.remoteVehicles[key] and M.remoteVehicles[key]._hasVE then
     local jsonPayload = string.format("%q", tostring(electricsData or "{}"))
     local okForward = pcall(function()
-      veh:queueLuaCommand("if highbeamElectricsVE and highbeamElectricsVE.applyElectrics then local _hbj=" .. jsonPayload .. "; local _hbt=(jsonDecode and jsonDecode(_hbj)) or {}; highbeamElectricsVE
+      veh:queueLuaCommand("if highbeamElectricsVE and highbeamElectricsVE.applyElectrics then local _hbj=" .. jsonPayload .. "; local _hbt=(jsonDecode and jsonDecode(_hbj)) or {}; highbeamElectricsVE.applyElectrics(_hbt) end")
     end)
     if okForward then
       _bumpApplyStat("electrics_applied")
