@@ -766,7 +766,7 @@ M.applyInputs = function(playerId, vehicleId, deltaStr)
   local ok = pcall(function()
     veh:queueLuaCommand("if highbeamInputsVE and highbeamInputsVE.applyInputs then local d={} for part in string.gmatch(" .. escapeLuaString(deltaStr) .. ",'[^,]+') do local k,v=string.match(part,'^([%a]+)=([^,]+)$'); if k then d[k]=tonumber(v) or 0 end end highbeamInputsVE.applyInputs(d) end")
   end)
-  if ok thenif highbeamInputsVE and highbeamInputsVE.applyInputs then local d={} for part in string.gmatch(" .. escapeLuaString(deltaStr) .. ",'[^,]+') do local k,v=string.match(part,'^([%a]+)=([^,]+)$'); if k then d[k]=tonumber(v) or 0 end end highbeamInputsVE
+  if ok then
     _bumpApplyStat("inputs_applied")
   else
     _bumpApplyStat("inputs_error_apply")
@@ -785,7 +785,7 @@ M.applyPowertrain = function(playerId, vehicleId, powertrainData)
   local ok = pcall(function()
     veh:queueLuaCommand("if highbeamPowertrainVE and highbeamPowertrainVE.applyPowertrain then local _hbj=" .. jsonPayload .. "; local _hbt=(jsonDecode and jsonDecode(_hbj)) or {}; highbeamPowertrainVE.applyPowertrain(_hbt) end")
   end)
-  if ok thenif highbeamPowertrainVE and highbeamPowertrainVE.applyPowertrain then local _hbj=" .. jsonPayload .. "; local _hbt=(jsonDecode and jsonDecode(_hbj)) or {}; highbeamPowertrainVE
+  if ok then
     _bumpApplyStat("powertrain_applied")
   else
     _bumpApplyStat("powertrain_error_apply")
