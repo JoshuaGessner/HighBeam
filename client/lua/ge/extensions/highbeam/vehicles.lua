@@ -53,6 +53,39 @@ local function _withRemoteVehicle(playerId, vehicleId, stage)
   return veh, rv, key
 end
 
+local function _isMalformedVeLuaChunk(chunk)
+  if type(chunk) ~= "string" or chunk == "" then
+    return true, "empty_chunk"
+  end
+  if string.find(chunk, "thenif", 1, true) then
+    return true, "token_thenif"
+  end
+  local badToken = string.match(chunk, "highbeam[%w_]+end")
+  if badToken then
+    return true, badToken
+  end
+  return false, nil
+end
+
+local function _queueVeLuaCommand(veh, chunk, stage)
+  local malformed, reason = _isMalformedVeLuaChunk(chunk)
+  if malformed then
+    _bumpApplyStat((stage or "ve_cmd") .. "_drop_malformed")
+    log('E', logTag, 'Dropped malformed VE command stage=' .. tostring(stage)
+      .. ' reason=' .. tostring(reason)
+      .. ' chunk=' .. tostring(chunk))
+    return false
+  end
+  local ok = pcall(function()
+    veh:queueLuaCommand(chunk)
+  end)
+  if not ok then
+    _bumpApplyStat((stage or "ve_cmd") .. "_error_apply")
+    return false
+  end
+  return true
+end
+
 local function _countPendingSpawnRetries()
   local count = 0
   for _, rv in pairs(M.remoteVehicles) do
@@ -412,16 +445,15 @@ M.updateRemote = function(decoded)
     local ax = decoded.angVel and decoded.angVel[1] or 0
     local ay = decoded.angVel and decoded.angVel[2] or 0
     local az = decoded.angVel and decoded.angVel[3] or 0
-    pcall(function()
-      rv.gameVehicle:queueLuaCommand(string.format(
-        "if highbeamPositionVE and highbeamPositionVE.setTarget then highbeamPositionVE.setTarget(%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f,%.4f,%.0f) end",
-        decoded.pos[1], decoded.pos[2], decoded.pos[3],
-        decoded.vel[1], decoded.vel[2], decoded.vel[3],
-        decoded.rot[1], decoded.rot[2], decoded.rot[3], decoded.rot[4],
-        ax, ay, az,
-        decoded.time or 0
-      ))
-    end)
+    local cmd = string.format(
+      "if highbeamPositionVE and highbeamPositionVE.setTarget then highbeamPositionVE.setTarget(%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f,%.4f,%.0f) end",
+      decoded.pos[1], decoded.pos[2], decoded.pos[3],
+      decoded.vel[1], decoded.vel[2], decoded.vel[3],
+      decoded.rot[1], decoded.rot[2], decoded.rot[3], decoded.rot[4],
+      ax, ay, az,
+      decoded.time or 0
+    )
+    _queueVeLuaCommand(rv.gameVehicle, cmd, "position")
   end
 
   -- Keep latest snapshot for spawn retry position and nametag lookups
@@ -525,14 +557,13 @@ M.resetRemote = function(playerId, vehicleId, data)
     end
     -- Notify VE positionVE so it targets the reset pose instead of snapping back.
     if rv._hasVE and rv.gameVehicle then
-      pcall(function()
-        rv.gameVehicle:queueLuaCommand(string.format(
-          "if highbeamPositionVE and highbeamPositionVE.setTarget then highbeamPositionVEend",
-          cfg.pos[1], cfg.pos[2], cfg.pos[3],
-          cfg.rot[1], cfg.rot[2], cfg.rot[3], cfg.rot[4],
-          os.clock()
-        ))
-      end)
+      local cmd = string.format(
+        "if highbeamPositionVE and highbeamPositionVE.setTarget then highbeamPositionVE.setTarget(%.4f,%.4f,%.4f,0,0,0,%.6f,%.6f,%.6f,%.6f,0,0,0,%.0f) end",
+        cfg.pos[1], cfg.pos[2], cfg.pos[3],
+        cfg.rot[1], cfg.rot[2], cfg.rot[3], cfg.rot[4],
+        os.clock()
+      )
+      _queueVeLuaCommand(rv.gameVehicle, cmd, "reset")
     end
   else
     _bumpApplyStat("reset_no_pose")
@@ -670,9 +701,8 @@ M.applyElectrics = function(playerId, vehicleId, electricsData)
 
   if M.remoteVehicles[key] and M.remoteVehicles[key]._hasVE then
     local jsonPayload = string.format("%q", tostring(electricsData or "{}"))
-    local okForward = pcall(function()
-      veh:queueLuaCommand("if highbeamElectricsVE and highbeamElectricsVE.applyElectrics then local _hbj=" .. jsonPayload .. "; local _hbt=(jsonDecode and jsonDecode(_hbj)) or {}; highbeamElectricsVE.applyElectrics(_hbt) end")
-    end)
+    local cmd = "if highbeamElectricsVE and highbeamElectricsVE.applyElectrics then local _hbj=" .. jsonPayload .. "; local _hbt=(jsonDecode and jsonDecode(_hbj)) or {}; highbeamElectricsVE.applyElectrics(_hbt) end"
+    local okForward = _queueVeLuaCommand(veh, cmd, "electrics")
     if okForward then
       _bumpApplyStat("electrics_applied")
       return
@@ -763,9 +793,8 @@ M.applyInputs = function(playerId, vehicleId, deltaStr)
     return string.format("%q", s or "")
   end
 
-  local ok = pcall(function()
-    veh:queueLuaCommand("if highbeamInputsVE and highbeamInputsVE.applyInputs then local d={} for part in string.gmatch(" .. escapeLuaString(deltaStr) .. ",'[^,]+') do local k,v=string.match(part,'^([%a]+)=([^,]+)$'); if k then d[k]=tonumber(v) or 0 end end highbeamInputsVE.applyInputs(d) end")
-  end)
+  local cmd = "if highbeamInputsVE and highbeamInputsVE.applyInputs then local d={} for part in string.gmatch(" .. escapeLuaString(deltaStr) .. ",'[^,]+') do local k,v=string.match(part,'^([%a]+)=([^,]+)$'); if k then d[k]=tonumber(v) or 0 end end highbeamInputsVE.applyInputs(d) end"
+  local ok = _queueVeLuaCommand(veh, cmd, "inputs")
   if ok then
     _bumpApplyStat("inputs_applied")
   else
@@ -782,9 +811,8 @@ M.applyPowertrain = function(playerId, vehicleId, powertrainData)
   end
 
   local jsonPayload = string.format("%q", tostring(powertrainData or "{}"))
-  local ok = pcall(function()
-    veh:queueLuaCommand("if highbeamPowertrainVE and highbeamPowertrainVE.applyPowertrain then local _hbj=" .. jsonPayload .. "; local _hbt=(jsonDecode and jsonDecode(_hbj)) or {}; highbeamPowertrainVE.applyPowertrain(_hbt) end")
-  end)
+  local cmd = "if highbeamPowertrainVE and highbeamPowertrainVE.applyPowertrain then local _hbj=" .. jsonPayload .. "; local _hbt=(jsonDecode and jsonDecode(_hbj)) or {}; highbeamPowertrainVE.applyPowertrain(_hbt) end"
+  local ok = _queueVeLuaCommand(veh, cmd, "powertrain")
   if ok then
     _bumpApplyStat("powertrain_applied")
   else
