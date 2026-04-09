@@ -513,22 +513,22 @@ where
         if name == "lua/ge/extensions/highbeam.lua" {
             has_extension = true;
         }
-        if name == "lua/vehicle/controller/highbeam/highbeamVE.lua" {
+        if name == "lua/vehicle/extensions/highbeam/highbeamVE.lua" {
             has_vehicle_ext = true;
         }
-        if name == "lua/vehicle/controller/highbeam/highbeamPositionVE.lua" {
+        if name == "lua/vehicle/extensions/highbeam/highbeamPositionVE.lua" {
             has_position_ve = true;
         }
-        if name == "lua/vehicle/controller/highbeam/highbeamInputsVE.lua" {
+        if name == "lua/vehicle/extensions/highbeam/highbeamInputsVE.lua" {
             has_inputs_ve = true;
         }
-        if name == "lua/vehicle/controller/highbeam/highbeamElectricsVE.lua" {
+        if name == "lua/vehicle/extensions/highbeam/highbeamElectricsVE.lua" {
             has_electrics_ve = true;
         }
-        if name == "lua/vehicle/controller/highbeam/highbeamPowertrainVE.lua" {
+        if name == "lua/vehicle/extensions/highbeam/highbeamPowertrainVE.lua" {
             has_powertrain_ve = true;
         }
-        if name == "lua/vehicle/controller/highbeam/highbeamDamageVE.lua" {
+        if name == "lua/vehicle/extensions/highbeam/highbeamDamageVE.lua" {
             has_damage_ve = true;
         }
     }

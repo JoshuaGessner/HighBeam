@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-04-07
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.2-dev.34 (protocol v2)
+> **Current version:** v0.8.2-dev.35 (protocol v2)
 > **Status:** v0.8.1 released | v0.8.2 in development
 
 ---
@@ -1202,6 +1202,13 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.2-dev.35 - 2026-04-08 (draft)
+- **VE extension migration:** migrated all 7 VE modules from `controller.loadControllerExternal()` to `extensions.loadModulesInDirectory()` — the same architecture BeamMP uses. Extensions run parallel to stock controllers instead of injecting into the controller pipeline, eliminating the gearbox corruption root cause.
+- **GE position fallback removed:** deleted all GE-side interpolation (~210 lines), LOD throttling, Hermite/slerp interpolation, correction blending, and GE input fallback. GE is now a pure data router — VE handles all positioning exclusively.
+- **Smooth blend-on-arrival extrapolation:** new packet arrival computes the delta between old-target prediction and new-target position, blending the correction over 60ms (~120 physics steps) for seamless transitions between network packets.
+- **Bootstrap simplified:** 130-line controller bootstrap → 30-line extension bootstrap across 3 sites (vehicles.lua, highbeam.lua, connection.lua).
+- **Net -584 lines** of code removed.
 
 ### v0.8.2-dev.31 - 2026-04-07 (draft)
 - **VE controller access fix (critical):** replaced all bare global variable access to VE modules (e.g. `highbeam_highbeamVE.setActive(...)`) with `controller.getController("name")` across vehicles.lua, highbeam.lua, and connection.lua — `controller.loadControllerExternal()` registers modules in an internal registry but does NOT create globals, so the entire VE runtime (remote probe, local activation, reconnect, per-frame position/velocity/input/electrics/powertrain data forwarding) was dead code returning nil on every call.
