@@ -118,12 +118,12 @@ jobs:
             $required = @(
               "scripts/modScript.lua",
               "lua/ge/extensions/highbeam.lua",
-              "lua/vehicle/controller/highbeam/highbeamVE.lua",
-              "lua/vehicle/controller/highbeam/highbeamPositionVE.lua",
-              "lua/vehicle/controller/highbeam/highbeamInputsVE.lua",
-              "lua/vehicle/controller/highbeam/highbeamElectricsVE.lua",
-              "lua/vehicle/controller/highbeam/highbeamPowertrainVE.lua",
-              "lua/vehicle/controller/highbeam/highbeamDamageVE.lua"
+              "lua/vehicle/extensions/highbeam/highbeamVE.lua",
+              "lua/vehicle/extensions/highbeam/highbeamPositionVE.lua",
+              "lua/vehicle/extensions/highbeam/highbeamInputsVE.lua",
+              "lua/vehicle/extensions/highbeam/highbeamElectricsVE.lua",
+              "lua/vehicle/extensions/highbeam/highbeamPowertrainVE.lua",
+              "lua/vehicle/extensions/highbeam/highbeamDamageVE.lua"
             )
             $missing = @()
             foreach ($path in $required) {
