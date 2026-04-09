@@ -238,40 +238,8 @@ local function _reRegisterLocalVehicles()
         if not state.localVehicles[gameVid] and not inFlight then
           pcall(function()
             veh:queueLuaCommand([[ 
-              local function _gc(name)
-                if controller and controller.getController then
-                  local ok, mod = pcall(controller.getController, name)
-                  if ok and mod then return mod end
-                end
-                return nil
-              end
-              local _mods = {
-                "highbeam/highbeamVE",
-                "highbeam/highbeamPositionVE",
-                "highbeam/highbeamVelocityVE",
-                "highbeam/highbeamInputsVE",
-                "highbeam/highbeamElectricsVE",
-                "highbeam/highbeamPowertrainVE",
-                "highbeam/highbeamDamageVE",
-              }
-              if controller and controller.loadControllerExternal then
-                for _, m in ipairs(_mods) do
-                  local _name = string.gsub(m, "^highbeam/", "highbeam_")
-                  if not _gc(_name) then
-                    pcall(controller.loadControllerExternal, m, _name)
-                  end
-                end
-              end
-              local _veMain = _gc("highbeam_highbeamVE")
-              if _veMain and _veMain.setActive then _veMain.setActive(true, false) end
-              local _veInputs = _gc("highbeam_highbeamInputsVE")
-              if _veInputs and _veInputs.setActive then _veInputs.setActive(true, false) end
-              local _veElectrics = _gc("highbeam_highbeamElectricsVE")
-              if _veElectrics and _veElectrics.setActive then _veElectrics.setActive(true, false) end
-              local _vePowertrain = _gc("highbeam_highbeamPowertrainVE")
-              if _vePowertrain and _vePowertrain.setActive then _vePowertrain.setActive(true, false) end
-              local _veDamage = _gc("highbeam_highbeamDamageVE")
-              if _veDamage and _veDamage.setActive then _veDamage.setActive(true, false) end
+              extensions.loadModulesInDirectory("lua/vehicle/extensions/highbeam")
+              if highbeamVE and highbeamVE.setActive then highbeamVE.setActive(true, false) end
             ]])
           end)
           local configData = state.captureVehicleConfig(veh)

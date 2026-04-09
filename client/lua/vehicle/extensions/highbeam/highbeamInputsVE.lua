@@ -1,5 +1,4 @@
 local M = {}
-M.name = "highbeam_highbeamInputsVE"
 
 local isRemote = false
 local isActive = false
@@ -150,7 +149,6 @@ function M.getInputActivity()
   return math.max(t, b)
 end
 
--- Controller system dispatches init(), not onInit().
-M.init = M.onInit
+M.onExtensionLoaded = M.onInit
 
 return M

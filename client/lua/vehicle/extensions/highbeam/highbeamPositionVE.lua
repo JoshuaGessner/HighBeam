@@ -1,5 +1,4 @@
 local M = {}
-M.name = "highbeam_highbeamPositionVE"
 
 local velocityVE
 local inputsVE
@@ -36,34 +35,14 @@ local refNodeId = 0
 
 local function _getVelocityModule()
   if velocityVE then return velocityVE end
-  if controller and controller.getController then
-    local ok, mod = pcall(controller.getController, "highbeam_highbeamVelocityVE")
-    if ok and mod then
-      velocityVE = mod
-      return velocityVE
-    end
-  end
-  if rawget(_G, "highbeam_highbeamVelocityVE") then
-    velocityVE = rawget(_G, "highbeam_highbeamVelocityVE")
-    return velocityVE
-  end
-  return nil
+  velocityVE = highbeamVelocityVE
+  return velocityVE
 end
 
 local function _getInputsModule()
   if inputsVE then return inputsVE end
-  if controller and controller.getController then
-    local ok, mod = pcall(controller.getController, "highbeam_highbeamInputsVE")
-    if ok and mod then
-      inputsVE = mod
-      return inputsVE
-    end
-  end
-  if rawget(_G, "highbeam_highbeamInputsVE") then
-    inputsVE = rawget(_G, "highbeam_highbeamInputsVE")
-    return inputsVE
-  end
-  return nil
+  inputsVE = highbeamInputsVE
+  return inputsVE
 end
 
 local function _now()
@@ -148,6 +127,10 @@ function M.onInit()
   _getVelocityModule()
   _getInputsModule()
   refNodeId = 0
+  -- Register for physics-rate updates via orchestrator hook
+  if highbeamVE and highbeamVE.addPhysUpdateHandler then
+    highbeamVE.addPhysUpdateHandler("positionVE", M.onPhysicsStep)
+  end
 end
 
 function M.setRemote(remote)
@@ -193,7 +176,6 @@ function M.onPhysicsStep(dtSim)
   if not obj then return end
 
   -- VE heartbeat: signal GE that this vlua is alive.
-  -- If the vlua crashes (e.g. gearbox FATAL), this stops, and GE detects death.
   local d0 = dtSim or 0.0005
   heartbeatTimer = heartbeatTimer + d0
   if heartbeatTimer >= HEARTBEAT_INTERVAL then
@@ -328,8 +310,6 @@ function M.onPhysicsStep(dtSim)
   end
 end
 
--- Controller system dispatches init/update, not onInit/onPhysicsStep.
-M.init = M.onInit
-M.update = M.onPhysicsStep
+M.onExtensionLoaded = M.onInit
 
 return M

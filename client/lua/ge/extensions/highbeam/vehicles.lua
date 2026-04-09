@@ -188,116 +188,22 @@ local function _queueRemoteVeBootstrap(rv, key)
   local vehObj = rv.gameVehicle
   pcall(function()
     vehObj:queueLuaCommand([[
+      extensions.loadModulesInDirectory("lua/vehicle/extensions/highbeam")
       local _missing = {}
-
-      -- Helper: retrieve a controller module by name.
-      -- controller.loadControllerExternal does NOT create globals;
-      -- the only reliable accessor is controller.getController().
-      local function _gc(name)
-        if controller and controller.getController then
-          local ok, mod = pcall(controller.getController, name)
-          if ok and mod then return mod end
-        end
-        return nil
-      end
-
-      -- Register VE modules as controllers so physics callbacks (onPhysicsStep)
-      -- are guaranteed to execute for remote simulation.
-      local _veModules = {
-        {"highbeam/highbeamVE", "highbeam_highbeamVE"},
-        {"highbeam/highbeamPositionVE", "highbeam_highbeamPositionVE"},
-        {"highbeam/highbeamVelocityVE", "highbeam_highbeamVelocityVE"},
-        {"highbeam/highbeamInputsVE", "highbeam_highbeamInputsVE"},
-        {"highbeam/highbeamElectricsVE", "highbeam_highbeamElectricsVE"},
-        {"highbeam/highbeamPowertrainVE", "highbeam_highbeamPowertrainVE"},
-        {"highbeam/highbeamDamageVE", "highbeam_highbeamDamageVE"},
-      }
-      local _controllerLoader = controller and controller.loadControllerExternal
-      if _controllerLoader then
-        for _, entry in ipairs(_veModules) do
-          -- Skip if already registered (avoids "duplicate controller" error on retry)
-          if not _gc(entry[2]) then
-            pcall(_controllerLoader, entry[1], entry[2])
-          end
-        end
+      local _ready = false
+      if highbeamVE and highbeamVE.setActive then
+        highbeamVE.setActive(true, true)
+        _ready = true
       else
-        table.insert(_missing, "controller.loadControllerExternal")
+        table.insert(_missing, "highbeamVE")
       end
-
-      -- CRITICAL: loadControllerExternal can trigger powertrain re-init that
-      -- clears desiredGearRatio on gearbox devices. Patch it before the next
-      -- powertrain.updateGFX tick to prevent FATAL nil arithmetic crash.
-      -- Also kill ignition so the gearbox sits idle until warmup phases it in.
-      if powertrain and powertrain.getDevices then
-        local _pok, _pdevs = pcall(powertrain.getDevices)
-        if _pok and _pdevs then
-          for _, _pdev in pairs(_pdevs) do
-            if _pdev.desiredGearRatio == nil then
-              _pdev.desiredGearRatio = _pdev.gearRatio or 0
-            end
-          end
-        end
-      end
-      if electrics and electrics.values then
-        electrics.values.ignitionLevel = 0
-      end
-
-      -- Probe via controller.getController — NOT globals
-      local _mVE         = _gc("highbeam_highbeamVE")
-      local _mPos        = _gc("highbeam_highbeamPositionVE")
-      local _mVel        = _gc("highbeam_highbeamVelocityVE")
-      local _mInputs     = _gc("highbeam_highbeamInputsVE")
-      local _mElectrics  = _gc("highbeam_highbeamElectricsVE")
-      local _mPowertrain = _gc("highbeam_highbeamPowertrainVE")
-      local _mDamage     = _gc("highbeam_highbeamDamageVE")
-
-      local _hasVE         = _mVE and _mVE.setActive
-      local _hasPos        = _mPos and _mPos.setRemote and _mPos.setTarget
-      local _hasVel        = _mVel and _mVel.addVelocity
-      local _hasInputs     = _mInputs and _mInputs.setActive
-      local _hasElectrics  = _mElectrics and _mElectrics.setActive
-      local _hasPowertrain = _mPowertrain and _mPowertrain.setActive
-      local _hasDamage     = _mDamage and _mDamage.setActive
-
-      if not _hasVE then table.insert(_missing, "highbeam_highbeamVE") end
-      if not _hasPos then table.insert(_missing, "highbeam_highbeamPositionVE") end
-      if not _hasVel then table.insert(_missing, "highbeam_highbeamVelocityVE") end
-      if not _hasInputs then table.insert(_missing, "highbeam_highbeamInputsVE") end
-      if not _hasElectrics then table.insert(_missing, "highbeam_highbeamElectricsVE") end
-      if not _hasPowertrain then table.insert(_missing, "highbeam_highbeamPowertrainVE") end
-      if not _hasDamage then table.insert(_missing, "highbeam_highbeamDamageVE") end
-
-      local _ready = (_controllerLoader and _hasVE and _hasPos and _hasVel and _hasInputs and _hasElectrics and _hasPowertrain and _hasDamage) and true or false
-
-      if _ready then
-        -- Defensive: call init() explicitly in case controller system defers dispatch.
-        for _, entry in ipairs(_veModules) do
-          local _mod = _gc(entry[2])
-          if _mod and _mod.init then pcall(_mod.init) end
-        end
-        _mVE.setActive(true, true)
-        _mPos.setRemote(true)
-        _mInputs.setActive(true, true)
-        _mElectrics.setActive(true, true)
-        _mPowertrain.setActive(true, true)
-        _mDamage.setActive(true, true)
-
-        -- Re-patch gearbox after activation in case setActive triggered
-        -- another powertrain reinit cycle.
-        if powertrain and powertrain.getDevices then
-          local _pok2, _pdevs2 = pcall(powertrain.getDevices)
-          if _pok2 and _pdevs2 then
-            for _, _pdev2 in pairs(_pdevs2) do
-              if _pdev2.desiredGearRatio == nil then
-                _pdev2.desiredGearRatio = _pdev2.gearRatio or 0
-              end
-            end
-          end
-        end
-        -- Ignition forced to 0 above; warmup guard in powertrainVE will
-        -- phase it back 0→1→2 as server sync data arrives.
-      end
-
+      if not highbeamPositionVE then table.insert(_missing, "highbeamPositionVE") end
+      if not highbeamVelocityVE then table.insert(_missing, "highbeamVelocityVE") end
+      if not highbeamInputsVE then table.insert(_missing, "highbeamInputsVE") end
+      if not highbeamElectricsVE then table.insert(_missing, "highbeamElectricsVE") end
+      if not highbeamPowertrainVE then table.insert(_missing, "highbeamPowertrainVE") end
+      if not highbeamDamageVE then table.insert(_missing, "highbeamDamageVE") end
+      if #_missing > 0 then _ready = false end
       local _missingCsv = table.concat(_missing, ",")
       obj:queueGameEngineLua(
         "if extensions and extensions.highbeam and extensions.highbeam.onRemoteVEReady then extensions.highbeam.onRemoteVEReady(" .. tostring(obj:getID()) .. "," .. tostring(_ready) .. "," .. string.format("%q", _missingCsv) .. ") end"
@@ -308,7 +214,7 @@ local function _queueRemoteVeBootstrap(rv, key)
   rv._veProbeMissing = nil
   rv._hasVE = false
   if _verboseSyncLoggingEnabled() then
-    log('D', logTag, 'Queued remote VE capability probe key=' .. tostring(key)
+    log('D', logTag, 'Queued remote VE bootstrap key=' .. tostring(key)
       .. ' gameVid=' .. tostring(rv.gameVehicleId))
   end
 end
@@ -348,7 +254,7 @@ end
 
 -- Receive heartbeat from remote vehicle's positionVE (sent every ~1s while vlua alive).
 -- Updates _veLastHeartbeat timestamp used by death detection in onUpdate.
-local VE_DEATH_TIMEOUT_SEC = 3.0
+local VE_DEATH_TIMEOUT_SEC = 5.0
 M.onVEHeartbeat = function(gameVehicleId)
   if not gameVehicleId then return end
   for _, rv in pairs(M.remoteVehicles) do
@@ -522,27 +428,6 @@ M.spawnRemote = function(playerId, vehicleId, configData, snapshot)
   end
 
   if vid then
-    -- Immediate safety: kill ignition and patch gearbox BEFORE VE bootstrap.
-    -- The vehicle inherits the sender's running state (ignition=2, gearbox in
-    -- drive). Stock automaticGearbox.updateGFX crashes if desiredGearRatio is
-    -- nil after spawn. This runs on the first available vlua tick.
-    pcall(function()
-      vehObj:queueLuaCommand([[
-        if electrics and electrics.values then
-          electrics.values.ignitionLevel = 0
-        end
-        if powertrain and powertrain.getDevices then
-          local ok, devs = pcall(powertrain.getDevices)
-          if ok and devs then
-            for _, dev in pairs(devs) do
-              if dev.desiredGearRatio == nil then
-                dev.desiredGearRatio = dev.gearRatio or 0
-              end
-            end
-          end
-        end
-      ]])
-    end)
     _queueRemoteVeBootstrap(M.remoteVehicles[key], key)
     log('I', logTag, 'Spawned remote vehicle: ' .. key .. ' gameVid=' .. tostring(vid))
   else
@@ -633,7 +518,7 @@ M.updateRemote = function(decoded)
     local az = decoded.angVel and decoded.angVel[3] or 0
     pcall(function()
       rv.gameVehicle:queueLuaCommand(string.format(
-        "local _p = controller and controller.getController and controller.getController('highbeam_highbeamPositionVE'); if _p and _p.setTarget then _p.setTarget(%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f,%.4f,%.4f) end",
+        "if highbeamPositionVE and highbeamPositionVE.setTarget then highbeamPositionVEf,%.4f,%.4f,%.4f) end",
         decoded.pos[1], decoded.pos[2], decoded.pos[3],
         decoded.vel[1], decoded.vel[2], decoded.vel[3],
         decoded.rot[1], decoded.rot[2], decoded.rot[3], decoded.rot[4],
@@ -767,7 +652,7 @@ M.resetRemote = function(playerId, vehicleId, data)
     if rv._hasVE and rv.gameVehicle then
       pcall(function()
         rv.gameVehicle:queueLuaCommand(string.format(
-          "local _p = controller and controller.getController and controller.getController('highbeam_highbeamPositionVE'); if _p and _p.setTarget then _p.setTarget(%.4f,%.4f,%.4f,0,0,0,%.6f,%.6f,%.6f,%.6f,0,0,0,%.4f) end",
+          "if highbeamPositionVE and highbeamPositionVE.setTarget then highbeamPositionVEend",
           cfg.pos[1], cfg.pos[2], cfg.pos[3],
           cfg.rot[1], cfg.rot[2], cfg.rot[3], cfg.rot[4],
           os.clock()
@@ -911,7 +796,7 @@ M.applyElectrics = function(playerId, vehicleId, electricsData)
   if M.remoteVehicles[key] and M.remoteVehicles[key]._hasVE then
     local jsonPayload = string.format("%q", tostring(electricsData or "{}"))
     local okForward = pcall(function()
-      veh:queueLuaCommand("local _m = controller and controller.getController and controller.getController('highbeam_highbeamElectricsVE'); if _m and _m.applyElectrics then local _hbj=" .. jsonPayload .. "; local _hbt=(jsonDecode and jsonDecode(_hbj)) or {}; _m.applyElectrics(_hbt) end")
+      veh:queueLuaCommand("if highbeamElectricsVE and highbeamElectricsVE.applyElectrics then local _hbj=" .. jsonPayload .. "; local _hbt=(jsonDecode and jsonDecode(_hbj)) or {}; highbeamElectricsVE
     end)
     if okForward then
       _bumpApplyStat("electrics_applied")
@@ -970,9 +855,7 @@ M.applyElectrics = function(playerId, vehicleId, electricsData)
     if elec.clutch ~= nil then
       table.insert(cmds, 'electrics.values.clutch = ' .. tostring(elec.clutch))
     end
-    -- ignitionLevel is intentionally omitted from this fallback path.
-    -- It is handled exclusively by powertrainVE's warmup-guarded logic
-    -- to prevent gearbox crashes (automaticGearbox.desiredGearRatio nil).
+    -- ignitionLevel is handled exclusively by powertrainVE.
     if #cmds > 0 then
       commandCount = #cmds
       veh:queueLuaCommand(table.concat(cmds, ' '))
@@ -1006,9 +889,9 @@ M.applyInputs = function(playerId, vehicleId, deltaStr)
   end
 
   local ok = pcall(function()
-    veh:queueLuaCommand("local _m = controller and controller.getController and controller.getController('highbeam_highbeamInputsVE'); if _m and _m.applyInputs then local d={} for part in string.gmatch(" .. escapeLuaString(deltaStr) .. ",'[^,]+') do local k,v=string.match(part,'^([%a]+)=([^,]+)$'); if k then d[k]=tonumber(v) or 0 end end _m.applyInputs(d) end")
+    veh:queueLuaCommand("if highbeamInputsVE and highbeamInputsVE.applyInputs then local d={} for part in string.gmatch(" .. escapeLuaString(deltaStr) .. ",'[^,]+') do local k,v=string.match(part,'^([%a]+)=([^,]+)$'); if k then d[k]=tonumber(v) or 0 end end highbeamInputsVE.applyInputs(d) end")
   end)
-  if ok then
+  if ok thenif highbeamInputsVE and highbeamInputsVE.applyInputs then local d={} for part in string.gmatch(" .. escapeLuaString(deltaStr) .. ",'[^,]+') do local k,v=string.match(part,'^([%a]+)=([^,]+)$'); if k then d[k]=tonumber(v) or 0 end end highbeamInputsVE
     _bumpApplyStat("inputs_applied")
   else
     _bumpApplyStat("inputs_error_apply")
@@ -1025,9 +908,9 @@ M.applyPowertrain = function(playerId, vehicleId, powertrainData)
 
   local jsonPayload = string.format("%q", tostring(powertrainData or "{}"))
   local ok = pcall(function()
-    veh:queueLuaCommand("local _m = controller and controller.getController and controller.getController('highbeam_highbeamPowertrainVE'); if _m and _m.applyPowertrain then local _hbj=" .. jsonPayload .. "; local _hbt=(jsonDecode and jsonDecode(_hbj)) or {}; _m.applyPowertrain(_hbt) end")
+    veh:queueLuaCommand("if highbeamPowertrainVE and highbeamPowertrainVE.applyPowertrain then local _hbj=" .. jsonPayload .. "; local _hbt=(jsonDecode and jsonDecode(_hbj)) or {}; highbeamPowertrainVE.applyPowertrain(_hbt) end")
   end)
-  if ok then
+  if ok thenif highbeamPowertrainVE and highbeamPowertrainVE.applyPowertrain then local _hbj=" .. jsonPayload .. "; local _hbt=(jsonDecode and jsonDecode(_hbj)) or {}; highbeamPowertrainVE
     _bumpApplyStat("powertrain_applied")
   else
     _bumpApplyStat("powertrain_error_apply")
