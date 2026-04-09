@@ -1,5 +1,4 @@
 local M = {}
-M.name = "highbeam_highbeamPositionVE"
 
 local velocityVE
 local inputsVE
@@ -34,36 +33,28 @@ local OFFSET_SAMPLE_COUNT = 10
 
 local refNodeId = 0
 
+-- Smooth blend-on-arrival: when a new target arrives, we compute the
+-- correction delta between where we predicted the car to be (from old target)
+-- vs where the new target says it should be. This delta is blended in over
+-- BLEND_DURATION seconds, preventing abrupt PD controller jumps when packets
+-- arrive. The result is continuous smooth motion even at high latency.
+local BLEND_DURATION = 0.06  -- seconds to blend correction (~120 physics steps)
+local blendCorrX, blendCorrY, blendCorrZ = 0, 0, 0
+local blendRemaining = 0
+local prevTargetPos = nil
+local prevTargetVel = nil
+local prevTargetTime = nil
+
 local function _getVelocityModule()
   if velocityVE then return velocityVE end
-  if controller and controller.getController then
-    local ok, mod = pcall(controller.getController, "highbeam_highbeamVelocityVE")
-    if ok and mod then
-      velocityVE = mod
-      return velocityVE
-    end
-  end
-  if rawget(_G, "highbeam_highbeamVelocityVE") then
-    velocityVE = rawget(_G, "highbeam_highbeamVelocityVE")
-    return velocityVE
-  end
-  return nil
+  velocityVE = highbeamVelocityVE
+  return velocityVE
 end
 
 local function _getInputsModule()
   if inputsVE then return inputsVE end
-  if controller and controller.getController then
-    local ok, mod = pcall(controller.getController, "highbeam_highbeamInputsVE")
-    if ok and mod then
-      inputsVE = mod
-      return inputsVE
-    end
-  end
-  if rawget(_G, "highbeam_highbeamInputsVE") then
-    inputsVE = rawget(_G, "highbeam_highbeamInputsVE")
-    return inputsVE
-  end
-  return nil
+  inputsVE = highbeamInputsVE
+  return inputsVE
 end
 
 local function _now()
@@ -148,6 +139,10 @@ function M.onInit()
   _getVelocityModule()
   _getInputsModule()
   refNodeId = 0
+  -- Register for physics-rate updates via orchestrator hook
+  if highbeamVE and highbeamVE.addPhysUpdateHandler then
+    highbeamVE.addPhysUpdateHandler("positionVE", M.onPhysicsStep)
+  end
 end
 
 function M.setRemote(remote)
@@ -177,11 +172,60 @@ function M.updateTimeOffset(remoteTime, localTime)
 end
 
 function M.setTarget(px, py, pz, vx, vy, vz, rx, ry, rz, rw, avx, avy, avz, t)
-  targetPos = { px or 0, py or 0, pz or 0 }
-  targetVel = { vx or 0, vy or 0, vz or 0 }
+  local newPos = { px or 0, py or 0, pz or 0 }
+  local newVel = { vx or 0, vy or 0, vz or 0 }
+  local newTime = t or 0
+
+  -- Smooth blend-on-arrival: compute where we predicted the car to be at this
+  -- moment using the OLD target, compare with where the NEW target says it
+  -- should be at this moment, and blend the difference over BLEND_DURATION.
+  if prevTargetPos and prevTargetVel and prevTargetTime and newTime > 0 then
+    local now = _now()
+    local dtOld = now - prevTargetTime - timeOffset
+    if dtOld < 0 then dtOld = 0 end
+    if dtOld > 0.5 then dtOld = 0.5 end
+    local dtNew = now - newTime - timeOffset
+    if dtNew < 0 then dtNew = 0 end
+    if dtNew > 0.5 then dtNew = 0.5 end
+
+    -- Where old target predicted we'd be now
+    local predOldX = prevTargetPos[1] + prevTargetVel[1] * dtOld
+    local predOldY = prevTargetPos[2] + prevTargetVel[2] * dtOld
+    local predOldZ = prevTargetPos[3] + prevTargetVel[3] * dtOld
+
+    -- Where new target says we should be now
+    local predNewX = newPos[1] + newVel[1] * dtNew
+    local predNewY = newPos[2] + newVel[2] * dtNew
+    local predNewZ = newPos[3] + newVel[3] * dtNew
+
+    -- The correction to blend in (old prediction → new prediction)
+    local corrX = predOldX - predNewX
+    local corrY = predOldY - predNewY
+    local corrZ = predOldZ - predNewZ
+
+    -- Only blend if correction is small enough (large corrections = teleport)
+    local corrDist = math.sqrt(corrX * corrX + corrY * corrY + corrZ * corrZ)
+    if corrDist < TELEPORT_BASE_DIST then
+      blendCorrX = corrX
+      blendCorrY = corrY
+      blendCorrZ = corrZ
+      blendRemaining = BLEND_DURATION
+    else
+      blendCorrX, blendCorrY, blendCorrZ = 0, 0, 0
+      blendRemaining = 0
+    end
+  end
+
+  -- Save for next blend computation
+  prevTargetPos = newPos
+  prevTargetVel = newVel
+  prevTargetTime = newTime
+
+  targetPos = newPos
+  targetVel = newVel
   targetRot = { rx or 0, ry or 0, rz or 0, rw or 1 }
   targetAngVel = { avx or 0, avy or 0, avz or 0 }
-  targetTime = t or 0
+  targetTime = newTime
   hasTarget = true
 
   M.updateTimeOffset(targetTime, _now())
@@ -193,7 +237,6 @@ function M.onPhysicsStep(dtSim)
   if not obj then return end
 
   -- VE heartbeat: signal GE that this vlua is alive.
-  -- If the vlua crashes (e.g. gearbox FATAL), this stops, and GE detects death.
   local d0 = dtSim or 0.0005
   heartbeatTimer = heartbeatTimer + d0
   if heartbeatTimer >= HEARTBEAT_INTERVAL then
@@ -210,14 +253,31 @@ function M.onPhysicsStep(dtSim)
   if not curPos or not curVel then return end
 
   local now = _now()
+  local d = dtSim or 0.0005
   local dtPred = now - targetTime - timeOffset
   if dtPred < 0 then dtPred = 0 end
   if dtPred > 0.5 then dtPred = 0.5 end
 
+  -- Extrapolate target position using velocity
   local predX = targetPos[1] + targetVel[1] * dtPred
   local predY = targetPos[2] + targetVel[2] * dtPred
   local predZ = targetPos[3] + targetVel[3] * dtPred
   local predRot = _predictRot(targetRot, targetAngVel, dtPred)
+
+  -- Apply decaying blend correction for smooth packet-to-packet transitions.
+  -- This offsets the predicted position by a correction that linearly fades
+  -- to zero over BLEND_DURATION, smoothing out the jump when new data arrives.
+  if blendRemaining > 0 then
+    local blendFrac = blendRemaining / BLEND_DURATION
+    predX = predX + blendCorrX * blendFrac
+    predY = predY + blendCorrY * blendFrac
+    predZ = predZ + blendCorrZ * blendFrac
+    blendRemaining = blendRemaining - d
+    if blendRemaining <= 0 then
+      blendRemaining = 0
+      blendCorrX, blendCorrY, blendCorrZ = 0, 0, 0
+    end
+  end
 
   local errX = predX - (curPos.x or 0)
   local errY = predY - (curPos.y or 0)
@@ -230,7 +290,6 @@ function M.onPhysicsStep(dtSim)
     (curVel.z or 0) * (curVel.z or 0)
   )
 
-  local d = dtSim or 0.0005
   local teleportDist = TELEPORT_BASE_DIST + TELEPORT_SPEED_SCALE * speed
   local instantTeleportDist = TELEPORT_INSTANT_DIST + TELEPORT_SPEED_SCALE * speed
 
@@ -247,6 +306,8 @@ function M.onPhysicsStep(dtSim)
       velMod.setVelocity(targetVel[1], targetVel[2], targetVel[3])
     end
     teleportTimer = 0
+    blendRemaining = 0
+    blendCorrX, blendCorrY, blendCorrZ = 0, 0, 0
     return
   end
 
@@ -266,6 +327,8 @@ function M.onPhysicsStep(dtSim)
         velMod.setVelocity(targetVel[1], targetVel[2], targetVel[3])
       end
       teleportTimer = 0
+      blendRemaining = 0
+      blendCorrX, blendCorrY, blendCorrZ = 0, 0, 0
       return
     end
   else
@@ -328,8 +391,6 @@ function M.onPhysicsStep(dtSim)
   end
 end
 
--- Controller system dispatches init/update, not onInit/onPhysicsStep.
-M.init = M.onInit
-M.update = M.onPhysicsStep
+M.onExtensionLoaded = M.onInit
 
 return M

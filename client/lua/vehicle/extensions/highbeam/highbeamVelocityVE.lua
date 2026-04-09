@@ -1,5 +1,4 @@
 local M = {}
-M.name = "highbeam_highbeamVelocityVE"
 
 local connectedNodes = {}
 local connectedNodeCount = 0
@@ -74,6 +73,10 @@ end
 
 function M.onInit()
   M.recalcConnectivity()
+  -- Register for physics-rate updates via orchestrator hook
+  if highbeamVE and highbeamVE.addPhysUpdateHandler then
+    highbeamVE.addPhysUpdateHandler("velocityVE", M.onPhysicsStep)
+  end
 end
 
 function M.onBeamBroke(id, energy)
@@ -98,7 +101,6 @@ end
 
 function M.addVelocity(vx, vy, vz)
   if not obj then return end
-  -- Auto-recover if onInit ran before physics mesh was ready (zero nodes)
   if connectedNodeCount == 0 then
     M.recalcConnectivity()
     if connectedNodeCount == 0 then return end
@@ -129,7 +131,6 @@ end
 
 function M.addAngularVelocity(avx, avy, avz, px, py, pz)
   if not obj then return end
-  -- Auto-recover if onInit ran before physics mesh was ready (zero nodes)
   if connectedNodeCount == 0 then
     M.recalcConnectivity()
     if connectedNodeCount == 0 then return end
@@ -171,8 +172,6 @@ function M.addAngularVelocity(avx, avy, avz, px, py, pz)
   end
 end
 
--- Set absolute velocity by zeroing current and adding target.
--- Uses cluster API when available, falls back to per-node forces.
 function M.setVelocity(vx, vy, vz)
   if not obj then return end
   if connectedNodeCount == 0 then
@@ -183,13 +182,11 @@ function M.setVelocity(vx, vy, vz)
   if obj.applyClusterVelocityScaleAdd and connectedNodeCount > 0 and obj.getNodeCount then
     local okNodeCount, nodeCount = pcall(obj.getNodeCount, obj)
     if okNodeCount and nodeCount and nodeCount > 0 and (connectedNodeCount / nodeCount) > 0.9 then
-      -- Scale 0 zeros existing velocity, then adds vx/vy/vz
       pcall(obj.applyClusterVelocityScaleAdd, obj, 0, 0, vx, vy, vz)
       return
     end
   end
 
-  -- Fallback: compute delta and use addVelocity
   local curVel = obj:getVelocity()
   if curVel then
     local dvx = vx - (curVel.x or 0)
@@ -207,8 +204,6 @@ function M.getConnectedNodeCount()
   return connectedNodeCount
 end
 
--- Controller system dispatches init/update, not onInit/onPhysicsStep.
-M.init = M.onInit
-M.update = M.onPhysicsStep
+M.onExtensionLoaded = M.onInit
 
 return M

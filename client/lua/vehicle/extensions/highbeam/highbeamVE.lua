@@ -1,5 +1,4 @@
 local M = {}
-M.name = "highbeam_highbeamVE"
 
 local isRemote = false
 local isActive = false
@@ -8,58 +7,87 @@ local gameVehicleId = 0
 local sendTimer = 0
 local SEND_INTERVAL = 1 / 60
 
-local function _safeController(name)
-  if controller and controller.getController then
-    local ok, mod = pcall(controller.getController, name)
-    if ok and mod then return mod end
+-- Physics-step dispatch: modules that need physics-rate callbacks register here.
+-- Mirrors BeamMP's MPVehicleVE.AddPhysUpdateHandler pattern.
+local physUpdateHandlers = {}
+local origMotionSimUpdate = nil
+local physHookInstalled = false
+
+local function _installPhysHook()
+  if physHookInstalled then return end
+  if not motionSim or not motionSim.update then return end
+  origMotionSimUpdate = motionSim.update
+  motionSim.update = function(dtSim)
+    origMotionSimUpdate(dtSim)
+    for _, handler in pairs(physUpdateHandlers) do
+      handler(dtSim)
+    end
   end
-  return rawget(_G, name)
+  motionSim.isPhysicsStepUsed = function() return true end
+  if updateCorePhysicsStepEnabled then
+    updateCorePhysicsStepEnabled()
+  end
+  physHookInstalled = true
+end
+
+function M.addPhysUpdateHandler(name, fn)
+  physUpdateHandlers[name] = fn
+end
+
+function M.removePhysUpdateHandler(name)
+  physUpdateHandlers[name] = nil
 end
 
 function M.onInit()
   if obj and obj.getID then
     gameVehicleId = obj:getID()
   end
+  _installPhysHook()
 end
 
 function M.setActive(active, remote)
   isActive = active and true or false
   isRemote = remote and true or false
 
-  local posVE = _safeController("highbeam_highbeamPositionVE")
+  local posVE = highbeamPositionVE
   if posVE and posVE.setRemote then
     pcall(posVE.setRemote, isRemote)
   end
 
-  local inputsVE = _safeController("highbeam_highbeamInputsVE")
+  local inputsVE = highbeamInputsVE
   if inputsVE and inputsVE.setActive then
     pcall(inputsVE.setActive, isActive, isRemote)
   end
 
-  local electricsVE = _safeController("highbeam_highbeamElectricsVE")
+  local electricsVE = highbeamElectricsVE
   if electricsVE and electricsVE.setActive then
     pcall(electricsVE.setActive, isActive, isRemote)
   end
 
-  local powertrainVE = _safeController("highbeam_highbeamPowertrainVE")
+  local powertrainVE = highbeamPowertrainVE
   if powertrainVE and powertrainVE.setActive then
     pcall(powertrainVE.setActive, isActive, isRemote)
   end
 
-  local damageVE = _safeController("highbeam_highbeamDamageVE")
+  local damageVE = highbeamDamageVE
   if damageVE and damageVE.setActive then
     pcall(damageVE.setActive, isActive, isRemote)
   end
 end
 
 function M.onBeamBroke(beamId, energy)
-  local damageVE = _safeController("highbeam_highbeamDamageVE")
+  local damageVE = highbeamDamageVE
   if damageVE and damageVE.onBeamBroke then
     pcall(damageVE.onBeamBroke, beamId, energy)
   else
     if obj and obj.queueGameEngineLua then
       obj:queueGameEngineLua(string.format("extensions.highbeam.onVEDamageDirty(%d)", gameVehicleId))
     end
+  end
+
+  local velVE = highbeamVelocityVE
+  if velVE and velVE.onBeamBroke then
+    pcall(velVE.onBeamBroke, beamId, energy)
   end
 end
 
@@ -112,7 +140,6 @@ function M.updateGFX(dt)
   end
 end
 
--- Controller system dispatches init(), not onInit().
-M.init = M.onInit
+M.onExtensionLoaded = M.onInit
 
 return M

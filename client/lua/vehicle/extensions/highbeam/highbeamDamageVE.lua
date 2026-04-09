@@ -1,5 +1,4 @@
 local M = {}
-M.name = "highbeam_highbeamDamageVE"
 
 local isRemote = false
 local isActive = false
@@ -11,12 +10,11 @@ local damageTimer = 0
 local DAMAGE_SEND_INTERVAL = 1 / 15
 local dirty = false
 
--- Bug #3c: Deformation polling state
 local deformPollCursor = 0
 local deformPollTimer = 0
-local DEFORM_POLL_INTERVAL = 0.2  -- check every 200ms
-local DEFORM_POLL_BATCH = 10      -- beams per poll cycle
-local DEFORM_THRESHOLD = 0.002    -- minimum deformation to trigger dirty
+local DEFORM_POLL_INTERVAL = 0.2
+local DEFORM_POLL_BATCH = 10
+local DEFORM_THRESHOLD = 0.002
 
 local function _jsonEncode(v)
   if jsonEncode then
@@ -66,8 +64,6 @@ end
 function M.updateGFX(dt)
   if not isActive or isRemote then return end
 
-  -- Bug #3c: Round-robin deformation polling to catch deformation without beam breaks.
-  -- Checks a small batch of beams each cycle to avoid frame spikes.
   deformPollTimer = deformPollTimer + (dt or 0)
   if not dirty and deformPollTimer >= DEFORM_POLL_INTERVAL then
     deformPollTimer = 0
@@ -80,7 +76,6 @@ function M.updateGFX(dt)
           local okDef, deform = pcall(obj.getBeamDeformation, obj, beamIdx)
           if okDef and deform and deform > DEFORM_THRESHOLD then
             dirty = true
-            -- Also notify GE to mark dirty for the polling path
             if obj.queueGameEngineLua then
               obj:queueGameEngineLua("extensions.highbeam.onVEDamageDirty(" .. gameVehicleId .. ")")
             end
@@ -136,7 +131,6 @@ function M.updateGFX(dt)
   end
 end
 
--- Controller system dispatches init(), not onInit().
-M.init = M.onInit
+M.onExtensionLoaded = M.onInit
 
 return M

@@ -1,5 +1,4 @@
 local M = {}
-M.name = "highbeam_highbeamElectricsVE"
 
 local isRemote = false
 local isActive = false
@@ -119,7 +118,6 @@ function M.applyElectrics(data)
     end
   end
 
-  -- Report via GE if any keys were unexpectedly denied (debugging aid)
   if deniedCount > 0 and obj and obj.queueGameEngineLua then
     obj:queueGameEngineLua(string.format(
       "log('D','highbeamElectricsVE','applied=%d denied=%d vid=%d')",
@@ -128,7 +126,6 @@ function M.applyElectrics(data)
   end
 end
 
--- Controller system dispatches init(), not onInit().
-M.init = M.onInit
+M.onExtensionLoaded = M.onInit
 
 return M

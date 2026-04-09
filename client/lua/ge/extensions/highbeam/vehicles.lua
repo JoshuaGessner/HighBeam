@@ -6,7 +6,6 @@ M._remoteGameIds = {} -- [gameVehicleId] = true  (quick lookup for isRemote)
 M._spawningRemote = false -- Guard flag: true while core_vehicles.spawnNewVehicle is in-flight
 M._debugStats = {}  -- P0: Exposed debug stats for overlay
 
-local interpolationMath = require("highbeam/math")
 local config = require("highbeam/config")
 local _diagTimer = 0
 local _diagIntervalSec = 5.0
@@ -18,16 +17,6 @@ local SPAWN_RETRY_MAX_ATTEMPTS = 15
 local SPAWN_RETRY_BASE_DELAY = 0.75
 local VE_PROBE_RETRY_DELAY = 0.5      -- seconds between VE probe retries
 local VE_PROBE_MAX_RETRIES = 6        -- max re-probes before giving up
-
--- Thresholds for skipping setPositionRotation when delta is negligible
-local POS_DELTA_SQ_THRESHOLD = 0.000025  -- 0.005m squared
-local ROT_DELTA_SQ_THRESHOLD = 0.000001  -- ~0.001 quat component
-
--- P0: Correction magnitude counters for diagnostics
-local _correctionPosSum = 0
-local _correctionRotSum = 0
-local _correctionCount = 0
-local _teleportCount = 0
 local _componentApplyStats = {}
 local makeKey
 
@@ -64,69 +53,6 @@ local function _withRemoteVehicle(playerId, vehicleId, stage)
   return veh, rv, key
 end
 
-local function _quatNormalize(q)
-  return interpolationMath.normalizeQuat(q)
-end
-
-local function _quatFromAngularVelocity(baseRot, angVel, dt)
-  if not baseRot or not angVel or dt <= 0 then return baseRot end
-  local wx = angVel[1] or 0
-  local wy = angVel[2] or 0
-  local wz = angVel[3] or 0
-  local speed = math.sqrt(wx*wx + wy*wy + wz*wz)
-  if speed < 0.0001 then return baseRot end
-
-  local half = 0.5 * speed * dt
-  local s = math.sin(half)
-  local c = math.cos(half)
-  local ax = wx / speed
-  local ay = wy / speed
-  local az = wz / speed
-  local dq = { ax * s, ay * s, az * s, c }
-
-  local bx, by, bz, bw = baseRot[1], baseRot[2], baseRot[3], baseRot[4]
-  local dx, dy, dz, dw = dq[1], dq[2], dq[3], dq[4]
-  local out = {
-    dw*bx + dx*bw + dy*bz - dz*by,
-    dw*by - dx*bz + dy*bw + dz*bx,
-    dw*bz + dx*by - dy*bx + dz*bw,
-    dw*bw - dx*bx - dy*by - dz*bz,
-  }
-  return _quatNormalize(out)
-end
-
-local function _shouldApplyPosRot(rv, pos, rot)
-  if not rv._lastAppliedPos then return true end
-  local lp = rv._lastAppliedPos
-  local lr = rv._lastAppliedRot
-  local dx = pos[1] - lp[1]
-  local dy = pos[2] - lp[2]
-  local dz = pos[3] - lp[3]
-  if (dx*dx + dy*dy + dz*dz) > POS_DELTA_SQ_THRESHOLD then return true end
-  local drx = rot[1] - lr[1]
-  local dry = rot[2] - lr[2]
-  local drz = rot[3] - lr[3]
-  local drw = rot[4] - lr[4]
-  if (drx*drx + dry*dry + drz*drz + drw*drw) > ROT_DELTA_SQ_THRESHOLD then return true end
-  return false
-end
-
-local function _applyPosRot(rv, pos, rot, vel)
-  -- When VE is active, updateRemote() already sends raw setTarget directly.
-  -- Only update tracking state here; skip the redundant queueLuaCommand to
-  -- avoid double-smoothing (GE interpolation + VE PD correction).
-  if rv._hasVE and rv.gameVehicle then
-    rv._lastAppliedPos = { pos[1], pos[2], pos[3] }
-    rv._lastAppliedRot = { rot[1], rot[2], rot[3], rot[4] }
-    return
-  end
-
-  -- Fallback for pre-VE bootstrap: use setPositionRotation (resets velocity)
-  rv.gameVehicle:setPositionRotation(pos[1], pos[2], pos[3], rot[1], rot[2], rot[3], rot[4])
-  rv._lastAppliedPos = { pos[1], pos[2], pos[3] }
-  rv._lastAppliedRot = { rot[1], rot[2], rot[3], rot[4] }
-end
-
 local function _countPendingSpawnRetries()
   local count = 0
   for _, rv in pairs(M.remoteVehicles) do
@@ -145,38 +71,8 @@ local function _getConfigNumber(key, fallback)
   return fallback
 end
 
-local function _getInterpolationDelay()
-  return _getConfigNumber("interpolationDelayMs", 50) / 1000.0
-end
-
-local function _getExtrapolationWindow()
-  return _getConfigNumber("extrapolationMs", 120) / 1000.0
-end
-
 local function _getMaxSnapshots()
-  local raw = _getConfigNumber("jitterBufferSnapshots", 8)
-  return math.max(2, math.floor(raw))
-end
-
-local function _getCorrectionBlendFactor()
-  return _getConfigNumber("correctionBlendFactor", 0.15)
-end
-
-local function _getCorrectionTeleportDist()
-  return _getConfigNumber("correctionTeleportDist", 10.0)
-end
-
-local function _getLodDistanceNear()
-  return _getConfigNumber("lodDistanceNear", 200)
-end
-
-local function _getLodDistanceFar()
-  return _getConfigNumber("lodDistanceFar", 500)
-end
-
-local function _isDirectSteering()
-  local value = config and config.get and config.get("directSteering")
-  return value ~= false  -- default true
+  return 2  -- Only need latest + previous for spawn retry and nametag lookups
 end
 
 makeKey = function(playerId, vehicleId)
@@ -188,116 +84,22 @@ local function _queueRemoteVeBootstrap(rv, key)
   local vehObj = rv.gameVehicle
   pcall(function()
     vehObj:queueLuaCommand([[
+      extensions.loadModulesInDirectory("lua/vehicle/extensions/highbeam")
       local _missing = {}
-
-      -- Helper: retrieve a controller module by name.
-      -- controller.loadControllerExternal does NOT create globals;
-      -- the only reliable accessor is controller.getController().
-      local function _gc(name)
-        if controller and controller.getController then
-          local ok, mod = pcall(controller.getController, name)
-          if ok and mod then return mod end
-        end
-        return nil
-      end
-
-      -- Register VE modules as controllers so physics callbacks (onPhysicsStep)
-      -- are guaranteed to execute for remote simulation.
-      local _veModules = {
-        {"highbeam/highbeamVE", "highbeam_highbeamVE"},
-        {"highbeam/highbeamPositionVE", "highbeam_highbeamPositionVE"},
-        {"highbeam/highbeamVelocityVE", "highbeam_highbeamVelocityVE"},
-        {"highbeam/highbeamInputsVE", "highbeam_highbeamInputsVE"},
-        {"highbeam/highbeamElectricsVE", "highbeam_highbeamElectricsVE"},
-        {"highbeam/highbeamPowertrainVE", "highbeam_highbeamPowertrainVE"},
-        {"highbeam/highbeamDamageVE", "highbeam_highbeamDamageVE"},
-      }
-      local _controllerLoader = controller and controller.loadControllerExternal
-      if _controllerLoader then
-        for _, entry in ipairs(_veModules) do
-          -- Skip if already registered (avoids "duplicate controller" error on retry)
-          if not _gc(entry[2]) then
-            pcall(_controllerLoader, entry[1], entry[2])
-          end
-        end
+      local _ready = false
+      if highbeamVE and highbeamVE.setActive then
+        highbeamVE.setActive(true, true)
+        _ready = true
       else
-        table.insert(_missing, "controller.loadControllerExternal")
+        table.insert(_missing, "highbeamVE")
       end
-
-      -- CRITICAL: loadControllerExternal can trigger powertrain re-init that
-      -- clears desiredGearRatio on gearbox devices. Patch it before the next
-      -- powertrain.updateGFX tick to prevent FATAL nil arithmetic crash.
-      -- Also kill ignition so the gearbox sits idle until warmup phases it in.
-      if powertrain and powertrain.getDevices then
-        local _pok, _pdevs = pcall(powertrain.getDevices)
-        if _pok and _pdevs then
-          for _, _pdev in pairs(_pdevs) do
-            if _pdev.desiredGearRatio == nil then
-              _pdev.desiredGearRatio = _pdev.gearRatio or 0
-            end
-          end
-        end
-      end
-      if electrics and electrics.values then
-        electrics.values.ignitionLevel = 0
-      end
-
-      -- Probe via controller.getController — NOT globals
-      local _mVE         = _gc("highbeam_highbeamVE")
-      local _mPos        = _gc("highbeam_highbeamPositionVE")
-      local _mVel        = _gc("highbeam_highbeamVelocityVE")
-      local _mInputs     = _gc("highbeam_highbeamInputsVE")
-      local _mElectrics  = _gc("highbeam_highbeamElectricsVE")
-      local _mPowertrain = _gc("highbeam_highbeamPowertrainVE")
-      local _mDamage     = _gc("highbeam_highbeamDamageVE")
-
-      local _hasVE         = _mVE and _mVE.setActive
-      local _hasPos        = _mPos and _mPos.setRemote and _mPos.setTarget
-      local _hasVel        = _mVel and _mVel.addVelocity
-      local _hasInputs     = _mInputs and _mInputs.setActive
-      local _hasElectrics  = _mElectrics and _mElectrics.setActive
-      local _hasPowertrain = _mPowertrain and _mPowertrain.setActive
-      local _hasDamage     = _mDamage and _mDamage.setActive
-
-      if not _hasVE then table.insert(_missing, "highbeam_highbeamVE") end
-      if not _hasPos then table.insert(_missing, "highbeam_highbeamPositionVE") end
-      if not _hasVel then table.insert(_missing, "highbeam_highbeamVelocityVE") end
-      if not _hasInputs then table.insert(_missing, "highbeam_highbeamInputsVE") end
-      if not _hasElectrics then table.insert(_missing, "highbeam_highbeamElectricsVE") end
-      if not _hasPowertrain then table.insert(_missing, "highbeam_highbeamPowertrainVE") end
-      if not _hasDamage then table.insert(_missing, "highbeam_highbeamDamageVE") end
-
-      local _ready = (_controllerLoader and _hasVE and _hasPos and _hasVel and _hasInputs and _hasElectrics and _hasPowertrain and _hasDamage) and true or false
-
-      if _ready then
-        -- Defensive: call init() explicitly in case controller system defers dispatch.
-        for _, entry in ipairs(_veModules) do
-          local _mod = _gc(entry[2])
-          if _mod and _mod.init then pcall(_mod.init) end
-        end
-        _mVE.setActive(true, true)
-        _mPos.setRemote(true)
-        _mInputs.setActive(true, true)
-        _mElectrics.setActive(true, true)
-        _mPowertrain.setActive(true, true)
-        _mDamage.setActive(true, true)
-
-        -- Re-patch gearbox after activation in case setActive triggered
-        -- another powertrain reinit cycle.
-        if powertrain and powertrain.getDevices then
-          local _pok2, _pdevs2 = pcall(powertrain.getDevices)
-          if _pok2 and _pdevs2 then
-            for _, _pdev2 in pairs(_pdevs2) do
-              if _pdev2.desiredGearRatio == nil then
-                _pdev2.desiredGearRatio = _pdev2.gearRatio or 0
-              end
-            end
-          end
-        end
-        -- Ignition forced to 0 above; warmup guard in powertrainVE will
-        -- phase it back 0→1→2 as server sync data arrives.
-      end
-
+      if not highbeamPositionVE then table.insert(_missing, "highbeamPositionVE") end
+      if not highbeamVelocityVE then table.insert(_missing, "highbeamVelocityVE") end
+      if not highbeamInputsVE then table.insert(_missing, "highbeamInputsVE") end
+      if not highbeamElectricsVE then table.insert(_missing, "highbeamElectricsVE") end
+      if not highbeamPowertrainVE then table.insert(_missing, "highbeamPowertrainVE") end
+      if not highbeamDamageVE then table.insert(_missing, "highbeamDamageVE") end
+      if #_missing > 0 then _ready = false end
       local _missingCsv = table.concat(_missing, ",")
       obj:queueGameEngineLua(
         "if extensions and extensions.highbeam and extensions.highbeam.onRemoteVEReady then extensions.highbeam.onRemoteVEReady(" .. tostring(obj:getID()) .. "," .. tostring(_ready) .. "," .. string.format("%q", _missingCsv) .. ") end"
@@ -308,7 +110,7 @@ local function _queueRemoteVeBootstrap(rv, key)
   rv._veProbeMissing = nil
   rv._hasVE = false
   if _verboseSyncLoggingEnabled() then
-    log('D', logTag, 'Queued remote VE capability probe key=' .. tostring(key)
+    log('D', logTag, 'Queued remote VE bootstrap key=' .. tostring(key)
       .. ' gameVid=' .. tostring(rv.gameVehicleId))
   end
 end
@@ -348,7 +150,7 @@ end
 
 -- Receive heartbeat from remote vehicle's positionVE (sent every ~1s while vlua alive).
 -- Updates _veLastHeartbeat timestamp used by death detection in onUpdate.
-local VE_DEATH_TIMEOUT_SEC = 3.0
+local VE_DEATH_TIMEOUT_SEC = 5.0
 M.onVEHeartbeat = function(gameVehicleId)
   if not gameVehicleId then return end
   for _, rv in pairs(M.remoteVehicles) do
@@ -522,27 +324,6 @@ M.spawnRemote = function(playerId, vehicleId, configData, snapshot)
   end
 
   if vid then
-    -- Immediate safety: kill ignition and patch gearbox BEFORE VE bootstrap.
-    -- The vehicle inherits the sender's running state (ignition=2, gearbox in
-    -- drive). Stock automaticGearbox.updateGFX crashes if desiredGearRatio is
-    -- nil after spawn. This runs on the first available vlua tick.
-    pcall(function()
-      vehObj:queueLuaCommand([[
-        if electrics and electrics.values then
-          electrics.values.ignitionLevel = 0
-        end
-        if powertrain and powertrain.getDevices then
-          local ok, devs = pcall(powertrain.getDevices)
-          if ok and devs then
-            for _, dev in pairs(devs) do
-              if dev.desiredGearRatio == nil then
-                dev.desiredGearRatio = dev.gearRatio or 0
-              end
-            end
-          end
-        end
-      ]])
-    end)
     _queueRemoteVeBootstrap(M.remoteVehicles[key], key)
     log('I', logTag, 'Spawned remote vehicle: ' .. key .. ' gameVid=' .. tostring(vid))
   else
@@ -633,7 +414,7 @@ M.updateRemote = function(decoded)
     local az = decoded.angVel and decoded.angVel[3] or 0
     pcall(function()
       rv.gameVehicle:queueLuaCommand(string.format(
-        "local _p = controller and controller.getController and controller.getController('highbeam_highbeamPositionVE'); if _p and _p.setTarget then _p.setTarget(%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f,%.4f,%.4f) end",
+        "if highbeamPositionVE and highbeamPositionVE.setTarget then highbeamPositionVE.setTarget(%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f,%.4f,%.0f) end",
         decoded.pos[1], decoded.pos[2], decoded.pos[3],
         decoded.vel[1], decoded.vel[2], decoded.vel[3],
         decoded.rot[1], decoded.rot[2], decoded.rot[3], decoded.rot[4],
@@ -643,18 +424,13 @@ M.updateRemote = function(decoded)
     end)
   end
 
-  -- Store for GE interpolation fallback path
-  rv._lastAngVel = decoded.angVel
-  rv._lastTargetTime = decoded.time
-
+  -- Keep latest snapshot for spawn retry position and nametag lookups
   table.insert(rv.snapshots, {
     pos = decoded.pos,
     rot = decoded.rot,
     vel = decoded.vel,
     time = decoded.time,
     received = recvTime,
-    inputs = decoded.inputs,  -- nil for legacy 0x10 packets
-    angVel = decoded.angVel,
   })
 
   local maxSnapshots = _getMaxSnapshots()
@@ -731,22 +507,6 @@ M.resetRemote = function(playerId, vehicleId, data)
   rv._lastResetAt = now
   rv._lastResetPayload = data
 
-  local resetBurstWindowSec = math.max(0.2, math.min(10.0, _getConfigNumber("resetBurstWindowSec", 2.0)))
-  local resetBurstThreshold = math.max(2, math.floor(_getConfigNumber("resetBurstThreshold", 3)))
-  local resetStabilizeSec = math.max(0.2, math.min(10.0, _getConfigNumber("resetStabilizeSec", 2.0)))
-
-  local lastBurstAt = rv._resetBurstLastAt or 0
-  if (now - lastBurstAt) <= resetBurstWindowSec then
-    rv._resetBurstCount = (rv._resetBurstCount or 0) + 1
-  else
-    rv._resetBurstCount = 1
-  end
-  rv._resetBurstLastAt = now
-  if rv._resetBurstCount >= resetBurstThreshold then
-    rv._resetStabilizeUntil = now + resetStabilizeSec
-    _bumpApplyStat("reset_stabilize_enter")
-  end
-
   local cfg = _decodeJson(data)
   if not cfg then
     _bumpApplyStat("reset_drop_decode")
@@ -767,7 +527,7 @@ M.resetRemote = function(playerId, vehicleId, data)
     if rv._hasVE and rv.gameVehicle then
       pcall(function()
         rv.gameVehicle:queueLuaCommand(string.format(
-          "local _p = controller and controller.getController and controller.getController('highbeam_highbeamPositionVE'); if _p and _p.setTarget then _p.setTarget(%.4f,%.4f,%.4f,0,0,0,%.6f,%.6f,%.6f,%.6f,0,0,0,%.4f) end",
+          "if highbeamPositionVE and highbeamPositionVE.setTarget then highbeamPositionVEend",
           cfg.pos[1], cfg.pos[2], cfg.pos[3],
           cfg.rot[1], cfg.rot[2], cfg.rot[3], cfg.rot[4],
           os.clock()
@@ -911,7 +671,7 @@ M.applyElectrics = function(playerId, vehicleId, electricsData)
   if M.remoteVehicles[key] and M.remoteVehicles[key]._hasVE then
     local jsonPayload = string.format("%q", tostring(electricsData or "{}"))
     local okForward = pcall(function()
-      veh:queueLuaCommand("local _m = controller and controller.getController and controller.getController('highbeam_highbeamElectricsVE'); if _m and _m.applyElectrics then local _hbj=" .. jsonPayload .. "; local _hbt=(jsonDecode and jsonDecode(_hbj)) or {}; _m.applyElectrics(_hbt) end")
+      veh:queueLuaCommand("if highbeamElectricsVE and highbeamElectricsVE.applyElectrics then local _hbj=" .. jsonPayload .. "; local _hbt=(jsonDecode and jsonDecode(_hbj)) or {}; highbeamElectricsVE
     end)
     if okForward then
       _bumpApplyStat("electrics_applied")
@@ -970,9 +730,7 @@ M.applyElectrics = function(playerId, vehicleId, electricsData)
     if elec.clutch ~= nil then
       table.insert(cmds, 'electrics.values.clutch = ' .. tostring(elec.clutch))
     end
-    -- ignitionLevel is intentionally omitted from this fallback path.
-    -- It is handled exclusively by powertrainVE's warmup-guarded logic
-    -- to prevent gearbox crashes (automaticGearbox.desiredGearRatio nil).
+    -- ignitionLevel is handled exclusively by powertrainVE.
     if #cmds > 0 then
       commandCount = #cmds
       veh:queueLuaCommand(table.concat(cmds, ' '))
@@ -1006,9 +764,9 @@ M.applyInputs = function(playerId, vehicleId, deltaStr)
   end
 
   local ok = pcall(function()
-    veh:queueLuaCommand("local _m = controller and controller.getController and controller.getController('highbeam_highbeamInputsVE'); if _m and _m.applyInputs then local d={} for part in string.gmatch(" .. escapeLuaString(deltaStr) .. ",'[^,]+') do local k,v=string.match(part,'^([%a]+)=([^,]+)$'); if k then d[k]=tonumber(v) or 0 end end _m.applyInputs(d) end")
+    veh:queueLuaCommand("if highbeamInputsVE and highbeamInputsVE.applyInputs then local d={} for part in string.gmatch(" .. escapeLuaString(deltaStr) .. ",'[^,]+') do local k,v=string.match(part,'^([%a]+)=([^,]+)$'); if k then d[k]=tonumber(v) or 0 end end highbeamInputsVE.applyInputs(d) end")
   end)
-  if ok then
+  if ok thenif highbeamInputsVE and highbeamInputsVE.applyInputs then local d={} for part in string.gmatch(" .. escapeLuaString(deltaStr) .. ",'[^,]+') do local k,v=string.match(part,'^([%a]+)=([^,]+)$'); if k then d[k]=tonumber(v) or 0 end end highbeamInputsVE
     _bumpApplyStat("inputs_applied")
   else
     _bumpApplyStat("inputs_error_apply")
@@ -1025,9 +783,9 @@ M.applyPowertrain = function(playerId, vehicleId, powertrainData)
 
   local jsonPayload = string.format("%q", tostring(powertrainData or "{}"))
   local ok = pcall(function()
-    veh:queueLuaCommand("local _m = controller and controller.getController and controller.getController('highbeam_highbeamPowertrainVE'); if _m and _m.applyPowertrain then local _hbj=" .. jsonPayload .. "; local _hbt=(jsonDecode and jsonDecode(_hbj)) or {}; _m.applyPowertrain(_hbt) end")
+    veh:queueLuaCommand("if highbeamPowertrainVE and highbeamPowertrainVE.applyPowertrain then local _hbj=" .. jsonPayload .. "; local _hbt=(jsonDecode and jsonDecode(_hbj)) or {}; highbeamPowertrainVE.applyPowertrain(_hbt) end")
   end)
-  if ok then
+  if ok thenif highbeamPowertrainVE and highbeamPowertrainVE.applyPowertrain then local _hbj=" .. jsonPayload .. "; local _hbt=(jsonDecode and jsonDecode(_hbj)) or {}; highbeamPowertrainVE
     _bumpApplyStat("powertrain_applied")
   else
     _bumpApplyStat("powertrain_error_apply")
@@ -1168,30 +926,8 @@ M.removeAllForPlayer = function(playerId)
 end
 
 -- P3.4: Helper to get camera position for LOD distance
-local function _getCameraPos()
-  if core_camera and core_camera.getPosition then
-    local p = core_camera.getPosition()
-    if p then return p.x, p.y, p.z end
-  end
-  return nil, nil, nil
-end
-
 M.tick = function(dt)
-  local interpolationEnabled = (config and config.get and config.get("interpolation")) ~= false
-  local interpolationDelay = _getInterpolationDelay()
-  local extrapolationWindow = _getExtrapolationWindow()
-  local correctionBlend = _getCorrectionBlendFactor()
-  local teleportDist = _getCorrectionTeleportDist()
-  local teleportDistSq = teleportDist * teleportDist
-  local directSteering = _isDirectSteering()
-  local lodNear = _getLodDistanceNear()
-  local lodFar = _getLodDistanceFar()
-  local lodFarSq = lodFar * lodFar
   local now = os.clock()
-  local renderTime = now - interpolationDelay
-
-  -- P3.4: Get camera position for LOD calculations
-  local camX, camY, camZ = _getCameraPos()
 
   for _, rv in pairs(M.remoteVehicles) do
     if (not rv.gameVehicleId) and rv.spawnRetry then
@@ -1249,7 +985,7 @@ M.tick = function(dt)
     end
 
     -- VE death detection: if heartbeat stops arriving for VE_DEATH_TIMEOUT_SEC,
-    -- the remote vlua has crashed. Reset _hasVE to re-enable GE fallback positioning.
+    -- the remote vlua has crashed. Re-bootstrap to recover.
     if rv._hasVE and rv._veLastHeartbeat then
       local hbAge = now - rv._veLastHeartbeat
       if hbAge > VE_DEATH_TIMEOUT_SEC then
@@ -1268,234 +1004,6 @@ M.tick = function(dt)
         _queueRemoteVeBootstrap(rv, key)
         log('I', logTag, 'VE recovery queued key=' .. key
           .. ' deathCount=' .. tostring(rv._veDeathCount))
-      end
-    end
-
-    -- When VE is active, it handles physics-rate positioning via onPhysicsStep.
-    -- GE still computes interpolation targets and forwards them via _applyPosRot
-    -- (which dispatches to VE queueLuaCommand when _hasVE is true).
-    -- Skip LOD throttling when VE is active since VE handles its own rate.
-
-    -- P3.4: LOD skip — for very distant vehicles, reduce update frequency
-    -- Skip LOD throttling when VE is active; VE handles physics-rate positioning.
-    if not rv._hasVE and rv.gameVehicle and camX and rv._lastAppliedPos then
-      local dx = rv._lastAppliedPos[1] - camX
-      local dy = rv._lastAppliedPos[2] - camY
-      local dz = rv._lastAppliedPos[3] - camZ
-      local distSq = dx*dx + dy*dy + dz*dz
-      if distSq > lodFarSq then
-        -- Beyond LOD far: update only every 4th tick
-        rv._lodSkipCounter = (rv._lodSkipCounter or 0) + 1
-        if rv._lodSkipCounter % 4 ~= 0 then
-          goto continue_vehicle
-        end
-      elseif distSq > (lodNear * lodNear) then
-        -- Between near and far: update every 2nd tick
-        rv._lodSkipCounter = (rv._lodSkipCounter or 0) + 1
-        if rv._lodSkipCounter % 2 ~= 0 then
-          goto continue_vehicle
-        end
-      else
-        rv._lodSkipCounter = 0
-      end
-    end
-
-    if rv.gameVehicle and #rv.snapshots >= 2 and interpolationEnabled and not rv._hasVE then
-      local s1 = nil
-      local s2 = nil
-
-      -- Use sender timestamps (translated to local time) for interpolation.
-      local timeOffset = rv.timeOffset or 0
-      local localRenderTime = renderTime
-
-      for i = 1, #rv.snapshots - 1 do
-        local a = rv.snapshots[i]
-        local b = rv.snapshots[i + 1]
-        local aLocal = (a.time or a.received) + timeOffset
-        local bLocal = (b.time or b.received) + timeOffset
-        if aLocal <= localRenderTime and bLocal >= localRenderTime then
-          s1 = a
-          s2 = b
-          break
-        end
-      end
-
-      if not s1 or not s2 then
-        s1 = rv.snapshots[#rv.snapshots - 1]
-        s2 = rv.snapshots[#rv.snapshots]
-      end
-
-      local s1Local = (s1.time or s1.received) + timeOffset
-      local s2Local = (s2.time or s2.received) + timeOffset
-      local span = s2Local - s1Local
-      local t = 1
-      if span > 0.0001 then
-        t = (localRenderTime - s1Local) / span
-      end
-
-      local targetPos = nil
-      local targetRot = nil
-
-      if t <= 1.0 then
-        -- Cubic Hermite interpolation using velocity at both endpoints
-        targetPos = interpolationMath.hermiteVec3(s1.pos, s1.vel, s2.pos, s2.vel, span, t)
-        targetRot = interpolationMath.slerpQuat(s1.rot, s2.rot, t)
-      else
-        -- Extrapolate using latest velocity
-        local extraT = math.min((localRenderTime - s2Local), extrapolationWindow)
-        local vx = s2.vel[1] or 0
-        local vy = s2.vel[2] or 0
-        local vz = s2.vel[3] or 0
-
-        targetPos = {
-          s2.pos[1] + vx * extraT,
-          s2.pos[2] + vy * extraT,
-          s2.pos[3] + vz * extraT,
-        }
-        targetRot = _quatFromAngularVelocity(s2.rot, s2.angVel, extraT)
-      end
-
-      -- P2.2: Smooth correction blending instead of instant teleport.
-      -- Blend the current physics position toward the target position each frame.
-      -- If the error is very large, teleport immediately.
-      local finalPos = targetPos
-      local finalRot = targetRot
-      local correctionBlendCurrent = correctionBlend
-      local teleportDistSqCurrent = teleportDistSq
-      if rv._resetStabilizeUntil and now < rv._resetStabilizeUntil then
-        correctionBlendCurrent = math.min(1.0, correctionBlendCurrent * 2.5)
-        teleportDistSqCurrent = (teleportDist * 3.0) * (teleportDist * 3.0)
-      end
-      if rv._lastAppliedPos then
-        local errX = targetPos[1] - rv._lastAppliedPos[1]
-        local errY = targetPos[2] - rv._lastAppliedPos[2]
-        local errZ = targetPos[3] - rv._lastAppliedPos[3]
-        local errSq = errX*errX + errY*errY + errZ*errZ
-
-        -- P0.2: Track correction magnitudes for debug overlay
-        _correctionCount = _correctionCount + 1
-        _correctionPosSum = _correctionPosSum + math.sqrt(errSq)
-        if rv._lastAppliedRot then
-          local dqx = targetRot[1] - rv._lastAppliedRot[1]
-          local dqy = targetRot[2] - rv._lastAppliedRot[2]
-          local dqz = targetRot[3] - rv._lastAppliedRot[3]
-          local dqw = targetRot[4] - rv._lastAppliedRot[4]
-          _correctionRotSum = _correctionRotSum + math.sqrt(dqx*dqx + dqy*dqy + dqz*dqz + dqw*dqw)
-        end
-
-        if errSq > teleportDistSqCurrent then
-          -- Large error: teleport instantly
-          _teleportCount = _teleportCount + 1
-        elseif errSq > POS_DELTA_SQ_THRESHOLD then
-          -- Small-to-medium error: blend toward target
-          local blend = math.min(1.0, correctionBlendCurrent * dt * 60)  -- normalize to ~60fps
-          finalPos = {
-            rv._lastAppliedPos[1] + errX * blend,
-            rv._lastAppliedPos[2] + errY * blend,
-            rv._lastAppliedPos[3] + errZ * blend,
-          }
-          -- Also blend rotation
-          if rv._lastAppliedRot then
-            finalRot = interpolationMath.slerpQuat(rv._lastAppliedRot, targetRot, blend)
-          end
-        end
-      end
-
-      -- Compute velocity for VE forwarding
-      local interpVel = s2.vel
-      if _shouldApplyPosRot(rv, finalPos, finalRot) then
-        _applyPosRot(rv, finalPos, finalRot, interpVel)
-      end
-    elseif rv.gameVehicle and #rv.snapshots >= 1 and not rv._hasVE then
-      local latest = rv.snapshots[#rv.snapshots]
-      local latestPos = latest.pos
-      local latestRot = latest.rot
-      if _shouldApplyPosRot(rv, latestPos, latestRot) then
-        _applyPosRot(rv, latestPos, latestRot, latest.vel)
-      end
-    end
-
-    -- Apply steering/throttle/brake inputs to remote vehicle
-    -- Skip GE-level input application when VE is active — VE handles inputs
-    -- at physics rate via highbeamInputsVE.applyInputs(), so GE-level writes
-    -- would compete and cause jitter.
-    if rv.gameVehicle and not rv._hasVE and rv.snapshots and #rv.snapshots >= 1 then
-      local latestSnap = rv.snapshots[#rv.snapshots]
-      if latestSnap.inputs then
-        local inp = latestSnap.inputs
-        -- P3.3: Collect all input commands into a single batch
-        local inputCmds = {}
-
-        if directSteering then
-          -- P4.1: Direct steering via electrics — bypasses the input filter
-          -- that adds unwanted smoothing/deadzone to remote vehicle steering.
-          if inp.steer then
-            local lastSteer = rv._lastAppliedSteer
-            local newSteer = inp.steer
-            -- P4.2: Tighter threshold for smooth remote steering
-            if not lastSteer or math.abs(newSteer - lastSteer) > 0.002 then
-              rv._lastAppliedSteer = newSteer
-              inputCmds[#inputCmds+1] = 'electrics.values.steering_input = ' .. tostring(newSteer)
-              inputCmds[#inputCmds+1] = 'electrics.values.steering = ' .. tostring(newSteer)
-            end
-          end
-        else
-          -- Legacy: use input.event (has built-in smoothing/deadzone)
-          if inp.steer then
-            local lastSteer = rv._lastAppliedSteer
-            local newSteer = inp.steer
-            if not lastSteer or math.abs(newSteer - lastSteer) > 0.002 then
-              rv._lastAppliedSteer = newSteer
-              inputCmds[#inputCmds+1] = 'input.event("steering", ' .. tostring(newSteer) .. ', 1)'
-            end
-          end
-        end
-
-        if inp.throttle then
-          local lastThrottle = rv._lastAppliedThrottle
-          local newThrottle = inp.throttle
-          -- P4.2: Lower threshold
-          if not lastThrottle or math.abs(newThrottle - lastThrottle) > 0.002 then
-            rv._lastAppliedThrottle = newThrottle
-            inputCmds[#inputCmds+1] = 'input.event("throttle", ' .. tostring(newThrottle) .. ', 1)'
-          end
-        end
-
-        if inp.brake then
-          local lastBrake = rv._lastAppliedBrake
-          local newBrake = inp.brake
-          -- P4.2: Lower threshold
-          if not lastBrake or math.abs(newBrake - lastBrake) > 0.002 then
-            rv._lastAppliedBrake = newBrake
-            inputCmds[#inputCmds+1] = 'input.event("brake", ' .. tostring(newBrake) .. ', 1)'
-          end
-        end
-
-        if inp.handbrake ~= nil then
-          local lastHandbrake = rv._lastAppliedHandbrake
-          local newHandbrake = inp.handbrake
-          if lastHandbrake == nil or math.abs(newHandbrake - lastHandbrake) > 0.01 then
-            rv._lastAppliedHandbrake = newHandbrake
-            inputCmds[#inputCmds+1] = 'input.event("parkingbrake", ' .. tostring(newHandbrake) .. ', 1)'
-            inputCmds[#inputCmds+1] = 'electrics.values.parkingbrake = ' .. tostring(newHandbrake)
-          end
-        end
-
-        if inp.gear ~= nil then
-          local lastGear = rv._lastAppliedGear
-          local newGear = inp.gear
-          if lastGear == nil or math.abs(newGear - lastGear) > 0.01 then
-            rv._lastAppliedGear = newGear
-            inputCmds[#inputCmds+1] = 'electrics.values.gear_A = ' .. tostring(newGear)
-          end
-        end
-
-        -- P3.3: Single queueLuaCommand for all inputs
-        if #inputCmds > 0 then
-          pcall(function()
-            rv.gameVehicle:queueLuaCommand(table.concat(inputCmds, ' '))
-          end)
-        end
       end
     end
 
@@ -1522,22 +1030,8 @@ M.tick = function(dt)
       _spawnRetrySuccessCount = 0
     end
 
-    -- P0.2: Log correction magnitudes every diagnostic interval
-    if _correctionCount > 0 then
-      local avgPos = _correctionPosSum / _correctionCount
-      local avgRot = _correctionRotSum / _correctionCount
-      log('I', logTag, 'Correction diag avgPos=' .. string.format("%.4f", avgPos)
-        .. 'm avgRot=' .. string.format("%.5f", avgRot)
-        .. ' samples=' .. tostring(_correctionCount)
-        .. ' teleports=' .. tostring(_teleportCount))
-    end
-
     -- P0: Update debug stats for overlay
     M._debugStats = {
-      avgCorrectionPos = _correctionCount > 0 and (_correctionPosSum / _correctionCount) or 0,
-      avgCorrectionRot = _correctionCount > 0 and (_correctionRotSum / _correctionCount) or 0,
-      correctionCount = _correctionCount,
-      teleportCount = _teleportCount,
       staleDrops = _staleDropCount,
     }
 
@@ -1554,11 +1048,6 @@ M.tick = function(dt)
       end)())
       _componentApplyStats = {}
     end
-
-    _correctionPosSum = 0
-    _correctionRotSum = 0
-    _correctionCount = 0
-    _teleportCount = 0
 
     -- VE health dump: log per-vehicle VE state for diagnostics
     for key, rv in pairs(M.remoteVehicles) do
