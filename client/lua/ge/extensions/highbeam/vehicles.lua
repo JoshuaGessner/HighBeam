@@ -741,9 +741,9 @@ M.applyElectrics = function(playerId, vehicleId, electricsData)
     if elec.highbeams ~= nil then
       table.insert(cmds, 'electrics.values.highbeam = ' .. tostring(elec.highbeams))
     end
-    if elec.gear ~= nil then
-      table.insert(cmds, 'electrics.values.gear_A = ' .. tostring(elec.gear))
-    end
+    -- gear_A intentionally omitted: writing raw gear values to electrics causes
+    -- desiredGearRatio nil crash in automaticGearbox.  Gear state flows only
+    -- through the validated _applyGear path in highbeamInputsVE.
     if elec.parkingbrake ~= nil then
       table.insert(cmds, 'electrics.values.parkingbrake = ' .. tostring(elec.parkingbrake))
     end

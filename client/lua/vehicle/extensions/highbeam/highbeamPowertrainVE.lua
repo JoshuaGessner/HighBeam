@@ -140,7 +140,7 @@ function M.applyPowertrain(data)
   for key, val in pairs(data) do
     if key:sub(1, 4) == "dev_" then
       local devName = key:sub(5)
-      if powertrain and powertrain.getDevice then
+      if powertrain and powertrain.getDevice and type(val) == "string" then
         local ok, dev = pcall(powertrain.getDevice, devName)
         if ok and dev and dev.setMode then
           pcall(dev.setMode, dev, val)

@@ -10,6 +10,11 @@ local SEND_THRESHOLD = 0.001
 local gearResyncTimer = 0
 local GEAR_RESYNC_INTERVAL = 5.0
 
+-- Readiness guard: wait after activation before applying gear changes,
+-- giving the gearbox time to fully initialize its ratio tables.
+local activationTime = 0
+local READINESS_DELAY_SEC = 0.5
+
 local smoothing = { s = 0, t = 0, b = 0, p = 0, c = 0 }
 local SMOOTH_RATE = 30
 local SNAP_THRESHOLD = 0.2
@@ -39,6 +44,9 @@ end
 function M.setActive(active, remote)
   isActive = active and true or false
   isRemote = remote and true or false
+  if isActive and isRemote then
+    activationTime = os.clock()
+  end
   if isRemote and input and input.setAllowedInputSource then
     for _, name in ipairs(INPUT_NAMES) do
       pcall(input.setAllowedInputSource, name, "local", false)
@@ -100,19 +108,30 @@ function M._applyGear(gearValue)
     if ok and devices then
       for _, dev in pairs(devices) do
         if (dev.type == "manualGearbox" or dev.type == "automaticGearbox" or dev.type == "dctGearbox") and dev.setGearIndex then
-          pcall(dev.setGearIndex, dev, gearValue)
+          -- Clamp gear index to valid range to prevent desiredGearRatio nil crash
+          local minGear = dev.minGearIndex or -1
+          local maxGear = dev.maxGearIndex or 6
+          local clamped = math.max(minGear, math.min(maxGear, math.floor(gearValue)))
+          -- Verify the gear has a valid ratio entry before applying
+          if dev.gearRatios and dev.gearRatios[clamped] == nil and clamped ~= 0 then
+            return
+          end
+          pcall(dev.setGearIndex, dev, clamped)
           return
         end
       end
     end
   end
-  if electrics and electrics.values then
-    electrics.values.gear_A = gearValue
-  end
+  -- Do NOT write gear_A directly to electrics — the gearbox reads it on
+  -- the next updateGFX and if the value is invalid, desiredGearRatio is nil.
 end
 
 function M.applyInputs(data)
   if not isRemote or type(data) ~= "table" then return end
+
+  -- Readiness guard: skip gear changes until gearbox has initialized
+  local now = os.clock()
+  local ready = (now - activationTime) >= READINESS_DELAY_SEC
 
   for key, target in pairs(data) do
     if key == "s" or key == "t" or key == "b" or key == "p" or key == "c" then
@@ -136,7 +155,7 @@ function M.applyInputs(data)
       if input and input.event then
         pcall(input.event, inputName, smoothing[key], 1, nil, nil, nil, "HighBeam")
       end
-    elseif key == "g" then
+    elseif key == "g" and ready then
       M._applyGear(tonumber(target) or 0)
     end
   end
