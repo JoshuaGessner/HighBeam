@@ -705,14 +705,14 @@ async fn handle_connection(
 
 fn cap_servers(list: &mut Vec<ServerEntry>, max: usize) {
     if list.len() > max {
-        list.sort_unstable_by(|a, b| b.last_seen.cmp(&a.last_seen));
+        list.sort_unstable_by_key(|entry| std::cmp::Reverse(entry.last_seen));
         list.truncate(max);
     }
 }
 
 fn cap_peers(list: &mut Vec<PeerEntry>, max: usize) {
     if list.len() > max {
-        list.sort_unstable_by(|a, b| b.last_seen.cmp(&a.last_seen));
+        list.sort_unstable_by_key(|entry| std::cmp::Reverse(entry.last_seen));
         list.truncate(max);
     }
 }
