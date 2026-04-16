@@ -1,8 +1,8 @@
 # HighBeam Version Plan
 
-> **Last updated:** 2026-04-07
+> **Last updated:** 2026-04-16
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.2-dev.35 (protocol v2)
+> **Current version:** v0.8.2-dev.36 (protocol v2)
 > **Status:** v0.8.1 released | v0.8.2 in development
 
 ---
@@ -1202,6 +1202,11 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.2-dev.36 - 2026-04-16 (draft)
+- **VE physics hook fix (critical):** replaced the custom `motionSim.update` dispatcher and manual physics handler registration with BeamNG's native `enablePhysicsStepHook()` path, removing the alphabetical load-order failure that prevented remote vehicle `onPhysicsStep` callbacks from ever running.
+- **Heartbeat recovery:** moved the remote VE heartbeat sender to `updateGFX` so liveness reporting is no longer blocked by missing targets or a failed physics-hook registration.
+- **Packaging and CI hygiene:** refreshed the bundled client payload zip and resolved the server Clippy sort lint so the dev release builds cleanly.
 
 ### v0.8.2-dev.35 - 2026-04-08 (draft)
 - **VE extension migration:** migrated all 7 VE modules from `controller.loadControllerExternal()` to `extensions.loadModulesInDirectory()` — the same architecture BeamMP uses. Extensions run parallel to stock controllers instead of injecting into the controller pipeline, eliminating the gearbox corruption root cause.

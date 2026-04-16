@@ -1,6 +1,6 @@
 [package]
 name = "highbeam-launcher"
-version = "0.8.2-dev.35"
+version = "0.8.2-dev.36"
 edition = "2021"
 description = "HighBeam launcher for mod sync and game startup"
 license = "GPL-3.0-only"

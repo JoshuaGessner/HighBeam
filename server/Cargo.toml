@@ -1,6 +1,6 @@
 [package]
 name = "highbeam-server"
-version = "0.8.2-dev.35"
+version = "0.8.2-dev.36"
 edition = "2021"
 description = "HighBeam multiplayer server for BeamNG.drive"
 license = "GPL-3.0-only"
