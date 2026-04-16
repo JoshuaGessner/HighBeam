@@ -139,10 +139,8 @@ function M.onInit()
   _getVelocityModule()
   _getInputsModule()
   refNodeId = 0
-  -- Register for physics-rate updates via orchestrator hook
-  if highbeamVE and highbeamVE.addPhysUpdateHandler then
-    highbeamVE.addPhysUpdateHandler("positionVE", M.onPhysicsStep)
-  end
+  -- enablePhysicsStepHook() is called by highbeamVE; the engine will
+  -- natively dispatch onPhysicsStep to every loaded VE extension.
 end
 
 function M.setRemote(remote)
@@ -231,14 +229,11 @@ function M.setTarget(px, py, pz, vx, vy, vz, rx, ry, rz, rw, avx, avy, avz, t)
   M.updateTimeOffset(targetTime, _now())
 end
 
-function M.onPhysicsStep(dtSim)
-  local velMod = _getVelocityModule()
-  if not isRemote or not hasTarget then return end
-  if not obj then return end
-
-  -- VE heartbeat: signal GE that this vlua is alive.
-  local d0 = dtSim or 0.0005
-  heartbeatTimer = heartbeatTimer + d0
+-- updateGFX is called by the extension framework unconditionally, so the
+-- heartbeat fires even if the physics hook is somehow not registered.
+function M.updateGFX(dt)
+  if not isRemote or not obj then return end
+  heartbeatTimer = heartbeatTimer + (dt or 0)
   if heartbeatTimer >= HEARTBEAT_INTERVAL then
     heartbeatTimer = 0
     if obj.queueGameEngineLua then
@@ -247,6 +242,12 @@ function M.onPhysicsStep(dtSim)
       ))
     end
   end
+end
+
+function M.onPhysicsStep(dtSim)
+  local velMod = _getVelocityModule()
+  if not isRemote or not hasTarget then return end
+  if not obj then return end
 
   local curPos = obj:getPosition()
   local curVel = obj:getVelocity()

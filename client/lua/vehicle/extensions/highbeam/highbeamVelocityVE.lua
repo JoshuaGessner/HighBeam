@@ -73,10 +73,8 @@ end
 
 function M.onInit()
   M.recalcConnectivity()
-  -- Register for physics-rate updates via orchestrator hook
-  if highbeamVE and highbeamVE.addPhysUpdateHandler then
-    highbeamVE.addPhysUpdateHandler("velocityVE", M.onPhysicsStep)
-  end
+  -- enablePhysicsStepHook() is called by highbeamVE; the engine will
+  -- natively dispatch onPhysicsStep to every loaded VE extension.
 end
 
 function M.onBeamBroke(id, energy)

@@ -7,42 +7,15 @@ local gameVehicleId = 0
 local sendTimer = 0
 local SEND_INTERVAL = 1 / 60
 
--- Physics-step dispatch: modules that need physics-rate callbacks register here.
--- Mirrors BeamMP's MPVehicleVE.AddPhysUpdateHandler pattern.
-local physUpdateHandlers = {}
-local origMotionSimUpdate = nil
-local physHookInstalled = false
-
-local function _installPhysHook()
-  if physHookInstalled then return end
-  if not motionSim or not motionSim.update then return end
-  origMotionSimUpdate = motionSim.update
-  motionSim.update = function(dtSim)
-    origMotionSimUpdate(dtSim)
-    for _, handler in pairs(physUpdateHandlers) do
-      handler(dtSim)
-    end
-  end
-  motionSim.isPhysicsStepUsed = function() return true end
-  if updateCorePhysicsStepEnabled then
-    updateCorePhysicsStepEnabled()
-  end
-  physHookInstalled = true
-end
-
-function M.addPhysUpdateHandler(name, fn)
-  physUpdateHandlers[name] = fn
-end
-
-function M.removePhysUpdateHandler(name)
-  physUpdateHandlers[name] = nil
-end
-
 function M.onInit()
   if obj and obj.getID then
     gameVehicleId = obj:getID()
   end
-  _installPhysHook()
+  -- Use the native BeamNG physics-step hook so the engine dispatches
+  -- onPhysicsStep to ALL loaded VE extensions. No custom dispatcher needed.
+  if enablePhysicsStepHook then
+    enablePhysicsStepHook()
+  end
 end
 
 function M.setActive(active, remote)
