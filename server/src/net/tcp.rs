@@ -69,6 +69,30 @@ pub async fn start_listener(
         }
     });
 
+    // Periodic stale vehicle reaper (every 30s, reap vehicles not updated in 60s)
+    let reap_world = world.clone();
+    let reap_sessions = sessions.clone();
+    tokio::spawn(async move {
+        let interval = Duration::from_secs(30);
+        let max_age = Duration::from_secs(60);
+        loop {
+            tokio::time::sleep(interval).await;
+            let reaped = reap_world.reap_stale_vehicles(max_age);
+            for (owner_id, vehicle_id) in &reaped {
+                let delete_packet = packet::TcpPacket::VehicleDelete {
+                    player_id: Some(*owner_id),
+                    vehicle_id: *vehicle_id,
+                };
+                reap_sessions.broadcast(delete_packet, None);
+                tracing::info!(
+                    owner_id,
+                    vehicle_id,
+                    "Broadcast VehicleDelete for stale vehicle"
+                );
+            }
+        }
+    });
+
     loop {
         let accept_result = tokio::select! {
             _ = shutdown_rx.recv() => {

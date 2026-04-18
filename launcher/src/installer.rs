@@ -370,15 +370,26 @@ fn copy_if_changed(src: &Path, dst: &Path, expected_hash: &str) -> Result<()> {
         }
     }
 
+    // Write to a .tmp file first, then atomically rename to avoid the game's
+    // filesystem watcher reading a partially written ZIP.
+    let tmp_dst = dst.with_extension("zip.tmp");
     tracing::info!(
         src = %src.display(),
+        tmp = %tmp_dst.display(),
         dst = %dst.display(),
-        "Copying mod file"
+        "Copying mod file (atomic)"
     );
-    std::fs::copy(src, dst).with_context(|| {
+    std::fs::copy(src, &tmp_dst).with_context(|| {
         format!(
-            "Failed to copy mod into BeamNG mods directory: {} -> {}",
+            "Failed to stage mod into BeamNG mods directory: {} -> {}",
             src.display(),
+            tmp_dst.display()
+        )
+    })?;
+    std::fs::rename(&tmp_dst, dst).with_context(|| {
+        format!(
+            "Failed to finalize mod in BeamNG mods directory: {} -> {}",
+            tmp_dst.display(),
             dst.display()
         )
     })?;
