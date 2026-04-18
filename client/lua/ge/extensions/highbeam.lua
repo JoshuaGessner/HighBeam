@@ -126,6 +126,10 @@ end
 M.onExtensionLoaded = function()
   log('I', logTag, 'HighBeam extension loaded marker=' .. CLIENT_BUILD_MARKER)
 
+  if rawget(_G, 'MP_Console') or rawget(_G, 'MPVehicleGE') then
+    log('W', logTag, 'BeamMP appears to be loaded in this profile; this can interfere with HighBeam sync testing')
+  end
+
   connection = _safeRequire("highbeam/connection")
   protocol   = _safeRequire("highbeam/protocol")
   vehicles   = _safeRequire("highbeam/vehicles")
@@ -395,7 +399,11 @@ end
 M.onVETeleportRequest = function(gameVid, px, py, pz, rx, ry, rz, rw)
   local veh = be:getObjectByID(gameVid)
   if veh then
-    pcall(veh.setPositionRotation, veh, px, py, pz, rx, ry, rz, rw)
+    if veh.setPositionNoPhysicsReset and Point3F then
+      pcall(veh.setPositionNoPhysicsReset, veh, Point3F(px, py, pz))
+    else
+      pcall(veh.setPositionRotation, veh, px, py, pz, rx, ry, rz, rw)
+    end
   end
 end
 

@@ -83,8 +83,8 @@ local VEL_SEND_DELTA_SQ = 0.05 * 0.05
 local INPUT_SEND_DELTA = 0.005
 local ABSOLUTE_SEND_RATE_CAP = 45
 local DEFAULT_TCP_POSE_FALLBACK_INTERVAL_SEC = 0.2
-local DEFAULT_FORCE_KEYFRAME_INTERVAL_SEC = 0.45
-local DEFAULT_MOTION_WATCHDOG_SEC = 0.7
+local DEFAULT_FORCE_KEYFRAME_INTERVAL_SEC = 0.25
+local DEFAULT_MOTION_WATCHDOG_SEC = 0.35
 local DEFAULT_MOTION_WATCHDOG_MIN_SPEED = 0.5
 local DEFAULT_LOCAL_VEHICLE_RECONCILE_SEC = 1.0
 
@@ -323,9 +323,9 @@ M.tick = function(dt)
     end
     local maxSpeed = math.sqrt(maxSpeedSq)
     if maxSpeed < 1.0 then
-      updateRate = 20
-    elseif maxSpeed < 20.0 then
       updateRate = 24
+    elseif maxSpeed < 20.0 then
+      updateRate = 30
     else
       updateRate = maxAdaptiveSendRate
     end

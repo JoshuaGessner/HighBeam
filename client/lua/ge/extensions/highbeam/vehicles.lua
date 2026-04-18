@@ -482,7 +482,7 @@ M.updateRemote = function(decoded)
     local ay = decoded.angVel and decoded.angVel[2] or 0
     local az = decoded.angVel and decoded.angVel[3] or 0
     local cmd = string.format(
-      "if highbeamPositionVE and highbeamPositionVE.setTarget then highbeamPositionVE.setTarget(%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f,%.4f,%.0f) end",
+      "if highbeamPositionVE and highbeamPositionVE.setTarget then highbeamPositionVE.setTarget(%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f,%.4f,%.6f) end",
       decoded.pos[1], decoded.pos[2], decoded.pos[3],
       decoded.vel[1], decoded.vel[2], decoded.vel[3],
       decoded.rot[1], decoded.rot[2], decoded.rot[3], decoded.rot[4],
@@ -491,10 +491,14 @@ M.updateRemote = function(decoded)
     )
     _queueVeLuaCommand(rv.gameVehicle, cmd, "position")
   elseif rv.gameVehicle then
-    -- VE not ready yet; apply position at GE level to avoid frozen vehicle
+    -- VE not ready yet; apply position at GE level without resetting physics
     local veh = rv.gameVehicle
     pcall(function()
-      veh:setPosition(Point3F(decoded.pos[1], decoded.pos[2], decoded.pos[3]))
+      if veh.setPositionNoPhysicsReset and Point3F then
+        veh:setPositionNoPhysicsReset(Point3F(decoded.pos[1], decoded.pos[2], decoded.pos[3]))
+      else
+        veh:setPosition(Point3F(decoded.pos[1], decoded.pos[2], decoded.pos[3]))
+      end
     end)
   end
 
