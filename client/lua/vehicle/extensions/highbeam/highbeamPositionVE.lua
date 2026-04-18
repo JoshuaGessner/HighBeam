@@ -11,17 +11,19 @@ local targetTime = 0
 local hasTarget = false
 local isRemote = false
 
-local TELEPORT_BASE_DIST = 3.0
+local TELEPORT_BASE_DIST = 5.0
 local TELEPORT_SPEED_SCALE = 0.5
-local TELEPORT_DELAY_SEC = 0.3
-local TELEPORT_INSTANT_DIST = 8.0
+local TELEPORT_DELAY_SEC = 0.45
+local TELEPORT_INSTANT_DIST = 12.0
 
-local CORRECTION_ACCEL_CLAMP = 12.0
+local CORRECTION_ACCEL_CLAMP = 20.0
 local SMALL_ERROR_THRESHOLD = 0.5
 local POS_CORRECT_GAIN = 8.0
 local VEL_CORRECT_GAIN = 4.0
 
 local teleportTimer = 0
+local postTeleportGrace = 0
+local POST_TELEPORT_GRACE_SEC = 0.20
 
 local heartbeatTimer = 0
 local HEARTBEAT_INTERVAL = 1.0
@@ -30,6 +32,11 @@ local timeOffset = 0
 local offsetSamples = {}
 local offsetSampleIdx = 1
 local OFFSET_SAMPLE_COUNT = 10
+local targetBuffer = {}
+local TARGET_BUFFER_MAX = 8
+local INTERP_BACK_TIME = 0.10
+local MAX_EXTRAPOLATION_SEC = 0.15
+local PACKET_TIMEOUT_SEC = 0.25
 
 local refNodeId = 0
 
@@ -115,6 +122,83 @@ local function _predictRot(baseRot, angVel, dt)
   return baseRot
 end
 
+local function _lerp(a, b, t)
+  return a + (b - a) * t
+end
+
+local function _lerp3(a, b, t)
+  return {
+    _lerp(a[1] or 0, b[1] or 0, t),
+    _lerp(a[2] or 0, b[2] or 0, t),
+    _lerp(a[3] or 0, b[3] or 0, t),
+  }
+end
+
+local function _nlerpQuat(a, b, t)
+  local ax, ay, az, aw = a[1] or 0, a[2] or 0, a[3] or 0, a[4] or 1
+  local bx, by, bz, bw = b[1] or 0, b[2] or 0, b[3] or 0, b[4] or 1
+  local dot = ax * bx + ay * by + az * bz + aw * bw
+  if dot < 0 then
+    bx, by, bz, bw = -bx, -by, -bz, -bw
+  end
+  local ox = _lerp(ax, bx, t)
+  local oy = _lerp(ay, by, t)
+  local oz = _lerp(az, bz, t)
+  local ow = _lerp(aw, bw, t)
+  local len = math.sqrt(ox * ox + oy * oy + oz * oz + ow * ow)
+  if len > 0.0001 then
+    return { ox / len, oy / len, oz / len, ow / len }
+  end
+  return { ox, oy, oz, ow }
+end
+
+local function _bufferTargetSnapshot(pos, vel, rot, angVel, t)
+  targetBuffer[#targetBuffer + 1] = {
+    pos = { pos[1] or 0, pos[2] or 0, pos[3] or 0 },
+    vel = { vel[1] or 0, vel[2] or 0, vel[3] or 0 },
+    rot = { rot[1] or 0, rot[2] or 0, rot[3] or 0, rot[4] or 1 },
+    angVel = { angVel[1] or 0, angVel[2] or 0, angVel[3] or 0 },
+    time = t or 0,
+    received = _now(),
+  }
+  while #targetBuffer > TARGET_BUFFER_MAX do
+    table.remove(targetBuffer, 1)
+  end
+end
+
+local function _resolveBufferedTarget(now)
+  if #targetBuffer == 0 then
+    return targetPos, targetVel, targetRot, targetAngVel, 0
+  end
+
+  local sampleTime = now - timeOffset - INTERP_BACK_TIME
+  local oldest = targetBuffer[1]
+  local newest = targetBuffer[#targetBuffer]
+
+  if sampleTime <= (oldest.time or 0) then
+    return oldest.pos, oldest.vel, oldest.rot, oldest.angVel, 0
+  end
+
+  for i = 1, #targetBuffer - 1 do
+    local a = targetBuffer[i]
+    local b = targetBuffer[i + 1]
+    if sampleTime >= (a.time or 0) and sampleTime <= (b.time or 0) then
+      local span = math.max((b.time or 0) - (a.time or 0), 0.0001)
+      local t = math.max(0, math.min(1, (sampleTime - (a.time or 0)) / span))
+      return _lerp3(a.pos, b.pos, t), _lerp3(a.vel, b.vel, t), _nlerpQuat(a.rot, b.rot, t), _lerp3(a.angVel, b.angVel, t), 0
+    end
+  end
+
+  local dt = sampleTime - (newest.time or 0)
+  if dt < 0 then dt = 0 end
+  if dt > MAX_EXTRAPOLATION_SEC then dt = MAX_EXTRAPOLATION_SEC end
+  return {
+    (newest.pos[1] or 0) + (newest.vel[1] or 0) * dt,
+    (newest.pos[2] or 0) + (newest.vel[2] or 0) * dt,
+    (newest.pos[3] or 0) + (newest.vel[3] or 0) * dt,
+  }, newest.vel, _predictRot(newest.rot, newest.angVel, dt), newest.angVel, dt
+end
+
 local function _currentRotation()
   if obj and obj.getClusterRotation then
     local okR, cr = pcall(obj.getClusterRotation, obj, refNodeId)
@@ -147,6 +231,14 @@ function M.setRemote(remote)
   isRemote = remote and true or false
   hasTarget = false
   teleportTimer = 0
+  postTeleportGrace = 0
+  timeOffset = 0
+  offsetSamples = {}
+  offsetSampleIdx = 1
+  targetBuffer = {}
+  prevTargetPos = nil
+  prevTargetVel = nil
+  prevTargetTime = nil
 end
 
 function M.updateTimeOffset(remoteTime, localTime)
@@ -227,6 +319,7 @@ function M.setTarget(px, py, pz, vx, vy, vz, rx, ry, rz, rw, avx, avy, avz, t)
   hasTarget = true
 
   M.updateTimeOffset(targetTime, _now())
+  _bufferTargetSnapshot(targetPos, targetVel, targetRot, targetAngVel, targetTime)
 end
 
 -- updateGFX is called by the extension framework unconditionally, so the
@@ -255,15 +348,20 @@ function M.onPhysicsStep(dtSim)
 
   local now = _now()
   local d = dtSim or 0.0005
-  local dtPred = now - targetTime - timeOffset
-  if dtPred < 0 then dtPred = 0 end
-  if dtPred > 0.5 then dtPred = 0.5 end
 
-  -- Extrapolate target position using velocity
-  local predX = targetPos[1] + targetVel[1] * dtPred
-  local predY = targetPos[2] + targetVel[2] * dtPred
-  local predZ = targetPos[3] + targetVel[3] * dtPred
-  local predRot = _predictRot(targetRot, targetAngVel, dtPred)
+  if postTeleportGrace > 0 then
+    postTeleportGrace = math.max(0, postTeleportGrace - d)
+  end
+
+  local newest = targetBuffer[#targetBuffer]
+  if newest and (now - (newest.received or now)) > PACKET_TIMEOUT_SEC then
+    return
+  end
+
+  local predPos, predVel, predRot, predAngVel = _resolveBufferedTarget(now)
+  local predX = predPos[1] or 0
+  local predY = predPos[2] or 0
+  local predZ = predPos[3] or 0
 
   -- Apply decaying blend correction for smooth packet-to-packet transitions.
   -- This offsets the predicted position by a correction that linearly fades
@@ -295,18 +393,19 @@ function M.onPhysicsStep(dtSim)
   local instantTeleportDist = TELEPORT_INSTANT_DIST + TELEPORT_SPEED_SCALE * speed
 
   if errDist > instantTeleportDist then
-    if obj.setClusterPosRelRot then
-      pcall(obj.setClusterPosRelRot, obj, refNodeId, predX, predY, predZ, predRot[1], predRot[2], predRot[3], predRot[4])
-    elseif obj.queueGameEngineLua then
+    if obj.queueGameEngineLua then
       obj:queueGameEngineLua(string.format(
         "extensions.highbeam.onVETeleportRequest(%d,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f)",
         obj:getID(), predX, predY, predZ, predRot[1], predRot[2], predRot[3], predRot[4]
       ))
+    elseif obj.setClusterPosRelRot then
+      pcall(obj.setClusterPosRelRot, obj, refNodeId, predX, predY, predZ, predRot[1], predRot[2], predRot[3], predRot[4])
     end
     if velMod and velMod.setVelocity then
-      velMod.setVelocity(targetVel[1], targetVel[2], targetVel[3])
+      velMod.setVelocity(predVel[1] or 0, predVel[2] or 0, predVel[3] or 0)
     end
     teleportTimer = 0
+    postTeleportGrace = POST_TELEPORT_GRACE_SEC
     blendRemaining = 0
     blendCorrX, blendCorrY, blendCorrZ = 0, 0, 0
     return
@@ -316,18 +415,19 @@ function M.onPhysicsStep(dtSim)
     teleportTimer = teleportTimer + d
     local delayNeeded = TELEPORT_DELAY_SEC + 0.1 * speed
     if teleportTimer > delayNeeded then
-      if obj.setClusterPosRelRot then
-        pcall(obj.setClusterPosRelRot, obj, refNodeId, predX, predY, predZ, predRot[1], predRot[2], predRot[3], predRot[4])
-      elseif obj.queueGameEngineLua then
+      if obj.queueGameEngineLua then
         obj:queueGameEngineLua(string.format(
           "extensions.highbeam.onVETeleportRequest(%d,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f)",
           obj:getID(), predX, predY, predZ, predRot[1], predRot[2], predRot[3], predRot[4]
         ))
+      elseif obj.setClusterPosRelRot then
+        pcall(obj.setClusterPosRelRot, obj, refNodeId, predX, predY, predZ, predRot[1], predRot[2], predRot[3], predRot[4])
       end
       if velMod and velMod.setVelocity then
-        velMod.setVelocity(targetVel[1], targetVel[2], targetVel[3])
+        velMod.setVelocity(predVel[1] or 0, predVel[2] or 0, predVel[3] or 0)
       end
       teleportTimer = 0
+      postTeleportGrace = POST_TELEPORT_GRACE_SEC
       blendRemaining = 0
       blendCorrX, blendCorrY, blendCorrZ = 0, 0, 0
       return
@@ -336,23 +436,23 @@ function M.onPhysicsStep(dtSim)
     teleportTimer = 0
   end
 
-  local velErrX = targetVel[1] - (curVel.x or 0)
-  local velErrY = targetVel[2] - (curVel.y or 0)
-  local velErrZ = targetVel[3] - (curVel.z or 0)
+  local velErrX = (predVel[1] or 0) - (curVel.x or 0)
+  local velErrY = (predVel[2] or 0) - (curVel.y or 0)
+  local velErrZ = (predVel[3] or 0) - (curVel.z or 0)
 
-  -- Scale down PD correction when vehicle is under driver input to avoid
-  -- body forces fighting engine/tire physics.
+  -- Keep correction active while the remote driver is moving so the vehicle
+  -- stays live instead of drifting and later hard-snapping into place.
   local inMod = _getInputsModule()
   local inputActivity = (inMod and inMod.getInputActivity) and inMod.getInputActivity() or 0
-  local posGainScale = 1.0 - 0.5 * inputActivity   -- 100% at rest, 50% at full input
-  local velGainScale = 1.0 - 0.7 * inputActivity   -- 100% at rest, 30% at full input
+  local posGainScale = 1.0 - 0.2 * inputActivity
+  local velGainScale = 1.0 - 0.3 * inputActivity
 
   local accX = errX * POS_CORRECT_GAIN * posGainScale + velErrX * VEL_CORRECT_GAIN * velGainScale
   local accY = errY * POS_CORRECT_GAIN * posGainScale + velErrY * VEL_CORRECT_GAIN * velGainScale
   local accZ = errZ * POS_CORRECT_GAIN * posGainScale + velErrZ * VEL_CORRECT_GAIN * velGainScale
 
   local accMag = math.sqrt(accX * accX + accY * accY + accZ * accZ)
-  local clamp = CORRECTION_ACCEL_CLAMP * (1.0 - 0.5 * inputActivity)
+  local clamp = CORRECTION_ACCEL_CLAMP * (1.0 - 0.2 * inputActivity)
   if errDist < SMALL_ERROR_THRESHOLD then
     clamp = clamp * 0.5
   end
@@ -363,17 +463,17 @@ function M.onPhysicsStep(dtSim)
     accZ = accZ * scale
   end
 
-  if velMod and velMod.addVelocity then
+  if velMod and velMod.addVelocity and postTeleportGrace <= 0 then
     velMod.addVelocity(accX * d, accY * d, accZ * d)
   end
 
   local curRot = _currentRotation()
-  if curRot and velMod and velMod.addAngularVelocity then
+  if curRot and velMod and velMod.addAngularVelocity and postTeleportGrace <= 0 then
     local reX, reY, reZ = _rotationErrorAngVel(curRot, predRot, 0.15)
 
-    local finalAVX = reX * 0.7 + (targetAngVel[1] or 0) * 0.3
-    local finalAVY = reY * 0.7 + (targetAngVel[2] or 0) * 0.3
-    local finalAVZ = reZ * 0.7 + (targetAngVel[3] or 0) * 0.3
+    local finalAVX = reX * 0.7 + (predAngVel[1] or 0) * 0.3
+    local finalAVY = reY * 0.7 + (predAngVel[2] or 0) * 0.3
+    local finalAVZ = reZ * 0.7 + (predAngVel[3] or 0) * 0.3
 
     local avMag = math.sqrt(finalAVX * finalAVX + finalAVY * finalAVY + finalAVZ * finalAVZ)
     local maxAngAcc = 30.0
