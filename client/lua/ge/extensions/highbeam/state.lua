@@ -39,7 +39,7 @@ M._debugStats = {
 }
 local _lastUdpErrorLogAt = -math.huge
 local _udpErrorLogCooldown = 2.0
-local _pendingSpawnTimeoutSec = 8.0
+local _pendingSpawnTimeoutSec = 20.0
 local _diagLogIntervalSec = 5.0
 local _diagLogTimer = 0
 local _udpSentCount = 0
@@ -72,6 +72,7 @@ local _lastTcpPoseSentAt = {}
 local _forcedKeyframeCount = 0
 local _forcedWatchdogCount = 0
 local _skipStreakByVehicle = {}
+local _udpBindWasConfirmed = false  -- tracks bind flip for keyframe burst
 local _playerVehicleReconcileTimer = 0
 local _playerVehicleReconcileCount = 0
 local _playerVehicleReconcileDeleteCount = 0
@@ -337,6 +338,13 @@ M.tick = function(dt)
   -- conservative mode to reduce encode/send overhead while bind settles.
   if connection and connection._udpBindConfirmed == false then
     updateRate = math.min(updateRate, 10)
+  end
+
+  -- When UDP bind just confirmed, clear cached state to force immediate keyframes
+  if connection and connection._udpBindConfirmed == true and not _udpBindWasConfirmed then
+    _udpBindWasConfirmed = true
+    M._lastSentState = {}
+    log('I', logTag, 'UDP bind confirmed — forcing position keyframes for all local vehicles')
   end
 
   local updateInterval = 1.0 / updateRate
@@ -1216,6 +1224,7 @@ M.onDisconnect = function()
   M._damageDirty = {}
   M._damageFullTimer = 0
   _lastUdpErrorLogAt = -math.huge
+  _udpBindWasConfirmed = false
   _diagLogTimer = 0
   _udpSentCount = 0
   _udpSkippedUnchangedCount = 0

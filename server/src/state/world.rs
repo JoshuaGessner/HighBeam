@@ -234,6 +234,33 @@ impl WorldState {
         let c = count as f32;
         Some([sum[0] / c, sum[1] / c, sum[2] / c])
     }
+
+    /// Remove vehicles whose `last_update` is older than `max_age`.
+    /// Returns a list of (owner_id, vehicle_id) pairs that were reaped.
+    pub fn reap_stale_vehicles(&self, max_age: std::time::Duration) -> Vec<(u32, u16)> {
+        let now = Instant::now();
+        let stale_keys: Vec<(u32, u16)> = self
+            .vehicles
+            .iter()
+            .filter(|e| now.duration_since(e.value().last_update) > max_age)
+            .map(|e| *e.key())
+            .collect();
+
+        let mut reaped = Vec::with_capacity(stale_keys.len());
+        for key in stale_keys {
+            if let Some((k, _v)) = self.vehicles.remove(&key) {
+                reaped.push(k);
+            }
+        }
+        if !reaped.is_empty() {
+            tracing::warn!(
+                count = reaped.len(),
+                max_age_sec = max_age.as_secs(),
+                "Reaped stale vehicles"
+            );
+        }
+        reaped
+    }
 }
 
 #[cfg(test)]

@@ -108,6 +108,39 @@ local function _getMaxSnapshots()
   return 2  -- Only need latest + previous for spawn retry and nametag lookups
 end
 
+local COMPONENT_QUEUE_MAX = 50  -- max queued component packets per remote vehicle while VE boots
+
+local function _enqueueComponent(rv, entry)
+  if not rv._componentQueue then rv._componentQueue = {} end
+  rv._componentQueueLen = (rv._componentQueueLen or 0) + 1
+  if rv._componentQueueLen > COMPONENT_QUEUE_MAX then
+    table.remove(rv._componentQueue, 1)
+    rv._componentQueueLen = rv._componentQueueLen - 1
+  end
+  table.insert(rv._componentQueue, entry)
+end
+
+local function _flushComponentQueue(rv)
+  if not rv._componentQueue or rv._componentQueueLen == 0 then return end
+  local flushed = 0
+  for _, entry in ipairs(rv._componentQueue) do
+    if entry.kind == "inputs" then
+      M.applyInputs(rv.playerId, rv.vehicleId, entry.data)
+    elseif entry.kind == "electrics" then
+      M.applyElectrics(rv.playerId, rv.vehicleId, entry.data)
+    elseif entry.kind == "powertrain" then
+      M.applyPowertrain(rv.playerId, rv.vehicleId, entry.data)
+    end
+    flushed = flushed + 1
+  end
+  rv._componentQueue = {}
+  rv._componentQueueLen = 0
+  if flushed > 0 then
+    log('D', logTag, 'Flushed ' .. tostring(flushed) .. ' queued components for '
+      .. tostring(rv.playerId) .. '_' .. tostring(rv.vehicleId))
+  end
+end
+
 makeKey = function(playerId, vehicleId)
   return tostring(playerId) .. "_" .. tostring(vehicleId)
 end
@@ -162,6 +195,7 @@ M.onRemoteVEReady = function(gameVehicleId, ready, missingCsv)
         log('I', logTag, 'Remote VE confirmed key=' .. tostring(key)
           .. ' gameVid=' .. tostring(gameVehicleId)
           .. ' retries=' .. tostring(rv._veProbeRetries or 0))
+        _flushComponentQueue(rv)
       else
         local missing = tostring(missingCsv or '')
         local retries = rv._veProbeRetries or 0
@@ -342,6 +376,8 @@ M.spawnRemote = function(playerId, vehicleId, configData, snapshot)
     spawnSpec = spec,
     spawnRetry = nil,
     _hasVE = false,
+    _componentQueue = {},  -- ring buffer for components arriving before VE ready
+    _componentQueueLen = 0,
   }
 
   if snapshot or spec.snapshotTimeMs then
@@ -454,6 +490,12 @@ M.updateRemote = function(decoded)
       decoded.time or 0
     )
     _queueVeLuaCommand(rv.gameVehicle, cmd, "position")
+  elseif rv.gameVehicle then
+    -- VE not ready yet; apply position at GE level to avoid frozen vehicle
+    local veh = rv.gameVehicle
+    pcall(function()
+      veh:setPosition(Point3F(decoded.pos[1], decoded.pos[2], decoded.pos[3]))
+    end)
   end
 
   -- Keep latest snapshot for spawn retry position and nametag lookups
@@ -785,7 +827,8 @@ M.applyInputs = function(playerId, vehicleId, deltaStr)
   local veh, rv, key = _withRemoteVehicle(playerId, vehicleId, "inputs")
   if not veh then return end
   if not rv._hasVE then
-    _bumpApplyStat("inputs_drop_no_ve")
+    _enqueueComponent(rv, { kind = "inputs", data = deltaStr })
+    _bumpApplyStat("inputs_queued_no_ve")
     return
   end
 
@@ -806,7 +849,8 @@ M.applyPowertrain = function(playerId, vehicleId, powertrainData)
   local veh, rv, key = _withRemoteVehicle(playerId, vehicleId, "powertrain")
   if not veh then return end
   if not rv._hasVE then
-    _bumpApplyStat("powertrain_drop_no_ve")
+    _enqueueComponent(rv, { kind = "powertrain", data = powertrainData })
+    _bumpApplyStat("powertrain_queued_no_ve")
     return
   end
 

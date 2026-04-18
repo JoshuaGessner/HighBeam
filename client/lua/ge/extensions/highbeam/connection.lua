@@ -581,7 +581,7 @@ M.tick = function(dt)
     -- Retry UdpBind if not yet confirmed (bind may be lost to NAT/firewall)
     if udp and M._sessionHash and not M._udpBindConfirmed then
       M._udpBindRetryTimer = M._udpBindRetryTimer + dt
-      if M._udpBindRetryTimer >= 2.0 then
+      if M._udpBindRetryTimer >= 0.5 then
         M._udpBindRetryTimer = 0
         M._udpBindRetrySent = M._udpBindRetrySent + 1
         udp:send(M._sessionHash .. string.char(0x01))
