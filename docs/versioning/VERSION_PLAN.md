@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-04-16
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.2-dev.37 (protocol v2)
+> **Current version:** v0.8.2-dev.38 (protocol v2)
 > **Status:** v0.8.1 released | v0.8.2 in development
 
 ---
@@ -1202,6 +1202,14 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.2-dev.38 - 2026-04-18 (draft)
+- Merged the remote live-sync smoothing fixes to main.
+- Preserved sub-second motion timestamps in the GE to VE handoff to eliminate whole-second snap cadence.
+- Added buffered remote interpolation and gentler correction logic to reduce teleporting during live driving.
+- Preferred no-physics-reset repositioning paths to reduce collision overlap and stuck restarts.
+- Rebuilt `launcher/payload/highbeam.zip` with the latest client sync fixes.
+- Server and launcher versions bumped to `0.8.2-dev.38`; protocol remains `v2`.
 
 ### v0.8.2-dev.36 - 2026-04-16 (draft)
 - **VE physics hook fix (critical):** replaced the custom `motionSim.update` dispatcher and manual physics handler registration with BeamNG's native `enablePhysicsStepHook()` path, removing the alphabetical load-order failure that prevented remote vehicle `onPhysicsStep` callbacks from ever running.
