@@ -1,8 +1,8 @@
 # HighBeam Version Plan
 
-> **Last updated:** 2026-04-16
+> **Last updated:** 2026-05-02
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.2-dev.38 (protocol v2)
+> **Current version:** v0.8.2-dev.39 (protocol v2)
 > **Status:** v0.8.1 released | v0.8.2 in development
 
 ---
@@ -1202,6 +1202,15 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.2-dev.39 - 2026-05-02 (draft)
+- Merged the vehicle motion timing stabilization work to main.
+- Moved outbound motion timestamps to VE-owned vehicle-local sample time and forwarded that timing through UDP and TCP pose payloads.
+- Consolidated receive-side timing inside `highbeamPositionVE`, removing the dead GE-side remote offset model.
+- Added acceleration-aware linear/angular prediction, reset smoother rebasing, and coherent hard-correction requests for large pose errors.
+- Raised active vehicle position cadence toward 50 Hz while preserving low-motion gating and component sync rates.
+- Rebuilt `launcher/payload/highbeam.zip` with the latest client motion sync fixes.
+- Server and launcher versions bumped to `0.8.2-dev.39`; protocol remains `v2`.
 
 ### v0.8.2-dev.38 - 2026-04-18 (draft)
 - Merged the remote live-sync smoothing fixes to main.
