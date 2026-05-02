@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-05-02
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.2-dev.40 (protocol v2)
+> **Current version:** v0.8.2-dev.41 (protocol v2)
 > **Status:** v0.8.1 released | v0.8.2 in development
 
 ---
@@ -1202,6 +1202,12 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.2-dev.41 - 2026-05-02 (draft)
+- Merged the VE controller registration/path recovery fix to main (`fix(client,launcher): restore VE controller registration`, PR #70).
+- Moved the seven VE runtime modules under `lua/vehicle/controller/highbeam/` and standardized bootstrap loading on `controller.loadControllerExternal("highbeam/<name>", "<name>")` plus `controller.getController` access.
+- Updated launcher and CI payload validation to require VE modules at the controller path (including `highbeamVelocityVE`) and rebuilt `launcher/payload/highbeam.zip`.
+- Server and launcher versions bumped to `0.8.2-dev.41`; protocol remains `v2`.
 
 ### v0.8.2-dev.40 - 2026-05-02 (draft)
 - Merged the remote sync hardening pass to main.
