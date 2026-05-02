@@ -21,6 +21,54 @@ local READINESS_DELAY_SEC = 0.5
 
 local _applyBlockedCount = 0
 local _applySuccessCount = 0
+local _diag = {
+  applied = 0,
+  skipped = 0,
+  blocked = 0,
+  unsupportedDevice = 0,
+  unsupportedMode = 0,
+  unsafeField = 0,
+  starter = 0,
+  ignition = 0,
+  stalled = 0,
+}
+local _diagTimer = 0
+local _diagIntervalSec = 5.0
+local _unsupportedLogged = {}
+
+local function _verboseSyncLoggingEnabled()
+  local okCfg, cfg = pcall(require, "highbeam/config")
+  return okCfg and cfg and cfg.get and cfg.get("verboseSyncLogging") == true
+end
+
+local function _bump(name)
+  _diag[name] = (_diag[name] or 0) + 1
+end
+
+local function _logVerboseOnce(key, message)
+  if not _verboseSyncLoggingEnabled() then return end
+  if _unsupportedLogged[key] then return end
+  _unsupportedLogged[key] = true
+  log('D', 'HighBeam.PowertrainVE', message)
+end
+
+local function _formatDiag()
+  local parts = {}
+  for k, v in pairs(_diag) do
+    if v and v > 0 then
+      parts[#parts + 1] = k .. '=' .. tostring(v)
+    end
+  end
+  table.sort(parts)
+  return #parts > 0 and table.concat(parts, ',') or 'none'
+end
+
+local function _hasDiagValues()
+  for _, v in pairs(_diag) do
+    if v and v > 0 then return true end
+  end
+  return false
+end
 
 local function _jsonEncode(v)
   if jsonEncode then
@@ -68,6 +116,25 @@ function M.setActive(active, remote)
 end
 
 function M.updateGFX(dt)
+  _diagTimer = _diagTimer + (dt or 0)
+  if _diagTimer >= _diagIntervalSec then
+    _diagTimer = 0
+    if _hasDiagValues() then
+      log('I', 'HighBeam.PowertrainVE', 'Powertrain apply diag=' .. _formatDiag())
+      _diag = {
+        applied = 0,
+        skipped = 0,
+        blocked = 0,
+        unsupportedDevice = 0,
+        unsupportedMode = 0,
+        unsafeField = 0,
+        starter = 0,
+        ignition = 0,
+        stalled = 0,
+      }
+    end
+  end
+
   if not isActive or isRemote then return end
 
   resyncTimer = resyncTimer + (dt or 0)
@@ -134,6 +201,7 @@ function M.applyPowertrain(data)
   -- Brief readiness hold so stock powertrain finishes init after spawn.
   if elapsed < READINESS_DELAY_SEC then
     _applyBlockedCount = _applyBlockedCount + 1
+    _bump("blocked")
     return
   end
 
@@ -142,34 +210,75 @@ function M.applyPowertrain(data)
       local devName = key:sub(5)
       if powertrain and powertrain.getDevice and type(val) == "string" then
         local ok, dev = pcall(powertrain.getDevice, devName)
-        if ok and dev and dev.setMode then
-          pcall(dev.setMode, dev, val)
-          _applySuccessCount = _applySuccessCount + 1
+        if not ok or not dev then
+          _bump("unsupportedDevice")
+          _logVerboseOnce("missing_device_" .. devName, 'powertrain skip missing device=' .. tostring(devName))
+        elseif not dev.setMode then
+          _bump("unsupportedMode")
+          _logVerboseOnce("missing_setmode_" .. devName, 'powertrain skip device without setMode device=' .. tostring(devName)
+            .. ' type=' .. tostring(dev.type))
+        else
+          local okMode = pcall(dev.setMode, dev, val)
+          if okMode then
+            _applySuccessCount = _applySuccessCount + 1
+            _bump("applied")
+          else
+            _bump("unsupportedMode")
+            _logVerboseOnce("mode_failed_" .. devName .. '_' .. tostring(val), 'powertrain mode failed device=' .. tostring(devName)
+              .. ' type=' .. tostring(dev.type)
+              .. ' mode=' .. tostring(val))
+          end
         end
+      else
+        _bump("skipped")
       end
     elseif key == "ignLevel" then
       local level = tonumber(val) or 0
       if electrics and electrics.setIgnitionLevel then
         pcall(electrics.setIgnitionLevel, level)
+        _bump("ignition")
       elseif electrics and electrics.values then
         electrics.values.ignitionLevel = level
+        _bump("ignition")
+      else
+        _bump("skipped")
+        _logVerboseOnce("missing_electrics_ignition", 'powertrain skip ignitionLevel no electrics API')
       end
     elseif key == "ignCoef" then
       local eng = _findEngine()
-      if eng then eng.ignitionCoef = val end
+      if eng and eng.setIgnition then
+        pcall(eng.setIgnition, eng, tonumber(val) or 0)
+        _bump("ignition")
+      else
+        _bump("unsafeField")
+        _logVerboseOnce("unsafe_ignCoef", 'powertrain skipped unsafe direct ignitionCoef write hasEngine=' .. tostring(eng ~= nil))
+      end
     elseif key == "starterCoef" then
       local eng = _findEngine()
       if eng then
-        if val and val > 0 and eng.activateStarter then pcall(eng.activateStarter, eng) end
-        if (not val or val <= 0) and eng.deactivateStarter then pcall(eng.deactivateStarter, eng) end
+        if val and val > 0 and eng.activateStarter then pcall(eng.activateStarter, eng); _bump("starter") end
+        if (not val or val <= 0) and eng.deactivateStarter then pcall(eng.deactivateStarter, eng); _bump("starter") end
+      else
+        _bump("skipped")
+        _logVerboseOnce("missing_engine_starter", 'powertrain skip starter no combustion engine')
       end
     elseif key == "stalled" then
       local eng = _findEngine()
       if eng and val == 1 and eng.cutIgnition then
         pcall(eng.cutIgnition, eng)
+        _bump("stalled")
+      else
+        _bump("skipped")
       end
+    else
+      _bump("skipped")
+      _logVerboseOnce("unknown_key_" .. tostring(key), 'powertrain skip unknown key=' .. tostring(key))
     end
   end
+end
+
+function M.onHighBeamRemoteReset()
+  activationTime = os.clock()
 end
 
 M.onExtensionLoaded = M.onInit

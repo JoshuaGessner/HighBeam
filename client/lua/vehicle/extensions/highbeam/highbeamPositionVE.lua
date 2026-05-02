@@ -15,6 +15,14 @@ local isRemote = false
 local localMotionTimer = 0
 local diagnosticsEnabled = false
 local diagnosticsTimer = 0
+local diagnosticsSummaryTimer = 0
+local _diag = {
+  hardInstant = 0,
+  hardDelayed = 0,
+  packetTimeout = 0,
+  targetAgeDrops = 0,
+  targets = 0,
+}
 
 local TELEPORT_BASE_DIST = 5.0
 local TELEPORT_SPEED_SCALE = 0.5
@@ -311,6 +319,16 @@ function M.setTarget(px, py, pz, vx, vy, vz, rx, ry, rz, rw, avx, avy, avz, t, i
   local newVel = { vx or 0, vy or 0, vz or 0 }
   local newAngVel = { avx or 0, avy or 0, avz or 0 }
   local newTime = t or 0
+  _diag.targets = (_diag.targets or 0) + 1
+  if (not isReset) and hasTarget and newTime > 0 and targetTime > 0 and newTime < targetTime then
+    _diag.targetAgeDrops = (_diag.targetAgeDrops or 0) + 1
+    if diagnosticsEnabled then
+      log('D', 'HighBeam.PositionVE', 'target drop old remoteTime=' .. string.format('%.6f', newTime)
+        .. ' last=' .. string.format('%.6f', targetTime))
+    end
+    return
+  end
+
   local newAcc = { 0, 0, 0 }
   local newAngAcc = { 0, 0, 0 }
 
@@ -406,10 +424,26 @@ function M.resetTo(px, py, pz, rx, ry, rz, rw, t)
   M.setTarget(px, py, pz, 0, 0, 0, rx, ry, rz, rw, 0, 0, 0, t or 0, true)
 end
 
+function M.onHighBeamRemoteReset()
+  _resetSmoothers()
+end
+
 -- updateGFX is called by the extension framework unconditionally, so the
 -- heartbeat fires even if the physics hook is somehow not registered.
 function M.updateGFX(dt)
   if not isRemote or not obj then return end
+  diagnosticsSummaryTimer = diagnosticsSummaryTimer + (dt or 0)
+  if diagnosticsSummaryTimer >= 5.0 then
+    diagnosticsSummaryTimer = 0
+    if diagnosticsEnabled then
+      log('I', 'HighBeam.PositionVE', 'Position apply diag=hardInstant=' .. tostring(_diag.hardInstant or 0)
+        .. ',hardDelayed=' .. tostring(_diag.hardDelayed or 0)
+        .. ',packetTimeout=' .. tostring(_diag.packetTimeout or 0)
+        .. ',targetAgeDrops=' .. tostring(_diag.targetAgeDrops or 0)
+        .. ',targets=' .. tostring(_diag.targets or 0))
+    end
+    _diag = { hardInstant = 0, hardDelayed = 0, packetTimeout = 0, targetAgeDrops = 0, targets = 0 }
+  end
   heartbeatTimer = heartbeatTimer + (dt or 0)
   if heartbeatTimer >= HEARTBEAT_INTERVAL then
     heartbeatTimer = 0
@@ -441,6 +475,12 @@ function M.onPhysicsStep(dtSim)
 
   local newest = targetBuffer[#targetBuffer]
   if newest and (now - (newest.received or now)) > PACKET_TIMEOUT_SEC then
+    _diag.packetTimeout = (_diag.packetTimeout or 0) + 1
+    if diagnosticsEnabled and diagnosticsTimer <= 0 then
+      diagnosticsTimer = 0.25
+      log('D', 'HighBeam.PositionVE', 'packet timeout age=' .. string.format('%.3f', now - (newest.received or now))
+        .. ' timeout=' .. string.format('%.3f', PACKET_TIMEOUT_SEC))
+    end
     return
   end
 
@@ -488,11 +528,15 @@ function M.onPhysicsStep(dtSim)
   local instantTeleportDist = TELEPORT_INSTANT_DIST + TELEPORT_SPEED_SCALE * speed
 
   if errDist > instantTeleportDist then
+    _diag.hardInstant = (_diag.hardInstant or 0) + 1
     if diagnosticsEnabled and diagnosticsTimer <= 0 then
       diagnosticsTimer = 0.25
       log('D', 'HighBeam.PositionVE', 'hard correction instant err=' .. string.format('%.3f', errDist)
         .. ' threshold=' .. string.format('%.3f', instantTeleportDist)
-        .. ' predictedTime=' .. string.format('%.6f', now - timeOffset - INTERP_BACK_TIME))
+        .. ' targetAge=' .. string.format('%.3f', newest and (now - (newest.received or now)) or 0)
+        .. ' timeOffset=' .. string.format('%.6f', timeOffset or 0)
+        .. ' predictedTime=' .. string.format('%.6f', now - timeOffset - INTERP_BACK_TIME)
+        .. ' reason=instant')
     end
     if obj.queueGameEngineLua then
       obj:queueGameEngineLua(string.format(
@@ -518,11 +562,15 @@ function M.onPhysicsStep(dtSim)
     teleportTimer = teleportTimer + d
     local delayNeeded = TELEPORT_DELAY_SEC + 0.1 * speed
     if teleportTimer > delayNeeded then
+      _diag.hardDelayed = (_diag.hardDelayed or 0) + 1
       if diagnosticsEnabled and diagnosticsTimer <= 0 then
         diagnosticsTimer = 0.25
         log('D', 'HighBeam.PositionVE', 'hard correction delayed err=' .. string.format('%.3f', errDist)
           .. ' threshold=' .. string.format('%.3f', teleportDist)
-          .. ' predictedTime=' .. string.format('%.6f', now - timeOffset - INTERP_BACK_TIME))
+          .. ' targetAge=' .. string.format('%.3f', newest and (now - (newest.received or now)) or 0)
+          .. ' timeOffset=' .. string.format('%.6f', timeOffset or 0)
+          .. ' predictedTime=' .. string.format('%.6f', now - timeOffset - INTERP_BACK_TIME)
+          .. ' reason=delayed')
       end
       if obj.queueGameEngineLua then
         obj:queueGameEngineLua(string.format(
