@@ -286,22 +286,53 @@ M.onVehicleSpawned = function(gameVehicleId)
 
   -- Activate per-vehicle VE sync modules for local vehicle data collection.
   pcall(function()
-    veh:queueLuaCommand([[ 
-      local function _hbLoadController(_name)
-        if not controller or not controller.loadControllerExternal then return false end
-        local _path = "lua/vehicle/extensions/highbeam/" .. _name .. ".lua"
-        local _ok = pcall(controller.loadControllerExternal, _name, _path)
-        if not _ok then _ok = pcall(controller.loadControllerExternal, _path, _name) end
-        return _ok
+    veh:queueLuaCommand([[
+      local function hbGetController(name)
+        if not controller or not controller.getController then return nil end
+        local ok, mod = pcall(controller.getController, name)
+        if ok then return mod end
+        return nil
       end
-      _hbLoadController("highbeamVelocityVE")
-      _hbLoadController("highbeamPositionVE")
-      _hbLoadController("highbeamInputsVE")
-      _hbLoadController("highbeamElectricsVE")
-      _hbLoadController("highbeamPowertrainVE")
-      _hbLoadController("highbeamDamageVE")
-      _hbLoadController("highbeamVE")
-      if highbeamVE and highbeamVE.setActive then highbeamVE.setActive(true, false) end
+      local function hbLoadController(name)
+        local mod = hbGetController(name)
+        if mod then return mod end
+        if not controller or not controller.loadControllerExternal then
+          return nil, "controller.loadControllerExternal unavailable"
+        end
+        local ok, err = pcall(controller.loadControllerExternal, "highbeam/" .. name, name)
+        if not ok then return nil, tostring(err) end
+        mod = hbGetController(name)
+        if not mod then return nil, "controller.getController returned nil after load" end
+        return mod
+      end
+      local function hbRequireController(name, missing)
+        local mod, err = hbLoadController(name)
+        if not mod then table.insert(missing, name .. ":" .. tostring(err or "missing")) end
+        return mod
+      end
+      local missing = {}
+      hbRequireController("highbeamVelocityVE", missing)
+      hbRequireController("highbeamPositionVE", missing)
+      hbRequireController("highbeamInputsVE", missing)
+      hbRequireController("highbeamElectricsVE", missing)
+      hbRequireController("highbeamPowertrainVE", missing)
+      hbRequireController("highbeamDamageVE", missing)
+      local mainVE = hbRequireController("highbeamVE", missing)
+      if mainVE and mainVE.setActive then
+        local ok, err = pcall(mainVE.setActive, true, false)
+        if not ok then table.insert(missing, "highbeamVE.setActive:" .. tostring(err)) end
+      elseif mainVE then
+        table.insert(missing, "highbeamVE.setActive:missing")
+      end
+      if #missing > 0 then
+        obj:queueGameEngineLua(
+          "if extensions and extensions.highbeam and extensions.highbeam.onLocalVEReady then extensions.highbeam.onLocalVEReady(" .. tostring(obj:getID()) .. ",false," .. string.format("%q", table.concat(missing, ",")) .. ") end"
+        )
+      else
+        obj:queueGameEngineLua(
+          "if extensions and extensions.highbeam and extensions.highbeam.onLocalVEReady then extensions.highbeam.onLocalVEReady(" .. tostring(obj:getID()) .. ",true,\"\") end"
+        )
+      end
     ]])
   end)
 end
@@ -410,6 +441,17 @@ M.onVEData = function(gameVid, px, py, pz, rx, ry, rz, rw, vx, vy, vz, avx, avy,
     state.onVEData(gameVid, px, py, pz, rx, ry, rz, rw, vx, vy, vz, avx, avy, avz,
       steer, throttle, brake, gear, handbrake, sampleTime, sampleDelta)
   end
+end
+
+M.onLocalVEReady = function(gameVid, ready, missingCsv)
+  if ready == true or tostring(ready) == "true" then
+    if config and config.get and config.get("verboseSyncLogging") == true then
+      log('D', logTag, 'Local VE confirmed gameVid=' .. tostring(gameVid))
+    end
+    return
+  end
+  log('E', logTag, 'Local VE missing gameVid=' .. tostring(gameVid)
+    .. ' missing=' .. tostring(missingCsv or ''))
 end
 
 -- Teleport request coming from VE PD controller when error is too large.

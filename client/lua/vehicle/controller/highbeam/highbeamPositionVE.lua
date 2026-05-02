@@ -87,13 +87,19 @@ end
 
 local function _getVelocityModule()
   if velocityVE then return velocityVE end
-  velocityVE = highbeamVelocityVE
+  if controller and controller.getController then
+    local ok, mod = pcall(controller.getController, "highbeamVelocityVE")
+    if ok then velocityVE = mod end
+  end
   return velocityVE
 end
 
 local function _getInputsModule()
   if inputsVE then return inputsVE end
-  inputsVE = highbeamInputsVE
+  if controller and controller.getController then
+    local ok, mod = pcall(controller.getController, "highbeamInputsVE")
+    if ok then inputsVE = mod end
+  end
   return inputsVE
 end
 
