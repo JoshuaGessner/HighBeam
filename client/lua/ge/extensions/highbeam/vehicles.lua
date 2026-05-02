@@ -18,8 +18,16 @@ local SPAWN_RETRY_MAX_ATTEMPTS = 15
 local SPAWN_RETRY_BASE_DELAY = 0.75
 local VE_PROBE_RETRY_DELAY = 0.5      -- seconds between VE probe retries
 local VE_PROBE_MAX_RETRIES = 6        -- max re-probes before giving up
+local RESET_BURST_WINDOW_SEC = 0.75
+local RESET_STABILIZE_SEC = 0.35
+local VE_DEATH_WINDOW_SEC = 30.0
+local VE_DEATH_RESPAWN_THRESHOLD = 3
+local VE_RESPAWN_WINDOW_SEC = 60.0
+local VE_RESPAWN_MAX_ATTEMPTS = 2
 local _componentApplyStats = {}
 local makeKey
+local _spawnGameVehicle
+local _queueRemoteVeBootstrap
 
 local function _verboseSyncLoggingEnabled()
   return config and config.get and config.get("verboseSyncLogging") == true
@@ -28,6 +36,122 @@ end
 local function _bumpApplyStat(name)
   local key = tostring(name)
   _componentApplyStats[key] = (_componentApplyStats[key] or 0) + 1
+end
+
+local function _resetFingerprint(cfg)
+  if type(cfg) ~= "table" or type(cfg.pos) ~= "table" or type(cfg.rot) ~= "table" then
+    return "invalid"
+  end
+  return table.concat({
+    string.format('%.2f', tonumber(cfg.pos[1]) or 0),
+    string.format('%.2f', tonumber(cfg.pos[2]) or 0),
+    string.format('%.2f', tonumber(cfg.pos[3]) or 0),
+    string.format('%.3f', tonumber(cfg.rot[1]) or 0),
+    string.format('%.3f', tonumber(cfg.rot[2]) or 0),
+    string.format('%.3f', tonumber(cfg.rot[3]) or 0),
+    string.format('%.3f', tonumber(cfg.rot[4]) or 1),
+  }, ',')
+end
+
+local function _rememberTimedEvent(list, now, windowSec)
+  list[#list + 1] = now
+  local i = 1
+  while i <= #list do
+    if (now - list[i]) > windowSec then
+      table.remove(list, i)
+    else
+      i = i + 1
+    end
+  end
+  return #list
+end
+
+local function _isStabilizing(rv)
+  return rv and rv._stabilizeUntil and os.clock() < rv._stabilizeUntil
+end
+
+local function _applyDeferredAfterStabilize(rv, key)
+  if not rv or _isStabilizing(rv) then return end
+  if rv._pendingPowertrainData then
+    local pending = rv._pendingPowertrainData
+    rv._pendingPowertrainData = nil
+    M.applyPowertrain(rv.playerId, rv.vehicleId, pending)
+    _bumpApplyStat("powertrain_replayed_after_reset")
+  end
+  if rv._pendingDamageData then
+    local pending = rv._pendingDamageData
+    rv._pendingDamageData = nil
+    M.applyDamage(rv.playerId, rv.vehicleId, pending)
+    _bumpApplyStat("damage_replayed_after_reset")
+  end
+end
+
+local function _respawnRemoteVehicle(rv, key, reason)
+  if not rv or not rv.spawnSpec then return false end
+  local now = os.clock()
+  rv._veRespawnEvents = rv._veRespawnEvents or {}
+  local respawnsInWindow = _rememberTimedEvent(rv._veRespawnEvents, now, VE_RESPAWN_WINDOW_SEC)
+  if respawnsInWindow > VE_RESPAWN_MAX_ATTEMPTS then
+    rv._veUnhealthy = true
+    rv._hasVE = false
+    log('E', logTag, 'Remote VE marked unhealthy key=' .. tostring(key)
+      .. ' reason=' .. tostring(reason)
+      .. ' respawns=' .. tostring(respawnsInWindow)
+      .. ' window=' .. tostring(VE_RESPAWN_WINDOW_SEC) .. 's')
+    return false
+  end
+
+  local latest = rv.snapshots and rv.snapshots[#rv.snapshots]
+  if latest then
+    rv.spawnSpec.pos = latest.pos
+    rv.spawnSpec.rot = latest.rot
+    rv.spawnSpec.vel = latest.vel
+  end
+
+  if rv.gameVehicleId then
+    M._remoteGameIds[rv.gameVehicleId] = nil
+    pcall(function()
+      local obj = be:getObjectByID(rv.gameVehicleId)
+      if obj then obj:delete() end
+    end)
+  end
+
+  rv.gameVehicleId = nil
+  rv.gameVehicle = nil
+  rv._hasVE = false
+  rv._componentQueue = {}
+  rv._componentQueueLen = 0
+  rv._pendingDamageData = nil
+  rv._pendingPowertrainData = nil
+  rv._stabilizeUntil = nil
+
+  local vid, vehObj, spawnErr = _spawnGameVehicle(rv.spawnSpec)
+  if vid then
+    rv.gameVehicleId = vid
+    rv.gameVehicle = vehObj
+    M._remoteGameIds[vid] = true
+    rv._veProbeRetries = 0
+    rv._veProbeQueuedAt = nil
+    rv._veLastHeartbeat = nil
+    rv._veReadyAt = nil
+    rv._veUnhealthy = false
+    _queueRemoteVeBootstrap(rv, key)
+    log('W', logTag, 'Remote VE respawned key=' .. tostring(key)
+      .. ' gameVid=' .. tostring(vid)
+      .. ' reason=' .. tostring(reason)
+      .. ' respawns=' .. tostring(respawnsInWindow))
+    return true
+  end
+
+  rv.spawnRetry = {
+    attempts = 1,
+    nextAt = now + SPAWN_RETRY_BASE_DELAY,
+    lastError = spawnErr,
+  }
+  log('E', logTag, 'Remote VE respawn failed key=' .. tostring(key)
+    .. ' reason=' .. tostring(reason)
+    .. ' err=' .. tostring(spawnErr))
+  return false
 end
 
 local function _withRemoteVehicle(playerId, vehicleId, stage)
@@ -146,12 +270,25 @@ makeKey = function(playerId, vehicleId)
   return tostring(playerId) .. "_" .. tostring(vehicleId)
 end
 
-local function _queueRemoteVeBootstrap(rv, key)
+_queueRemoteVeBootstrap = function(rv, key)
   if not rv or not rv.gameVehicle then return end
   local vehObj = rv.gameVehicle
   pcall(function()
     vehObj:queueLuaCommand([[
-      extensions.loadModulesInDirectory("lua/vehicle/extensions/highbeam")
+      local function _hbLoadController(_name)
+        if not controller or not controller.loadControllerExternal then return false end
+        local _path = "lua/vehicle/extensions/highbeam/" .. _name .. ".lua"
+        local _ok = pcall(controller.loadControllerExternal, _name, _path)
+        if not _ok then _ok = pcall(controller.loadControllerExternal, _path, _name) end
+        return _ok
+      end
+      _hbLoadController("highbeamVelocityVE")
+      _hbLoadController("highbeamPositionVE")
+      _hbLoadController("highbeamInputsVE")
+      _hbLoadController("highbeamElectricsVE")
+      _hbLoadController("highbeamPowertrainVE")
+      _hbLoadController("highbeamDamageVE")
+      _hbLoadController("highbeamVE")
       local _missing = {}
       local _ready = false
       if highbeamVE and highbeamVE.setActive then
@@ -261,7 +398,7 @@ local function _buildSpawnSpec(configData, snapshot)
   }
 end
 
-local function _spawnGameVehicle(spec)
+_spawnGameVehicle = function(spec)
   local vehObj = nil
   M._spawningRemote = true
   log('I', logTag, '_spawnGameVehicle: model=' .. tostring(spec.model)
@@ -544,38 +681,56 @@ M.resetRemote = function(playerId, vehicleId, data)
   if not veh then return end
 
   local now = os.clock()
-  local resetMinInterval = math.max(0.0, math.min(3.0, _getConfigNumber("remoteResetMinIntervalSec", 0.5)))
-  local resetUnchanged = (rv._lastResetPayload ~= nil and rv._lastResetPayload == data)
-  if rv._lastResetAt and (now - rv._lastResetAt) < resetMinInterval and resetUnchanged then
-    _bumpApplyStat("reset_suppressed")
-    if _verboseSyncLoggingEnabled() then
-      log('D', logTag, 'Reset suppressed key=' .. key
-        .. ' dt=' .. string.format('%.3f', now - rv._lastResetAt)
-        .. 's')
-    end
-    return
-  end
-  rv._lastResetAt = now
-  rv._lastResetPayload = data
-
   local cfg = _decodeJson(data)
   if not cfg then
     _bumpApplyStat("reset_drop_decode")
     return
   end
 
+  local resetMinInterval = math.max(0.0, math.min(3.0, _getConfigNumber("remoteResetMinIntervalSec", 0.5)))
+  local resetUnchanged = (rv._lastResetPayload ~= nil and rv._lastResetPayload == data)
+  local fingerprint = _resetFingerprint(cfg)
+  local resetSamePoseBurst = rv._lastResetFingerprint == fingerprint
+    and rv._lastResetAt
+    and (now - rv._lastResetAt) < math.max(resetMinInterval, RESET_BURST_WINDOW_SEC)
+  rv._resetBurstEvents = rv._resetBurstEvents or {}
+  local burstCount = _rememberTimedEvent(rv._resetBurstEvents, now, RESET_BURST_WINDOW_SEC)
+  if rv._lastResetAt and (now - rv._lastResetAt) < resetMinInterval and (resetUnchanged or resetSamePoseBurst) then
+    _bumpApplyStat("reset_suppressed")
+    if _verboseSyncLoggingEnabled() then
+      log('D', logTag, 'Reset suppressed key=' .. key
+        .. ' dt=' .. string.format('%.3f', now - rv._lastResetAt)
+        .. ' burst=' .. tostring(burstCount)
+        .. ' samePose=' .. tostring(resetSamePoseBurst)
+        .. 's')
+    end
+    return
+  end
+  rv._lastResetAt = now
+  rv._lastResetPayload = data
+  rv._lastResetFingerprint = fingerprint
+  rv._stabilizeUntil = now + RESET_STABILIZE_SEC
+
   if cfg.pos and cfg.rot then
     local resetTime = tonumber(cfg.time) or 0
     if _verboseSyncLoggingEnabled() then
       log('D', logTag, 'Reset remote target key=' .. key
         .. ' time=' .. string.format('%.6f', resetTime)
+        .. ' burst=' .. tostring(burstCount)
+        .. ' stabilize=' .. string.format('%.2f', RESET_STABILIZE_SEC)
         .. ' source=reset')
+    end
+    if rv._hasVE and rv.gameVehicle then
+      _queueVeLuaCommand(rv.gameVehicle, 'extensions.hook("onHighBeamRemoteReset")', "reset_hook")
     end
     local okPos = pcall(function()
       veh:setPositionRotation(
         cfg.pos[1], cfg.pos[2], cfg.pos[3],
         cfg.rot[1], cfg.rot[2], cfg.rot[3], cfg.rot[4]
       )
+      if veh.resetBrokenFlexMesh then
+        veh:resetBrokenFlexMesh()
+      end
     end)
     if not okPos then
       _bumpApplyStat("reset_error_pose")
@@ -603,21 +758,36 @@ M.resetRemote = function(playerId, vehicleId, data)
   -- Keep damage persistent across resets by re-applying last known damage payload.
   local persistDamage = config and config.get and config.get("persistRemoteDamageOnReset")
   if persistDamage ~= false and rv._lastDamageData and rv._lastDamageData ~= '' then
-    M.applyDamage(playerId, vehicleId, rv._lastDamageData)
-    _bumpApplyStat("damage_reapplied_after_reset")
+    rv._pendingDamageData = rv._lastDamageData
+    _bumpApplyStat("damage_deferred_after_reset")
   end
 
   _bumpApplyStat("reset_applied")
-  log('D', logTag, 'Reset remote vehicle: ' .. key)
+  log('D', logTag, 'Reset remote vehicle: ' .. key
+    .. ' burst=' .. tostring(burstCount)
+    .. ' stabilizeUntil=' .. string.format('%.2f', rv._stabilizeUntil or 0))
 end
 
 -- Apply damage data to a remote vehicle
 M.applyDamage = function(playerId, vehicleId, damageData)
   local veh, rv, key = _withRemoteVehicle(playerId, vehicleId, "damage")
   if not veh then return end
+  if rv._veUnhealthy then
+    _bumpApplyStat("damage_drop_unhealthy")
+    return
+  end
 
   rv._lastDamageData = damageData
   rv._lastDamageAt = os.clock()
+
+  if _isStabilizing(rv) then
+    rv._pendingDamageData = damageData
+    _bumpApplyStat("damage_deferred_stabilizing")
+    if _verboseSyncLoggingEnabled() then
+      log('D', logTag, 'damage deferred during reset stabilization key=' .. key)
+    end
+    return
+  end
 
   local dmg = _decodeJson(damageData)
   if not dmg then
@@ -723,8 +893,12 @@ end
 
 -- Apply electrics state update to a remote vehicle
 M.applyElectrics = function(playerId, vehicleId, electricsData)
-  local veh, _, key = _withRemoteVehicle(playerId, vehicleId, "electrics")
+  local veh, rv, key = _withRemoteVehicle(playerId, vehicleId, "electrics")
   if not veh then return end
+  if rv and rv._veUnhealthy then
+    _bumpApplyStat("electrics_drop_unhealthy")
+    return
+  end
 
   if M.remoteVehicles[key] and M.remoteVehicles[key]._hasVE then
     local jsonPayload = string.format("%q", tostring(electricsData or "{}"))
@@ -811,9 +985,21 @@ end
 M.applyInputs = function(playerId, vehicleId, deltaStr)
   local veh, rv, key = _withRemoteVehicle(playerId, vehicleId, "inputs")
   if not veh then return end
+  if rv._veUnhealthy then
+    _bumpApplyStat("inputs_drop_unhealthy")
+    return
+  end
   if not rv._hasVE then
     _enqueueComponent(rv, { kind = "inputs", data = deltaStr })
     _bumpApplyStat("inputs_queued_no_ve")
+    return
+  end
+
+  if _isStabilizing(rv) then
+    _bumpApplyStat("inputs_skipped_stabilizing")
+    if _verboseSyncLoggingEnabled() then
+      log('D', logTag, 'inputs skipped during reset stabilization key=' .. key)
+    end
     return
   end
 
@@ -833,6 +1019,20 @@ end
 M.applyPowertrain = function(playerId, vehicleId, powertrainData)
   local veh, rv, key = _withRemoteVehicle(playerId, vehicleId, "powertrain")
   if not veh then return end
+  if rv._veUnhealthy then
+    _bumpApplyStat("powertrain_drop_unhealthy")
+    return
+  end
+
+  if _isStabilizing(rv) then
+    rv._pendingPowertrainData = powertrainData
+    _bumpApplyStat("powertrain_deferred_stabilizing")
+    if _verboseSyncLoggingEnabled() then
+      log('D', logTag, 'powertrain deferred during reset stabilization key=' .. key)
+    end
+    return
+  end
+
   if not rv._hasVE then
     _enqueueComponent(rv, { kind = "powertrain", data = powertrainData })
     _bumpApplyStat("powertrain_queued_no_ve")
@@ -988,6 +1188,13 @@ M.tick = function(dt)
   local now = os.clock()
 
   for _, rv in pairs(M.remoteVehicles) do
+    local keyForRv = tostring(rv.playerId) .. '_' .. tostring(rv.vehicleId)
+    _applyDeferredAfterStabilize(rv, keyForRv)
+
+    if rv._veUnhealthy then
+      goto continue_vehicle
+    end
+
     if (not rv.gameVehicleId) and rv.spawnRetry then
       if now >= rv.spawnRetry.nextAt then
         local latest = rv.snapshots[#rv.snapshots]
@@ -1005,9 +1212,9 @@ M.tick = function(dt)
           rv.spawnRetry = nil
           M._remoteGameIds[vid] = true
           rv._hasVE = false
-          _queueRemoteVeBootstrap(rv, tostring(rv.playerId) .. '_' .. tostring(rv.vehicleId))
+          _queueRemoteVeBootstrap(rv, keyForRv)
           _spawnRetrySuccessCount = _spawnRetrySuccessCount + 1
-          log('I', logTag, 'Remote spawn recovered: ' .. tostring(rv.playerId) .. '_' .. tostring(rv.vehicleId) .. ' gameVid=' .. tostring(vid))
+          log('I', logTag, 'Remote spawn recovered: ' .. keyForRv .. ' gameVid=' .. tostring(vid))
         else
           rv.spawnRetry.attempts = rv.spawnRetry.attempts + 1
           rv.spawnRetry.lastError = spawnErr
@@ -1034,11 +1241,10 @@ M.tick = function(dt)
       local retries = rv._veProbeRetries or 0
       if probeAge >= VE_PROBE_RETRY_DELAY and retries < VE_PROBE_MAX_RETRIES then
         rv._veProbeRetries = retries + 1
-        local key = tostring(rv.playerId) .. '_' .. tostring(rv.vehicleId)
         if _verboseSyncLoggingEnabled() then
-          log('D', logTag, 'VE probe retry #' .. tostring(rv._veProbeRetries) .. ' key=' .. key)
+          log('D', logTag, 'VE probe retry #' .. tostring(rv._veProbeRetries) .. ' key=' .. keyForRv)
         end
-        _queueRemoteVeBootstrap(rv, key)
+        _queueRemoteVeBootstrap(rv, keyForRv)
       end
     end
 
@@ -1047,21 +1253,32 @@ M.tick = function(dt)
     if rv._hasVE and rv._veLastHeartbeat then
       local hbAge = now - rv._veLastHeartbeat
       if hbAge > VE_DEATH_TIMEOUT_SEC then
-        local key = tostring(rv.playerId) .. '_' .. tostring(rv.vehicleId)
-        log('W', logTag, 'VE death detected: heartbeat timeout key=' .. key
+        rv._veDeathEvents = rv._veDeathEvents or {}
+        local deathsInWindow = _rememberTimedEvent(rv._veDeathEvents, now, VE_DEATH_WINDOW_SEC)
+        log('W', logTag, 'VE death detected: heartbeat timeout key=' .. keyForRv
           .. ' gameVid=' .. tostring(rv.gameVehicleId)
           .. ' lastHB=' .. string.format('%.2f', rv._veLastHeartbeat)
           .. ' age=' .. string.format('%.2f', hbAge) .. 's'
-          .. ' readyAt=' .. string.format('%.2f', rv._veReadyAt or 0))
+          .. ' readyAt=' .. string.format('%.2f', rv._veReadyAt or 0)
+          .. ' deathsInWindow=' .. tostring(deathsInWindow))
         rv._hasVE = false
         rv._veDeathAt = now
         rv._veDeathCount = (rv._veDeathCount or 0) + 1
-        -- Re-queue VE bootstrap to attempt recovery
-        rv._veProbeRetries = 0
-        rv._veProbeQueuedAt = nil
-        _queueRemoteVeBootstrap(rv, key)
-        log('I', logTag, 'VE recovery queued key=' .. key
-          .. ' deathCount=' .. tostring(rv._veDeathCount))
+        rv._veLastHeartbeat = nil
+        if deathsInWindow >= VE_DEATH_RESPAWN_THRESHOLD then
+          _bumpApplyStat("ve_recovery_respawn")
+          if not _respawnRemoteVehicle(rv, keyForRv, "heartbeat_death_loop") then
+            _bumpApplyStat("ve_recovery_unhealthy")
+          end
+        else
+          rv._veProbeRetries = 0
+          rv._veProbeQueuedAt = nil
+          _queueRemoteVeBootstrap(rv, keyForRv)
+          _bumpApplyStat("ve_recovery_bootstrap")
+          log('I', logTag, 'VE recovery queued key=' .. keyForRv
+            .. ' deathCount=' .. tostring(rv._veDeathCount)
+            .. ' deathsInWindow=' .. tostring(deathsInWindow))
+        end
       end
     end
 

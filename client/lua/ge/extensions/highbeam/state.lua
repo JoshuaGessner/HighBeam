@@ -50,6 +50,8 @@ local _udpSentCount = 0
 local _udpEncodeErrorCount = 0
 local _udpSendErrorCount = 0
 local _udpSkippedUnchangedCount = 0
+local _udpSkipMissingVeCount = 0
+local _udpSkipStaleVeCount = 0
 local _sendSpeedAccum = 0
 local _sendSpeedSamples = 0
 local _componentTxStats = {
@@ -376,6 +378,11 @@ M.tick = function(dt)
         velArr = { _veVel[gameVid][1], _veVel[gameVid][2], _veVel[gameVid][3] }
         speed = math.sqrt((velArr[1] or 0)*(velArr[1] or 0) + (velArr[2] or 0)*(velArr[2] or 0) + (velArr[3] or 0)*(velArr[3] or 0))
       else
+        if not _veDataReady[gameVid] or not _veLastDataAt[gameVid] then
+          _udpSkipMissingVeCount = _udpSkipMissingVeCount + 1
+        else
+          _udpSkipStaleVeCount = _udpSkipStaleVeCount + 1
+        end
         if _verboseSyncLoggingEnabled() then
           log('D', logTag, 'Skipping UDP pose without fresh VE sample gameVid=' .. tostring(gameVid)
             .. ' hasVE=' .. tostring(_veDataReady[gameVid] == true)
@@ -518,6 +525,8 @@ M.tick = function(dt)
       .. ' pendingSpawns=' .. tostring(_countPendingSpawns())
       .. ' udpSent=' .. tostring(_udpSentCount)
       .. ' udpSkippedUnchanged=' .. tostring(_udpSkippedUnchangedCount)
+      .. ' udpSkipMissingVE=' .. tostring(_udpSkipMissingVeCount)
+      .. ' udpSkipStaleVE=' .. tostring(_udpSkipStaleVeCount)
       .. ' udpEncodeErr=' .. tostring(_udpEncodeErrorCount)
       .. ' udpSendErr=' .. tostring(_udpSendErrorCount)
       .. ' udpForcedKeyframe=' .. tostring(_forcedKeyframeCount)
@@ -548,6 +557,8 @@ M.tick = function(dt)
     }
     _udpSentCount = 0
     _udpSkippedUnchangedCount = 0
+    _udpSkipMissingVeCount = 0
+    _udpSkipStaleVeCount = 0
     _udpEncodeErrorCount = 0
     _udpSendErrorCount = 0
     _forcedKeyframeCount = 0
@@ -1247,6 +1258,8 @@ M.onDisconnect = function()
   _diagLogTimer = 0
   _udpSentCount = 0
   _udpSkippedUnchangedCount = 0
+  _udpSkipMissingVeCount = 0
+  _udpSkipStaleVeCount = 0
   _udpEncodeErrorCount = 0
   _udpSendErrorCount = 0
   _sendSpeedAccum = 0

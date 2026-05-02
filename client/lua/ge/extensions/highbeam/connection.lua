@@ -238,7 +238,20 @@ local function _reRegisterLocalVehicles()
         if not state.localVehicles[gameVid] and not inFlight then
           pcall(function()
             veh:queueLuaCommand([[ 
-              extensions.loadModulesInDirectory("lua/vehicle/extensions/highbeam")
+              local function _hbLoadController(_name)
+                if not controller or not controller.loadControllerExternal then return false end
+                local _path = "lua/vehicle/extensions/highbeam/" .. _name .. ".lua"
+                local _ok = pcall(controller.loadControllerExternal, _name, _path)
+                if not _ok then _ok = pcall(controller.loadControllerExternal, _path, _name) end
+                return _ok
+              end
+              _hbLoadController("highbeamVelocityVE")
+              _hbLoadController("highbeamPositionVE")
+              _hbLoadController("highbeamInputsVE")
+              _hbLoadController("highbeamElectricsVE")
+              _hbLoadController("highbeamPowertrainVE")
+              _hbLoadController("highbeamDamageVE")
+              _hbLoadController("highbeamVE")
               if highbeamVE and highbeamVE.setActive then highbeamVE.setActive(true, false) end
             ]])
           end)
