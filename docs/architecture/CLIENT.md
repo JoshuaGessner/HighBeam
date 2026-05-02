@@ -210,6 +210,14 @@ highbeam.zip/
 │   ├── chat.lua
 │   ├── config.lua
 │   └── math.lua
+├── lua/vehicle/controller/highbeam/
+│   ├── highbeamVE.lua
+│   ├── highbeamVelocityVE.lua
+│   ├── highbeamPositionVE.lua
+│   ├── highbeamInputsVE.lua
+│   ├── highbeamElectricsVE.lua
+│   ├── highbeamPowertrainVE.lua
+│   └── highbeamDamageVE.lua
 ├── scripts/highbeam/modScript.lua
 └── ui/chat.html
 ```

@@ -9,6 +9,14 @@ local motionTimer = 0
 local lastSampleTime = 0
 local SEND_INTERVAL = 1 / 60
 
+local function _getController(name)
+  if controller and controller.getController then
+    local ok, mod = pcall(controller.getController, name)
+    if ok then return mod end
+  end
+  return nil
+end
+
 function M.onInit()
   if obj and obj.getID then
     gameVehicleId = obj:getID()
@@ -24,34 +32,34 @@ function M.setActive(active, remote)
   isActive = active and true or false
   isRemote = remote and true or false
 
-  local posVE = highbeamPositionVE
+  local posVE = _getController("highbeamPositionVE")
   if posVE and posVE.setRemote then
     pcall(posVE.setRemote, isRemote)
   end
 
-  local inputsVE = highbeamInputsVE
+  local inputsVE = _getController("highbeamInputsVE")
   if inputsVE and inputsVE.setActive then
     pcall(inputsVE.setActive, isActive, isRemote)
   end
 
-  local electricsVE = highbeamElectricsVE
+  local electricsVE = _getController("highbeamElectricsVE")
   if electricsVE and electricsVE.setActive then
     pcall(electricsVE.setActive, isActive, isRemote)
   end
 
-  local powertrainVE = highbeamPowertrainVE
+  local powertrainVE = _getController("highbeamPowertrainVE")
   if powertrainVE and powertrainVE.setActive then
     pcall(powertrainVE.setActive, isActive, isRemote)
   end
 
-  local damageVE = highbeamDamageVE
+  local damageVE = _getController("highbeamDamageVE")
   if damageVE and damageVE.setActive then
     pcall(damageVE.setActive, isActive, isRemote)
   end
 end
 
 function M.onBeamBroke(beamId, energy)
-  local damageVE = highbeamDamageVE
+  local damageVE = _getController("highbeamDamageVE")
   if damageVE and damageVE.onBeamBroke then
     pcall(damageVE.onBeamBroke, beamId, energy)
   else
@@ -60,7 +68,7 @@ function M.onBeamBroke(beamId, energy)
     end
   end
 
-  local velVE = highbeamVelocityVE
+  local velVE = _getController("highbeamVelocityVE")
   if velVE and velVE.onBeamBroke then
     pcall(velVE.onBeamBroke, beamId, energy)
   end

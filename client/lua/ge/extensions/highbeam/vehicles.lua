@@ -275,34 +275,48 @@ _queueRemoteVeBootstrap = function(rv, key)
   local vehObj = rv.gameVehicle
   pcall(function()
     vehObj:queueLuaCommand([[
-      local function _hbLoadController(_name)
-        if not controller or not controller.loadControllerExternal then return false end
-        local _path = "lua/vehicle/extensions/highbeam/" .. _name .. ".lua"
-        local _ok = pcall(controller.loadControllerExternal, _name, _path)
-        if not _ok then _ok = pcall(controller.loadControllerExternal, _path, _name) end
-        return _ok
+      local function hbGetController(name)
+        if not controller or not controller.getController then return nil end
+        local ok, mod = pcall(controller.getController, name)
+        if ok then return mod end
+        return nil
       end
-      _hbLoadController("highbeamVelocityVE")
-      _hbLoadController("highbeamPositionVE")
-      _hbLoadController("highbeamInputsVE")
-      _hbLoadController("highbeamElectricsVE")
-      _hbLoadController("highbeamPowertrainVE")
-      _hbLoadController("highbeamDamageVE")
-      _hbLoadController("highbeamVE")
+      local function hbLoadController(name)
+        local mod = hbGetController(name)
+        if mod then return mod end
+        if not controller or not controller.loadControllerExternal then
+          return nil, "controller.loadControllerExternal unavailable"
+        end
+        local ok, err = pcall(controller.loadControllerExternal, "highbeam/" .. name, name)
+        if not ok then return nil, tostring(err) end
+        mod = hbGetController(name)
+        if not mod then return nil, "controller.getController returned nil after load" end
+        return mod
+      end
+      local function hbRequireController(name, missing)
+        local mod, err = hbLoadController(name)
+        if not mod then table.insert(missing, name .. ":" .. tostring(err or "missing")) end
+        return mod
+      end
       local _missing = {}
+      hbRequireController("highbeamVelocityVE", _missing)
+      hbRequireController("highbeamPositionVE", _missing)
+      hbRequireController("highbeamInputsVE", _missing)
+      hbRequireController("highbeamElectricsVE", _missing)
+      hbRequireController("highbeamPowertrainVE", _missing)
+      hbRequireController("highbeamDamageVE", _missing)
+      local highbeam = hbRequireController("highbeamVE", _missing)
       local _ready = false
-      if highbeamVE and highbeamVE.setActive then
-        highbeamVE.setActive(true, true)
-        _ready = true
-      else
-        table.insert(_missing, "highbeamVE")
+      if highbeam and highbeam.setActive then
+        local ok, err = pcall(highbeam.setActive, true, true)
+        if ok then
+          _ready = true
+        else
+          table.insert(_missing, "highbeamVE.setActive:" .. tostring(err))
+        end
+      elseif highbeam then
+        table.insert(_missing, "highbeamVE.setActive:missing")
       end
-      if not highbeamPositionVE then table.insert(_missing, "highbeamPositionVE") end
-      if not highbeamVelocityVE then table.insert(_missing, "highbeamVelocityVE") end
-      if not highbeamInputsVE then table.insert(_missing, "highbeamInputsVE") end
-      if not highbeamElectricsVE then table.insert(_missing, "highbeamElectricsVE") end
-      if not highbeamPowertrainVE then table.insert(_missing, "highbeamPowertrainVE") end
-      if not highbeamDamageVE then table.insert(_missing, "highbeamDamageVE") end
       if #_missing > 0 then _ready = false end
       local _missingCsv = table.concat(_missing, ",")
       obj:queueGameEngineLua(
@@ -599,7 +613,7 @@ M.updateRemote = function(decoded)
     local az = decoded.angVel and decoded.angVel[3] or 0
     local diagEnabled = _verboseSyncLoggingEnabled() and "true" or "false"
     local cmd = string.format(
-      "if highbeamPositionVE and highbeamPositionVE.setDiagnostics then highbeamPositionVE.setDiagnostics(%s) end; if highbeamPositionVE and highbeamPositionVE.setTarget then highbeamPositionVE.setTarget(%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f,%.4f,%.6f,false) end",
+      "local _hb=controller and controller.getController and controller.getController('highbeamPositionVE') or nil; if _hb and _hb.setDiagnostics then _hb.setDiagnostics(%s) end; if _hb and _hb.setTarget then _hb.setTarget(%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f,%.4f,%.6f,false) end",
       diagEnabled,
       decoded.pos[1], decoded.pos[2], decoded.pos[3],
       decoded.vel[1], decoded.vel[2], decoded.vel[3],
@@ -739,7 +753,7 @@ M.resetRemote = function(playerId, vehicleId, data)
     if rv._hasVE and rv.gameVehicle then
       local diagEnabled = _verboseSyncLoggingEnabled() and "true" or "false"
       local cmd = string.format(
-        "if highbeamPositionVE and highbeamPositionVE.setDiagnostics then highbeamPositionVE.setDiagnostics(%s) end; if highbeamPositionVE and highbeamPositionVE.resetTo then highbeamPositionVE.resetTo(%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.6f) end",
+        "local _hb=controller and controller.getController and controller.getController('highbeamPositionVE') or nil; if _hb and _hb.setDiagnostics then _hb.setDiagnostics(%s) end; if _hb and _hb.resetTo then _hb.resetTo(%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.6f) end",
         diagEnabled,
         cfg.pos[1], cfg.pos[2], cfg.pos[3],
         cfg.rot[1], cfg.rot[2], cfg.rot[3], cfg.rot[4],
@@ -902,7 +916,7 @@ M.applyElectrics = function(playerId, vehicleId, electricsData)
 
   if M.remoteVehicles[key] and M.remoteVehicles[key]._hasVE then
     local jsonPayload = string.format("%q", tostring(electricsData or "{}"))
-    local cmd = "if highbeamElectricsVE and highbeamElectricsVE.applyElectrics then local _hbj=" .. jsonPayload .. "; local _hbt=(jsonDecode and jsonDecode(_hbj)) or {}; highbeamElectricsVE.applyElectrics(_hbt) end"
+    local cmd = "local _hb=controller and controller.getController and controller.getController('highbeamElectricsVE') or nil; if _hb and _hb.applyElectrics then local _hbj=" .. jsonPayload .. "; local _hbt=(jsonDecode and jsonDecode(_hbj)) or {}; _hb.applyElectrics(_hbt) end"
     local okForward = _queueVeLuaCommand(veh, cmd, "electrics")
     if okForward then
       _bumpApplyStat("electrics_applied")
@@ -1007,7 +1021,7 @@ M.applyInputs = function(playerId, vehicleId, deltaStr)
     return string.format("%q", s or "")
   end
 
-  local cmd = "if highbeamInputsVE and highbeamInputsVE.applyInputs then local d={} for part in string.gmatch(" .. escapeLuaString(deltaStr) .. ",'[^,]+') do local k,v=string.match(part,'^([%a]+)=([^,]+)$'); if k then d[k]=tonumber(v) or 0 end end highbeamInputsVE.applyInputs(d) end"
+  local cmd = "local _hb=controller and controller.getController and controller.getController('highbeamInputsVE') or nil; if _hb and _hb.applyInputs then local d={} for part in string.gmatch(" .. escapeLuaString(deltaStr) .. ",'[^,]+') do local k,v=string.match(part,'^([%a]+)=([^,]+)$'); if k then d[k]=tonumber(v) or 0 end end _hb.applyInputs(d) end"
   local ok = _queueVeLuaCommand(veh, cmd, "inputs")
   if ok then
     _bumpApplyStat("inputs_applied")
@@ -1040,7 +1054,7 @@ M.applyPowertrain = function(playerId, vehicleId, powertrainData)
   end
 
   local jsonPayload = string.format("%q", tostring(powertrainData or "{}"))
-  local cmd = "if highbeamPowertrainVE and highbeamPowertrainVE.applyPowertrain then local _hbj=" .. jsonPayload .. "; local _hbt=(jsonDecode and jsonDecode(_hbj)) or {}; highbeamPowertrainVE.applyPowertrain(_hbt) end"
+  local cmd = "local _hb=controller and controller.getController and controller.getController('highbeamPowertrainVE') or nil; if _hb and _hb.applyPowertrain then local _hbj=" .. jsonPayload .. "; local _hbt=(jsonDecode and jsonDecode(_hbj)) or {}; _hb.applyPowertrain(_hbt) end"
   local ok = _queueVeLuaCommand(veh, cmd, "powertrain")
   if ok then
     _bumpApplyStat("powertrain_applied")

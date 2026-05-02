@@ -1249,10 +1249,10 @@ Ideas for future development (not committed):
 - **Defence-in-depth init:** explicit `init()` calls now use `controller.getController()` instead of `rawget(_G, name)` which always returned nil.
 
 ### v0.8.2-dev.30 - 2026-04-07 (draft)
-- **Launcher validation path fix:** updated `installer.rs` zip validation to check VE modules at `lua/vehicle/controller/highbeam/` instead of the old `lua/vehicle/extensions/highbeam/` path — the launcher was refusing to install the mod because the payload (correctly) moved VE files to the controller directory in dev.29 but the validator was not updated.
+- **Launcher validation path fix:** updated `installer.rs` zip validation to check VE modules at `lua/vehicle/controller/highbeam/` instead of the former VE extension directory — the launcher was refusing to install the mod because the payload (correctly) moved VE files to the controller directory in dev.29 but the validator was not updated.
 
 ### v0.8.2-dev.29 - 2026-04-07 (draft)
-- **VE module path fix (critical):** moved all 7 VE modules from `lua/vehicle/extensions/highbeam/` to `lua/vehicle/controller/highbeam/` — `controller.loadControllerExternal` was searching `controller/` prefixed paths, causing ALL VE modules to fail loading on every vehicle. The entire VE runtime (PD correction, physics-rate inputs, velocity forces, damage sync) was non-functional since introduction.
+- **VE module path fix (critical):** moved all 7 VE modules from the former VE extension directory to `lua/vehicle/controller/highbeam/` — `controller.loadControllerExternal` was searching `controller/` prefixed paths, causing ALL VE modules to fail loading on every vehicle. The entire VE runtime (PD correction, physics-rate inputs, velocity forces, damage sync) was non-functional since introduction.
 - **GE input guard when VE active:** GE-level input application (steering/throttle/brake from UDP snapshots) now skips when VE is active, preventing competing writes between GE and VE input paths.
 - **CI path update:** release workflow payload validation updated to match new `controller/` file locations.
 - **Payload rebuilt:** launcher-bundled `highbeam.zip` now contains VE modules at the correct controller path.
@@ -1307,7 +1307,7 @@ Ideas for future development (not committed):
 - **Remote motion pipeline upgrade:** remote snapshots are now forwarded to VE PD target handlers with VE-first execution and GE interpolation fallback retained for compatibility.
 - **New component transport channels:** added `vehicle_inputs` and `vehicle_powertrain` TCP packet relays (client dispatch + server validation/ownership gate + remote apply path).
 - **Damage optimization follow-up:** added break-group aware damage replication payloads with receiver-side group expansion fallback to beam-level breaking.
-- **Payload refreshed:** launcher-bundled `highbeam.zip` now includes the VE extension tree under `lua/vehicle/extensions/highbeam/`.
+- **Payload refreshed:** launcher-bundled `highbeam.zip` now includes the VE controller runtime tree.
 
 ### v0.8.2-dev.17 - 2026-04-05 (draft)
 - **Fix join-time disconnect regression (critical):** restored `_syncVerboseLoggingEnabled` to file scope in `highbeam/connection.lua` after it was accidentally nested inside `_formatCounterMap`.
