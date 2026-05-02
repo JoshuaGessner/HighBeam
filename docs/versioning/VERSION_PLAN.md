@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-05-02
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.2-dev.39 (protocol v2)
+> **Current version:** v0.8.2-dev.40 (protocol v2)
 > **Status:** v0.8.1 released | v0.8.2 in development
 
 ---
@@ -1202,6 +1202,17 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.2-dev.40 - 2026-05-02 (draft)
+- Merged the remote sync hardening pass to main.
+- Added targeted diagnostics for powertrain/gear apply paths, reset suppression and stabilization, VE heartbeat recovery escalation, position hard corrections, and UDP pose-send skip reasons.
+- Hardened powertrain apply to skip unsafe direct engine field writes and prefer safe ignition/starter/device APIs.
+- Hardened remote gear apply with gearbox-type checks, min/max clamping, ratio validation, and controller-aware shift handling.
+- Suppressed timestamp-only reset bursts by pose fingerprint and added reset stabilization/deferred reapply windows for damage and powertrain data.
+- Added bounded VE death recovery with respawn escalation and unhealthy marking to prevent infinite 5-second recovery loops.
+- Restored required VE registration path consistency by using `controller.loadControllerExternal` for local spawn, reconnect, and remote bootstrap.
+- Rebuilt `launcher/payload/highbeam.zip` with the latest client sync fixes.
+- Server and launcher versions bumped to `0.8.2-dev.40`; protocol remains `v2`.
 
 ### v0.8.2-dev.39 - 2026-05-02 (draft)
 - Merged the vehicle motion timing stabilization work to main.
