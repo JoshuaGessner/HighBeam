@@ -5,6 +5,8 @@ local isActive = false
 local gameVehicleId = 0
 
 local sendTimer = 0
+local motionTimer = 0
+local lastSampleTime = 0
 local SEND_INTERVAL = 1 / 60
 
 function M.onInit()
@@ -67,11 +69,19 @@ end
 function M.updateGFX(dt)
   if not isActive or isRemote then return end
 
-  sendTimer = sendTimer + (dt or 0)
+  local frameDt = dt or 0
+  motionTimer = motionTimer + frameDt
+
+  sendTimer = sendTimer + frameDt
   if sendTimer < SEND_INTERVAL then
     return
   end
   sendTimer = 0
+
+  local sampleTime = motionTimer
+  local sampleDelta = sampleTime - lastSampleTime
+  if sampleDelta <= 0 then sampleDelta = frameDt end
+  lastSampleTime = sampleTime
 
   if not obj then return end
 
@@ -102,13 +112,14 @@ function M.updateGFX(dt)
 
   if obj.queueGameEngineLua then
     obj:queueGameEngineLua(string.format(
-      "extensions.highbeam.onVEData(%d,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.5f,%.5f,%.5f,%.0f,%.5f)",
+      "extensions.highbeam.onVEData(%d,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.5f,%.5f,%.5f,%.0f,%.5f,%.6f,%.6f)",
       gameVehicleId,
       pos.x, pos.y, pos.z,
       rot.x, rot.y, rot.z, rot.w,
       vel.x, vel.y, vel.z,
       avx, avy, avz,
-      steer, throttle, brake, gear, handbrake
+      steer, throttle, brake, gear, handbrake,
+      sampleTime, sampleDelta
     ))
   end
 end

@@ -23,8 +23,12 @@ local _lastElectrics = {}  -- [gameVehicleId] = last sent electrics state string
 local _vePos = {}          -- [gameVehicleId] = {x,y,z}
 local _veRot = {}          -- [gameVehicleId] = {x,y,z,w}
 local _veVel = {}          -- [gameVehicleId] = {x,y,z}
+local _veSampleTime = {}   -- [gameVehicleId] = vehicle-local motion timer
+local _veSampleDelta = {}  -- [gameVehicleId] = exact vehicle-side sample delta
 local _veDataReady = {}    -- [gameVehicleId] = true if VE callback is active
 local _veLastDataAt = {}   -- [gameVehicleId] = os.clock timestamp
+local _veQueueAgeAccum = 0
+local _veQueueAgeSamples = 0
 M._cachedInputs = {}  -- [gameVehicleId] = {steer, throttle, brake} from vlua callback
 M._cachedVluaRot = {} -- [gameVehicleId] = {x, y, z, w} rotation from vlua physics
 M._cachedVluaRotTime = {} -- [gameVehicleId] = os.clock timestamp for cached rotation
@@ -81,7 +85,7 @@ local POS_SEND_DELTA_SQ = 0.01 * 0.01
 local ROT_SEND_DELTA_RAD = math.rad(0.5)
 local VEL_SEND_DELTA_SQ = 0.05 * 0.05
 local INPUT_SEND_DELTA = 0.005
-local ABSOLUTE_SEND_RATE_CAP = 45
+local ABSOLUTE_SEND_RATE_CAP = 60
 local DEFAULT_TCP_POSE_FALLBACK_INTERVAL_SEC = 0.2
 local DEFAULT_FORCE_KEYFRAME_INTERVAL_SEC = 0.25
 local DEFAULT_MOTION_WATCHDOG_SEC = 0.35
@@ -306,9 +310,9 @@ M.tick = function(dt)
   end
 
   -- Adaptive send rate with conservative caps to reduce script + network load.
-  -- <1 m/s = 12Hz, 1-20 m/s = 24Hz, >=20 m/s = maxAdaptiveSendRate (default 45Hz).
+  -- Idle vehicles stay modest; active vehicles default near BeamMP's 50Hz loop.
   local adaptiveSendRate = config and config.get("adaptiveSendRate")
-  local maxAdaptiveSendRate = math.max(20, math.min(60, math.floor(_getConfigNumber("maxAdaptiveSendRate", 45))))
+  local maxAdaptiveSendRate = math.max(20, math.min(60, math.floor(_getConfigNumber("maxAdaptiveSendRate", 50))))
   if adaptiveSendRate ~= false then
     local maxSpeedSq = 0
     for gameVid, _ in pairs(M.localVehicles) do
@@ -325,7 +329,7 @@ M.tick = function(dt)
     if maxSpeed < 1.0 then
       updateRate = 24
     elseif maxSpeed < 20.0 then
-      updateRate = 30
+      updateRate = math.min(maxAdaptiveSendRate, 45)
     else
       updateRate = maxAdaptiveSendRate
     end
@@ -365,30 +369,23 @@ M.tick = function(dt)
       local velArr = nil
       local speed = 0
 
-      local veFresh = _veDataReady[gameVid] and _veLastDataAt[gameVid] and ((now - _veLastDataAt[gameVid]) <= 0.5)
+      local veFresh = _veDataReady[gameVid] and _veLastDataAt[gameVid] and _veSampleTime[gameVid] and ((now - _veLastDataAt[gameVid]) <= 0.5)
       if veFresh and _vePos[gameVid] and _veRot[gameVid] and _veVel[gameVid] then
         posArr = { _vePos[gameVid][1], _vePos[gameVid][2], _vePos[gameVid][3] }
         rotArr = { _veRot[gameVid][1], _veRot[gameVid][2], _veRot[gameVid][3], _veRot[gameVid][4] }
         velArr = { _veVel[gameVid][1], _veVel[gameVid][2], _veVel[gameVid][3] }
         speed = math.sqrt((velArr[1] or 0)*(velArr[1] or 0) + (velArr[2] or 0)*(velArr[2] or 0) + (velArr[3] or 0)*(velArr[3] or 0))
       else
-        local pos = veh:getPosition()
-        local vel = veh:getVelocity()
-
-        local cachedRot = M._cachedVluaRot[gameVid]
-        local rot
-        if cachedRot then
-          rot = cachedRot
-        else
-          local geRot = veh:getRotation()
-          rot = { x = geRot.x, y = geRot.y, z = geRot.z, w = geRot.w }
+        if _verboseSyncLoggingEnabled() then
+          log('D', logTag, 'Skipping UDP pose without fresh VE sample gameVid=' .. tostring(gameVid)
+            .. ' hasVE=' .. tostring(_veDataReady[gameVid] == true)
+            .. ' age=' .. tostring(_veLastDataAt[gameVid] and string.format('%.3f', now - _veLastDataAt[gameVid]) or 'nil'))
         end
-
-        posArr = { pos.x, pos.y, pos.z }
-        rotArr = { rot.x, rot.y, rot.z, rot.w }
-        velArr = { vel.x, vel.y, vel.z }
-        speed = math.sqrt((velArr[1] or 0)*(velArr[1] or 0) + (velArr[2] or 0)*(velArr[2] or 0) + (velArr[3] or 0)*(velArr[3] or 0))
+        goto continue_local_vehicle
       end
+
+      local sampleTime = _veSampleTime[gameVid]
+      local sampleDelta = _veSampleDelta[gameVid] or 0
 
       -- Capture input state for input-augmented extrapolation
       -- NOTE: electrics are in vlua context, so we read from cached data
@@ -431,7 +428,7 @@ M.tick = function(dt)
         posArr,
         rotArr,
         velArr,
-        now,
+        sampleTime,
         inputs,
         angVel
       )
@@ -452,6 +449,17 @@ M.tick = function(dt)
           _sendSpeedAccum = _sendSpeedAccum + speed
           _sendSpeedSamples = _sendSpeedSamples + 1
           _cacheSentState(gameVid, posArr, rotArr, velArr, inputs, now)
+          if _verboseSyncLoggingEnabled() then
+            local queueAge = now - (_veLastDataAt[gameVid] or now)
+            _veQueueAgeAccum = _veQueueAgeAccum + queueAge
+            _veQueueAgeSamples = _veQueueAgeSamples + 1
+            log('D', logTag, 'UDP pose sample gameVid=' .. tostring(gameVid)
+              .. ' serverVid=' .. tostring(serverVid)
+              .. ' sample=' .. string.format('%.6f', sampleTime or 0)
+              .. ' sampleDt=' .. string.format('%.6f', sampleDelta or 0)
+              .. ' geQueueAge=' .. string.format('%.4f', queueAge)
+              .. ' speed=' .. string.format('%.2f', speed or 0))
+          end
         end
       end
 
@@ -467,7 +475,8 @@ M.tick = function(dt)
             .. tostring(rotArr[1]) .. ',' .. tostring(rotArr[2]) .. ',' .. tostring(rotArr[3]) .. ',' .. tostring(rotArr[4])
             .. '],"vel":['
             .. tostring(velArr[1]) .. ',' .. tostring(velArr[2]) .. ',' .. tostring(velArr[3])
-            .. '],"time":' .. tostring(now)
+            .. '],"time":' .. tostring(sampleTime)
+            .. ',"sampleDelta":' .. tostring(sampleDelta)
           if inputs then
             poseData = poseData
               .. ',"inputs":{"steer":' .. tostring(inputs.steer or 0)
@@ -529,6 +538,7 @@ M.tick = function(dt)
       .. ' inpFail=' .. tostring(_componentTxStats.inputs_send_failed)
       .. ' pwrSent=' .. tostring(_componentTxStats.powertrain_sent)
       .. ' pwrFail=' .. tostring(_componentTxStats.powertrain_send_failed)
+      .. ' veQueueAgeAvg=' .. tostring(_veQueueAgeSamples > 0 and string.format('%.4f', _veQueueAgeAccum / _veQueueAgeSamples) or '0')
     )
     M._debugStats = {
       sendRateHz = updateRate,
@@ -548,6 +558,8 @@ M.tick = function(dt)
     _sendSpeedSamples = 0
     _pollLuaCommandCount = 0
     _pollLuaCommandErrorCount = 0
+    _veQueueAgeAccum = 0
+    _veQueueAgeSamples = 0
     _componentTxStats = {
       damage_sent = 0,
       damage_throttled = 0,
@@ -892,12 +904,15 @@ M.onVluaRotationReport = function(gameVid, rx, ry, rz, rw)
 end
 
 M.onVEData = function(gameVid, px, py, pz, rx, ry, rz, rw, vx, vy, vz, avx, avy, avz,
-    steer, throttle, brake, gear, handbrake)
+    steer, throttle, brake, gear, handbrake, sampleTime, sampleDelta)
+  local geReceivedAt = os.clock()
   _vePos[gameVid] = { tonumber(px) or 0, tonumber(py) or 0, tonumber(pz) or 0 }
   _veRot[gameVid] = { tonumber(rx) or 0, tonumber(ry) or 0, tonumber(rz) or 0, tonumber(rw) or 1 }
   _veVel[gameVid] = { tonumber(vx) or 0, tonumber(vy) or 0, tonumber(vz) or 0 }
+  _veSampleTime[gameVid] = tonumber(sampleTime) or 0
+  _veSampleDelta[gameVid] = tonumber(sampleDelta) or 0
   _veDataReady[gameVid] = true
-  _veLastDataAt[gameVid] = os.clock()
+  _veLastDataAt[gameVid] = geReceivedAt
 
   M._cachedInputs[gameVid] = {
     steer = tonumber(steer) or 0,
@@ -913,12 +928,16 @@ M.onVEData = function(gameVid, px, py, pz, rx, ry, rz, rw, vx, vy, vz, avx, avy,
     z = tonumber(rz) or 0,
     w = tonumber(rw) or 1,
   }
-  M._cachedVluaRotTime[gameVid] = os.clock()
+  M._cachedVluaRotTime[gameVid] = geReceivedAt
   M._cachedAngVel[gameVid] = {
     tonumber(avx) or 0,
     tonumber(avy) or 0,
     tonumber(avz) or 0,
   }
+end
+
+M.getLocalMotionTime = function(gameVid)
+  return _veSampleTime[gameVid] or 0
 end
 
 local function _parseInputDeltaStr(deltaStr)

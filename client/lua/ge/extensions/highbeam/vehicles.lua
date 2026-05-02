@@ -10,6 +10,7 @@ local config = require("highbeam/config")
 local _diagTimer = 0
 local _diagIntervalSec = 5.0
 local _staleDropCount = 0
+local _packetInterArrival = {}
 local _spawnRetryDropCount = 0
 local _spawnRetryAttemptCount = 0
 local _spawnRetrySuccessCount = 0
@@ -424,7 +425,6 @@ M.spawnRemoteFromSnapshot = function(vehicle)
 end
 
 local _updateRemoteDropLog = 0
--- P2.3: Improved time offset convergence with min-filter + EMA
 M.updateRemote = function(decoded)
   local key = makeKey(decoded.playerId, decoded.vehicleId)
   local rv = M.remoteVehicles[key]
@@ -446,43 +446,24 @@ M.updateRemote = function(decoded)
     rv.lastSeqTime = decoded.time
   end
 
-  -- Compute smoothed time offset between local clock and sender's simTime.
-  -- P2.3: Use minimum-filter over recent window, then EMA-smooth the minimum.
-  -- This converges faster and avoids overestimating due to jitter spikes.
   local recvTime = os.clock()
-  if decoded.time then
-    local instantOffset = recvTime - decoded.time
-
-    -- Maintain a small circular buffer of recent offsets for min-filter
-    if not rv._offsetSamples then
-      rv._offsetSamples = {}
-      rv._offsetSampleIdx = 0
-    end
-    local maxSamples = 8
-    rv._offsetSampleIdx = (rv._offsetSampleIdx % maxSamples) + 1
-    rv._offsetSamples[rv._offsetSampleIdx] = instantOffset
-
-    -- Find minimum offset in the window (closest to true one-way delay)
-    local minOffset = instantOffset
-    for _, v in ipairs(rv._offsetSamples) do
-      if v < minOffset then minOffset = v end
-    end
-
-    if not rv.timeOffset then
-      rv.timeOffset = minOffset
-    else
-      -- EMA with higher alpha for faster convergence
-      local alpha = 0.15
-      rv.timeOffset = rv.timeOffset + alpha * (minOffset - rv.timeOffset)
-    end
+  if _verboseSyncLoggingEnabled() then
+    local prevArrival = _packetInterArrival[key]
+    local arrivalDt = prevArrival and (recvTime - prevArrival) or 0
+    _packetInterArrival[key] = recvTime
+    log('D', logTag, 'UDP remote packet key=' .. key
+      .. ' remoteTime=' .. string.format('%.6f', decoded.time or 0)
+      .. ' interArrival=' .. string.format('%.4f', arrivalDt))
   end
 
   if rv._hasVE and rv.gameVehicle then
     local ax = decoded.angVel and decoded.angVel[1] or 0
     local ay = decoded.angVel and decoded.angVel[2] or 0
     local az = decoded.angVel and decoded.angVel[3] or 0
+    local diagEnabled = _verboseSyncLoggingEnabled() and "true" or "false"
     local cmd = string.format(
-      "if highbeamPositionVE and highbeamPositionVE.setTarget then highbeamPositionVE.setTarget(%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f,%.4f,%.6f) end",
+      "if highbeamPositionVE and highbeamPositionVE.setDiagnostics then highbeamPositionVE.setDiagnostics(%s) end; if highbeamPositionVE and highbeamPositionVE.setTarget then highbeamPositionVE.setTarget(%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f,%.4f,%.6f,false) end",
+      diagEnabled,
       decoded.pos[1], decoded.pos[2], decoded.pos[3],
       decoded.vel[1], decoded.vel[2], decoded.vel[3],
       decoded.rot[1], decoded.rot[2], decoded.rot[3], decoded.rot[4],
@@ -490,16 +471,8 @@ M.updateRemote = function(decoded)
       decoded.time or 0
     )
     _queueVeLuaCommand(rv.gameVehicle, cmd, "position")
-  elseif rv.gameVehicle then
-    -- VE not ready yet; apply position at GE level without resetting physics
-    local veh = rv.gameVehicle
-    pcall(function()
-      if veh.setPositionNoPhysicsReset and Point3F then
-        veh:setPositionNoPhysicsReset(Point3F(decoded.pos[1], decoded.pos[2], decoded.pos[3]))
-      else
-        veh:setPosition(Point3F(decoded.pos[1], decoded.pos[2], decoded.pos[3]))
-      end
-    end)
+  elseif _verboseSyncLoggingEnabled() then
+    log('D', logTag, 'Skipping remote pose until VE controller is ready key=' .. key)
   end
 
   -- Keep latest snapshot for spawn retry position and nametag lookups
@@ -592,6 +565,12 @@ M.resetRemote = function(playerId, vehicleId, data)
   end
 
   if cfg.pos and cfg.rot then
+    local resetTime = tonumber(cfg.time) or 0
+    if _verboseSyncLoggingEnabled() then
+      log('D', logTag, 'Reset remote target key=' .. key
+        .. ' time=' .. string.format('%.6f', resetTime)
+        .. ' source=reset')
+    end
     local okPos = pcall(function()
       veh:setPositionRotation(
         cfg.pos[1], cfg.pos[2], cfg.pos[3],
@@ -603,11 +582,13 @@ M.resetRemote = function(playerId, vehicleId, data)
     end
     -- Notify VE positionVE so it targets the reset pose instead of snapping back.
     if rv._hasVE and rv.gameVehicle then
+      local diagEnabled = _verboseSyncLoggingEnabled() and "true" or "false"
       local cmd = string.format(
-        "if highbeamPositionVE and highbeamPositionVE.setTarget then highbeamPositionVE.setTarget(%.4f,%.4f,%.4f,0,0,0,%.6f,%.6f,%.6f,%.6f,0,0,0,%.0f) end",
+        "if highbeamPositionVE and highbeamPositionVE.setDiagnostics then highbeamPositionVE.setDiagnostics(%s) end; if highbeamPositionVE and highbeamPositionVE.resetTo then highbeamPositionVE.resetTo(%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.6f) end",
+        diagEnabled,
         cfg.pos[1], cfg.pos[2], cfg.pos[3],
         cfg.rot[1], cfg.rot[2], cfg.rot[3], cfg.rot[4],
-        os.clock()
+        resetTime
       )
       _queueVeLuaCommand(rv.gameVehicle, cmd, "reset")
     end
@@ -882,14 +863,15 @@ M.applyPose = function(playerId, vehicleId, poseData)
     pos = pose.pos,
     rot = pose.rot,
     vel = pose.vel,
-    time = tonumber(pose.time) or os.clock(),
+    time = tonumber(pose.time),
     inputs = pose.inputs,
     angVel = pose.angVel,
   }
 
   if type(decoded.pos) ~= "table" or #decoded.pos < 3
     or type(decoded.rot) ~= "table" or #decoded.rot < 4
-    or type(decoded.vel) ~= "table" or #decoded.vel < 3 then
+    or type(decoded.vel) ~= "table" or #decoded.vel < 3
+    or type(decoded.time) ~= "number" then
     _bumpApplyStat("pose_drop_invalid")
     return
   end
