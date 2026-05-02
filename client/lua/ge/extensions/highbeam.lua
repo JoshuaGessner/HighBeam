@@ -321,7 +321,11 @@ M.onVehicleResetted = function(gameVehicleId)
 
   local pos = veh:getPosition()
   local rot = veh:getRotation()
-  local resetData = '{"pos":[' .. pos.x .. ',' .. pos.y .. ',' .. pos.z .. '],"rot":[' .. rot.x .. ',' .. rot.y .. ',' .. rot.z .. ',' .. rot.w .. ']}'
+  local resetTime = 0
+  if state and state.getLocalMotionTime then
+    resetTime = state.getLocalMotionTime(gameVehicleId) or 0
+  end
+  local resetData = '{"pos":[' .. pos.x .. ',' .. pos.y .. ',' .. pos.z .. '],"rot":[' .. rot.x .. ',' .. rot.y .. ',' .. rot.z .. ',' .. rot.w .. '],"time":' .. tostring(resetTime) .. '}'
 
   local lastSent = _lastLocalResetSentAt[gameVehicleId]
   if lastSent and (now - lastSent) < debounceSec then
@@ -388,21 +392,23 @@ end
 
 -- Called from vehicle-side highbeamVE.lua with per-frame data.
 M.onVEData = function(gameVid, px, py, pz, rx, ry, rz, rw, vx, vy, vz, avx, avy, avz,
-    steer, throttle, brake, gear, handbrake)
+    steer, throttle, brake, gear, handbrake, sampleTime, sampleDelta)
   if state and state.onVEData then
     state.onVEData(gameVid, px, py, pz, rx, ry, rz, rw, vx, vy, vz, avx, avy, avz,
-      steer, throttle, brake, gear, handbrake)
+      steer, throttle, brake, gear, handbrake, sampleTime, sampleDelta)
   end
 end
 
 -- Teleport request coming from VE PD controller when error is too large.
-M.onVETeleportRequest = function(gameVid, px, py, pz, rx, ry, rz, rw)
+M.onVETeleportRequest = function(gameVid, px, py, pz, rx, ry, rz, rw, vx, vy, vz, avx, avy, avz, errDist)
   local veh = be:getObjectByID(gameVid)
   if veh then
-    if veh.setPositionNoPhysicsReset and Point3F then
-      pcall(veh.setPositionNoPhysicsReset, veh, Point3F(px, py, pz))
-    else
-      pcall(veh.setPositionRotation, veh, px, py, pz, rx, ry, rz, rw)
+    pcall(veh.setPositionRotation, veh, px, py, pz, rx, ry, rz, rw)
+    if config and config.get and config.get("verboseSyncLogging") == true then
+      log('D', logTag, 'VE coherent correction gameVid=' .. tostring(gameVid)
+        .. ' err=' .. string.format('%.3f', tonumber(errDist) or 0)
+        .. ' vel=' .. string.format('%.2f,%.2f,%.2f', tonumber(vx) or 0, tonumber(vy) or 0, tonumber(vz) or 0)
+        .. ' angVel=' .. string.format('%.2f,%.2f,%.2f', tonumber(avx) or 0, tonumber(avy) or 0, tonumber(avz) or 0))
     end
   end
 end

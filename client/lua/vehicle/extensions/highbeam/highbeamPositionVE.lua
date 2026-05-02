@@ -5,11 +5,16 @@ local inputsVE
 
 local targetPos = { 0, 0, 0 }
 local targetVel = { 0, 0, 0 }
+local targetAcc = { 0, 0, 0 }
 local targetRot = { 0, 0, 0, 1 }
 local targetAngVel = { 0, 0, 0 }
+local targetAngAcc = { 0, 0, 0 }
 local targetTime = 0
 local hasTarget = false
 local isRemote = false
+local localMotionTimer = 0
+local diagnosticsEnabled = false
+local diagnosticsTimer = 0
 
 local TELEPORT_BASE_DIST = 5.0
 local TELEPORT_SPEED_SCALE = 0.5
@@ -50,7 +55,27 @@ local blendCorrX, blendCorrY, blendCorrZ = 0, 0, 0
 local blendRemaining = 0
 local prevTargetPos = nil
 local prevTargetVel = nil
+local prevTargetAngVel = nil
 local prevTargetTime = nil
+local lastLocalVel = nil
+local localAcc = { 0, 0, 0 }
+
+local function _resetSmoothers()
+  teleportTimer = 0
+  postTeleportGrace = 0
+  timeOffset = 0
+  offsetSamples = {}
+  offsetSampleIdx = 1
+  targetBuffer = {}
+  blendCorrX, blendCorrY, blendCorrZ = 0, 0, 0
+  blendRemaining = 0
+  prevTargetPos = nil
+  prevTargetVel = nil
+  prevTargetAngVel = nil
+  prevTargetTime = nil
+  lastLocalVel = nil
+  localAcc = { 0, 0, 0 }
+end
 
 local function _getVelocityModule()
   if velocityVE then return velocityVE end
@@ -65,7 +90,19 @@ local function _getInputsModule()
 end
 
 local function _now()
-  return os.clock()
+  return localMotionTimer
+end
+
+local function _lerpValue(oldValue, newValue, alpha)
+  return oldValue + (newValue - oldValue) * alpha
+end
+
+local function _smooth3(oldValue, newValue, alpha)
+  return {
+    _lerpValue(oldValue[1] or 0, newValue[1] or 0, alpha),
+    _lerpValue(oldValue[2] or 0, newValue[2] or 0, alpha),
+    _lerpValue(oldValue[3] or 0, newValue[3] or 0, alpha),
+  }
 end
 
 local function _rotationErrorAngVel(curRot, tgtRot, dt)
@@ -152,12 +189,14 @@ local function _nlerpQuat(a, b, t)
   return { ox, oy, oz, ow }
 end
 
-local function _bufferTargetSnapshot(pos, vel, rot, angVel, t)
+local function _bufferTargetSnapshot(pos, vel, acc, rot, angVel, angAcc, t)
   targetBuffer[#targetBuffer + 1] = {
     pos = { pos[1] or 0, pos[2] or 0, pos[3] or 0 },
     vel = { vel[1] or 0, vel[2] or 0, vel[3] or 0 },
+    acc = { acc[1] or 0, acc[2] or 0, acc[3] or 0 },
     rot = { rot[1] or 0, rot[2] or 0, rot[3] or 0, rot[4] or 1 },
     angVel = { angVel[1] or 0, angVel[2] or 0, angVel[3] or 0 },
+    angAcc = { angAcc[1] or 0, angAcc[2] or 0, angAcc[3] or 0 },
     time = t or 0,
     received = _now(),
   }
@@ -168,7 +207,7 @@ end
 
 local function _resolveBufferedTarget(now)
   if #targetBuffer == 0 then
-    return targetPos, targetVel, targetRot, targetAngVel, 0
+    return targetPos, targetVel, targetAcc, targetRot, targetAngVel, targetAngAcc, 0
   end
 
   local sampleTime = now - timeOffset - INTERP_BACK_TIME
@@ -176,7 +215,7 @@ local function _resolveBufferedTarget(now)
   local newest = targetBuffer[#targetBuffer]
 
   if sampleTime <= (oldest.time or 0) then
-    return oldest.pos, oldest.vel, oldest.rot, oldest.angVel, 0
+    return oldest.pos, oldest.vel, oldest.acc, oldest.rot, oldest.angVel, oldest.angAcc, 0
   end
 
   for i = 1, #targetBuffer - 1 do
@@ -185,18 +224,28 @@ local function _resolveBufferedTarget(now)
     if sampleTime >= (a.time or 0) and sampleTime <= (b.time or 0) then
       local span = math.max((b.time or 0) - (a.time or 0), 0.0001)
       local t = math.max(0, math.min(1, (sampleTime - (a.time or 0)) / span))
-      return _lerp3(a.pos, b.pos, t), _lerp3(a.vel, b.vel, t), _nlerpQuat(a.rot, b.rot, t), _lerp3(a.angVel, b.angVel, t), 0
+      return _lerp3(a.pos, b.pos, t), _lerp3(a.vel, b.vel, t), _lerp3(a.acc, b.acc, t), _nlerpQuat(a.rot, b.rot, t), _lerp3(a.angVel, b.angVel, t), _lerp3(a.angAcc, b.angAcc, t), 0
     end
   end
 
   local dt = sampleTime - (newest.time or 0)
   if dt < 0 then dt = 0 end
   if dt > MAX_EXTRAPOLATION_SEC then dt = MAX_EXTRAPOLATION_SEC end
+  local predVel = {
+    (newest.vel[1] or 0) + (newest.acc[1] or 0) * dt,
+    (newest.vel[2] or 0) + (newest.acc[2] or 0) * dt,
+    (newest.vel[3] or 0) + (newest.acc[3] or 0) * dt,
+  }
+  local predAngVel = {
+    (newest.angVel[1] or 0) + (newest.angAcc[1] or 0) * dt,
+    (newest.angVel[2] or 0) + (newest.angAcc[2] or 0) * dt,
+    (newest.angVel[3] or 0) + (newest.angAcc[3] or 0) * dt,
+  }
   return {
-    (newest.pos[1] or 0) + (newest.vel[1] or 0) * dt,
-    (newest.pos[2] or 0) + (newest.vel[2] or 0) * dt,
-    (newest.pos[3] or 0) + (newest.vel[3] or 0) * dt,
-  }, newest.vel, _predictRot(newest.rot, newest.angVel, dt), newest.angVel, dt
+    (newest.pos[1] or 0) + (newest.vel[1] or 0) * dt + 0.5 * (newest.acc[1] or 0) * dt * dt,
+    (newest.pos[2] or 0) + (newest.vel[2] or 0) * dt + 0.5 * (newest.acc[2] or 0) * dt * dt,
+    (newest.pos[3] or 0) + (newest.vel[3] or 0) * dt + 0.5 * (newest.acc[3] or 0) * dt * dt,
+  }, predVel, newest.acc, _predictRot(newest.rot, predAngVel, dt), predAngVel, newest.angAcc, dt
 end
 
 local function _currentRotation()
@@ -230,15 +279,11 @@ end
 function M.setRemote(remote)
   isRemote = remote and true or false
   hasTarget = false
-  teleportTimer = 0
-  postTeleportGrace = 0
-  timeOffset = 0
-  offsetSamples = {}
-  offsetSampleIdx = 1
-  targetBuffer = {}
-  prevTargetPos = nil
-  prevTargetVel = nil
-  prevTargetTime = nil
+  _resetSmoothers()
+end
+
+function M.setDiagnostics(enabled)
+  diagnosticsEnabled = enabled and true or false
 end
 
 function M.updateTimeOffset(remoteTime, localTime)
@@ -261,10 +306,33 @@ function M.updateTimeOffset(remoteTime, localTime)
   end
 end
 
-function M.setTarget(px, py, pz, vx, vy, vz, rx, ry, rz, rw, avx, avy, avz, t)
+function M.setTarget(px, py, pz, vx, vy, vz, rx, ry, rz, rw, avx, avy, avz, t, isReset)
   local newPos = { px or 0, py or 0, pz or 0 }
   local newVel = { vx or 0, vy or 0, vz or 0 }
+  local newAngVel = { avx or 0, avy or 0, avz or 0 }
   local newTime = t or 0
+  local newAcc = { 0, 0, 0 }
+  local newAngAcc = { 0, 0, 0 }
+
+  if isReset then
+    _resetSmoothers()
+  elseif prevTargetVel and prevTargetAngVel and prevTargetTime and newTime > prevTargetTime then
+    local remoteDt = math.max(0.001, math.min(0.25, newTime - prevTargetTime))
+    newAcc = {
+      ((newVel[1] or 0) - (prevTargetVel[1] or 0)) / remoteDt,
+      ((newVel[2] or 0) - (prevTargetVel[2] or 0)) / remoteDt,
+      ((newVel[3] or 0) - (prevTargetVel[3] or 0)) / remoteDt,
+    }
+    newAngAcc = {
+      ((newAngVel[1] or 0) - (prevTargetAngVel[1] or 0)) / remoteDt,
+      ((newAngVel[2] or 0) - (prevTargetAngVel[2] or 0)) / remoteDt,
+      ((newAngVel[3] or 0) - (prevTargetAngVel[3] or 0)) / remoteDt,
+    }
+    if targetAcc then newAcc = _smooth3(targetAcc, newAcc, 0.35) end
+    if targetAngAcc then newAngAcc = _smooth3(targetAngAcc, newAngAcc, 0.35) end
+    if targetVel then newVel = _smooth3(targetVel, newVel, 0.55) end
+    if targetAngVel then newAngVel = _smooth3(targetAngVel, newAngVel, 0.55) end
+  end
 
   -- Smooth blend-on-arrival: compute where we predicted the car to be at this
   -- moment using the OLD target, compare with where the NEW target says it
@@ -309,17 +377,33 @@ function M.setTarget(px, py, pz, vx, vy, vz, rx, ry, rz, rw, avx, avy, avz, t)
   -- Save for next blend computation
   prevTargetPos = newPos
   prevTargetVel = newVel
+  prevTargetAngVel = newAngVel
   prevTargetTime = newTime
 
   targetPos = newPos
   targetVel = newVel
+  targetAcc = newAcc
   targetRot = { rx or 0, ry or 0, rz or 0, rw or 1 }
-  targetAngVel = { avx or 0, avy or 0, avz or 0 }
+  targetAngVel = newAngVel
+  targetAngAcc = newAngAcc
   targetTime = newTime
   hasTarget = true
 
   M.updateTimeOffset(targetTime, _now())
-  _bufferTargetSnapshot(targetPos, targetVel, targetRot, targetAngVel, targetTime)
+  _bufferTargetSnapshot(targetPos, targetVel, targetAcc, targetRot, targetAngVel, targetAngAcc, targetTime)
+
+  if diagnosticsEnabled then
+    local predictedSample = _now() - timeOffset - INTERP_BACK_TIME
+    log('D', 'HighBeam.PositionVE', 'target timing remoteTime=' .. string.format('%.6f', targetTime or 0)
+      .. ' localTime=' .. string.format('%.6f', _now())
+      .. ' offset=' .. string.format('%.6f', timeOffset or 0)
+      .. ' predictedSample=' .. string.format('%.6f', predictedSample)
+      .. ' source=' .. (isReset and 'reset' or 'udp'))
+  end
+end
+
+function M.resetTo(px, py, pz, rx, ry, rz, rw, t)
+  M.setTarget(px, py, pz, 0, 0, 0, rx, ry, rz, rw, 0, 0, 0, t or 0, true)
 end
 
 -- updateGFX is called by the extension framework unconditionally, so the
@@ -339,6 +423,9 @@ end
 
 function M.onPhysicsStep(dtSim)
   local velMod = _getVelocityModule()
+  local d = dtSim or 0.0005
+  if d > 0 then localMotionTimer = localMotionTimer + d end
+  if diagnosticsTimer > 0 then diagnosticsTimer = math.max(0, diagnosticsTimer - d) end
   if not isRemote or not hasTarget then return end
   if not obj then return end
 
@@ -347,7 +434,6 @@ function M.onPhysicsStep(dtSim)
   if not curPos or not curVel then return end
 
   local now = _now()
-  local d = dtSim or 0.0005
 
   if postTeleportGrace > 0 then
     postTeleportGrace = math.max(0, postTeleportGrace - d)
@@ -358,7 +444,16 @@ function M.onPhysicsStep(dtSim)
     return
   end
 
-  local predPos, predVel, predRot, predAngVel = _resolveBufferedTarget(now)
+  if lastLocalVel and d > 0 then
+    localAcc = {
+      ((curVel.x or 0) - (lastLocalVel[1] or 0)) / d,
+      ((curVel.y or 0) - (lastLocalVel[2] or 0)) / d,
+      ((curVel.z or 0) - (lastLocalVel[3] or 0)) / d,
+    }
+  end
+  lastLocalVel = { curVel.x or 0, curVel.y or 0, curVel.z or 0 }
+
+  local predPos, predVel, predAcc, predRot, predAngVel = _resolveBufferedTarget(now)
   local predX = predPos[1] or 0
   local predY = predPos[2] or 0
   local predZ = predPos[3] or 0
@@ -393,13 +488,20 @@ function M.onPhysicsStep(dtSim)
   local instantTeleportDist = TELEPORT_INSTANT_DIST + TELEPORT_SPEED_SCALE * speed
 
   if errDist > instantTeleportDist then
+    if diagnosticsEnabled and diagnosticsTimer <= 0 then
+      diagnosticsTimer = 0.25
+      log('D', 'HighBeam.PositionVE', 'hard correction instant err=' .. string.format('%.3f', errDist)
+        .. ' threshold=' .. string.format('%.3f', instantTeleportDist)
+        .. ' predictedTime=' .. string.format('%.6f', now - timeOffset - INTERP_BACK_TIME))
+    end
     if obj.queueGameEngineLua then
       obj:queueGameEngineLua(string.format(
-        "extensions.highbeam.onVETeleportRequest(%d,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f)",
-        obj:getID(), predX, predY, predZ, predRot[1], predRot[2], predRot[3], predRot[4]
+        "extensions.highbeam.onVETeleportRequest(%d,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f)",
+        obj:getID(), predX, predY, predZ, predRot[1], predRot[2], predRot[3], predRot[4],
+        predVel[1] or 0, predVel[2] or 0, predVel[3] or 0,
+        predAngVel[1] or 0, predAngVel[2] or 0, predAngVel[3] or 0,
+        errDist
       ))
-    elseif obj.setClusterPosRelRot then
-      pcall(obj.setClusterPosRelRot, obj, refNodeId, predX, predY, predZ, predRot[1], predRot[2], predRot[3], predRot[4])
     end
     if velMod and velMod.setVelocity then
       velMod.setVelocity(predVel[1] or 0, predVel[2] or 0, predVel[3] or 0)
@@ -408,6 +510,7 @@ function M.onPhysicsStep(dtSim)
     postTeleportGrace = POST_TELEPORT_GRACE_SEC
     blendRemaining = 0
     blendCorrX, blendCorrY, blendCorrZ = 0, 0, 0
+    prevTargetPos, prevTargetVel, prevTargetAngVel, prevTargetTime = nil, nil, nil, nil
     return
   end
 
@@ -415,13 +518,20 @@ function M.onPhysicsStep(dtSim)
     teleportTimer = teleportTimer + d
     local delayNeeded = TELEPORT_DELAY_SEC + 0.1 * speed
     if teleportTimer > delayNeeded then
+      if diagnosticsEnabled and diagnosticsTimer <= 0 then
+        diagnosticsTimer = 0.25
+        log('D', 'HighBeam.PositionVE', 'hard correction delayed err=' .. string.format('%.3f', errDist)
+          .. ' threshold=' .. string.format('%.3f', teleportDist)
+          .. ' predictedTime=' .. string.format('%.6f', now - timeOffset - INTERP_BACK_TIME))
+      end
       if obj.queueGameEngineLua then
         obj:queueGameEngineLua(string.format(
-          "extensions.highbeam.onVETeleportRequest(%d,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f)",
-          obj:getID(), predX, predY, predZ, predRot[1], predRot[2], predRot[3], predRot[4]
+          "extensions.highbeam.onVETeleportRequest(%d,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f)",
+          obj:getID(), predX, predY, predZ, predRot[1], predRot[2], predRot[3], predRot[4],
+          predVel[1] or 0, predVel[2] or 0, predVel[3] or 0,
+          predAngVel[1] or 0, predAngVel[2] or 0, predAngVel[3] or 0,
+          errDist
         ))
-      elseif obj.setClusterPosRelRot then
-        pcall(obj.setClusterPosRelRot, obj, refNodeId, predX, predY, predZ, predRot[1], predRot[2], predRot[3], predRot[4])
       end
       if velMod and velMod.setVelocity then
         velMod.setVelocity(predVel[1] or 0, predVel[2] or 0, predVel[3] or 0)
@@ -430,6 +540,7 @@ function M.onPhysicsStep(dtSim)
       postTeleportGrace = POST_TELEPORT_GRACE_SEC
       blendRemaining = 0
       blendCorrX, blendCorrY, blendCorrZ = 0, 0, 0
+      prevTargetPos, prevTargetVel, prevTargetAngVel, prevTargetTime = nil, nil, nil, nil
       return
     end
   else
@@ -439,6 +550,9 @@ function M.onPhysicsStep(dtSim)
   local velErrX = (predVel[1] or 0) - (curVel.x or 0)
   local velErrY = (predVel[2] or 0) - (curVel.y or 0)
   local velErrZ = (predVel[3] or 0) - (curVel.z or 0)
+  local accErrX = (predAcc[1] or 0) - (localAcc[1] or 0)
+  local accErrY = (predAcc[2] or 0) - (localAcc[2] or 0)
+  local accErrZ = (predAcc[3] or 0) - (localAcc[3] or 0)
 
   -- Keep correction active while the remote driver is moving so the vehicle
   -- stays live instead of drifting and later hard-snapping into place.
@@ -447,9 +561,9 @@ function M.onPhysicsStep(dtSim)
   local posGainScale = 1.0 - 0.2 * inputActivity
   local velGainScale = 1.0 - 0.3 * inputActivity
 
-  local accX = errX * POS_CORRECT_GAIN * posGainScale + velErrX * VEL_CORRECT_GAIN * velGainScale
-  local accY = errY * POS_CORRECT_GAIN * posGainScale + velErrY * VEL_CORRECT_GAIN * velGainScale
-  local accZ = errZ * POS_CORRECT_GAIN * posGainScale + velErrZ * VEL_CORRECT_GAIN * velGainScale
+  local accX = errX * POS_CORRECT_GAIN * posGainScale + velErrX * VEL_CORRECT_GAIN * velGainScale + accErrX * 0.08
+  local accY = errY * POS_CORRECT_GAIN * posGainScale + velErrY * VEL_CORRECT_GAIN * velGainScale + accErrY * 0.08
+  local accZ = errZ * POS_CORRECT_GAIN * posGainScale + velErrZ * VEL_CORRECT_GAIN * velGainScale + accErrZ * 0.08
 
   local accMag = math.sqrt(accX * accX + accY * accY + accZ * accZ)
   local clamp = CORRECTION_ACCEL_CLAMP * (1.0 - 0.2 * inputActivity)
