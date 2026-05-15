@@ -23,6 +23,7 @@ local _diag = {
   hardDelayed = 0,
   packetTimeout = 0,
   targetAgeDrops = 0,
+  physicsTicks = 0,
   targets = 0,
 }
 
@@ -290,8 +291,7 @@ function M.onInit()
   _getVelocityModule()
   _getInputsModule()
   refNodeId = 0
-  -- enablePhysicsStepHook() is called by highbeamVE; the engine will
-  -- natively dispatch onPhysicsStep to every loaded VE extension.
+  -- highbeamVE owns the native physics hook and dispatches to child controllers.
 end
 
 function M.setRemote(remote)
@@ -451,9 +451,11 @@ function M.updateGFX(dt)
         .. ',hardDelayed=' .. tostring(_diag.hardDelayed or 0)
         .. ',packetTimeout=' .. tostring(_diag.packetTimeout or 0)
         .. ',targetAgeDrops=' .. tostring(_diag.targetAgeDrops or 0)
+        .. ',physicsTicks=' .. tostring(_diag.physicsTicks or 0)
+        .. ',localTime=' .. string.format('%.6f', localMotionTimer or 0)
         .. ',targets=' .. tostring(_diag.targets or 0))
     end
-    _diag = { hardInstant = 0, hardDelayed = 0, packetTimeout = 0, targetAgeDrops = 0, targets = 0 }
+    _diag = { hardInstant = 0, hardDelayed = 0, packetTimeout = 0, targetAgeDrops = 0, physicsTicks = 0, targets = 0 }
   end
   heartbeatTimer = heartbeatTimer + (dt or 0)
   if heartbeatTimer >= HEARTBEAT_INTERVAL then
@@ -466,10 +468,11 @@ function M.updateGFX(dt)
   end
 end
 
-function M.onPhysicsStep(dtSim)
+function M.onHighBeamPhysicsStep(dtSim)
   local velMod = _getVelocityModule()
   local d = dtSim or 0.0005
   if d > 0 then localMotionTimer = localMotionTimer + d end
+  _diag.physicsTicks = (_diag.physicsTicks or 0) + 1
   if diagnosticsTimer > 0 then diagnosticsTimer = math.max(0, diagnosticsTimer - d) end
   if not isRemote or not hasTarget then return end
   if not obj then return end

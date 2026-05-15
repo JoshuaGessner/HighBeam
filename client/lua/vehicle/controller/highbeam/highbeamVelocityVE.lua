@@ -77,8 +77,7 @@ function M.onInit()
   if initialized then return end
   initialized = true
   M.recalcConnectivity()
-  -- enablePhysicsStepHook() is called by highbeamVE; the engine will
-  -- natively dispatch onPhysicsStep to every loaded VE extension.
+  -- highbeamVE owns the native physics hook and dispatches to child controllers.
 end
 
 function M.onBeamBroke(id, energy)
@@ -95,7 +94,7 @@ function M.updateGFX(dt)
   end
 end
 
-function M.onPhysicsStep(dtSim)
+function M.onHighBeamPhysicsStep(dtSim)
   if dtSim and dtSim > 0 then
     lastDtSim = dtSim
   end
