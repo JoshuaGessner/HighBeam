@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-05-15
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.2-dev.42 (protocol v2)
+> **Current version:** v0.8.2-dev.43 (protocol v2)
 > **Status:** v0.8.1 released | v0.8.2 in development
 
 ---
@@ -1203,6 +1203,13 @@ Ideas for future development (not committed):
 
 ## Recent Release Notes
 
+### v0.8.2-dev.43 - 2026-05-15 (draft)
+- Fixed the dev.42 client load failure by splitting `state.lua`'s oversized `M.tick` closure into smaller helper functions so BeamNG/LuaJIT no longer rejects it for exceeding the 60-upvalue limit.
+- Preserved the dev.42 sync behavior: VE controller lifecycle diagnostics, UDP hash gating, TCP `vehicle_pose` fallback, and low-frequency local state polling all remain active.
+- Rebuilt `launcher/payload/highbeam.zip` from the fixed client source and validated payload parity.
+- Added LuaJIT bytecode compilation to the release checklist so BeamNG runtime compile limits are checked before future client releases.
+- Server and launcher versions bumped to `0.8.2-dev.43`; protocol remains `v2`.
+
 ### v0.8.2-dev.42 - 2026-05-15 (draft)
 - Restored remote vehicle live sync by making all HighBeam VE runtime modules register as auxiliary vehicle controllers with `M.init` lifecycle exports and idempotent initialization.
 - Ensured local and remote VE activation initializes the position, velocity, inputs, electrics, powertrain, and damage controllers through `controller.loadControllerExternal`/`controller.getController` without any extension fallback path.
@@ -1624,14 +1631,15 @@ First patch release for v0.8.x. Fixes all vehicle synchronization bugs discovere
 ### Pre-Release Checklist
 
 1. All tests pass
-2. VERSION_PLAN.md updated with milestone checkbox status and a release summary in "Recent Release Notes"
-3. Version bumped in:
+2. Client Lua compiles under both the local Lua parser and LuaJIT bytecode generation (`luac -p ...` plus `find client/lua -name "*.lua" -exec luajit -b {} /dev/null \;`)
+3. VERSION_PLAN.md updated with milestone checkbox status and a release summary in "Recent Release Notes"
+4. Version bumped in:
    - `server/Cargo.toml`
    - `launcher/Cargo.toml`
    - Client mod `info.json`
    - Protocol version (if changed)
-4. Documentation updated for new features
-5. Git tag created: `v0.X.Y`
+5. Documentation updated for new features
+6. Git tag created: `v0.X.Y`
 
 ### Creating a Release
 
