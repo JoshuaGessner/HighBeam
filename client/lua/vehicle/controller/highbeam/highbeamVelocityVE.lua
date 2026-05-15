@@ -77,7 +77,7 @@ function M.onInit()
   if initialized then return end
   initialized = true
   M.recalcConnectivity()
-  -- highbeamVE owns the native physics hook and dispatches to child controllers.
+  -- highbeamPositionVE drives this helper with the bounded remote apply dt.
 end
 
 function M.onBeamBroke(id, energy)
