@@ -1,8 +1,10 @@
 local M = {}
+M.type = "auxiliary"
 
 local isRemote = false
 local isActive = false
 local gameVehicleId = 0
+local initialized = false
 
 local lastSentValues = {}
 local ROUND_FACTOR = 10000
@@ -53,10 +55,13 @@ function M.onInit()
   if obj and obj.getID then
     gameVehicleId = obj:getID()
   end
+  if initialized then return end
+  initialized = true
   lastSentValues = {}
 end
 
 function M.setActive(active, remote)
+  M.onInit()
   isActive = active and true or false
   isRemote = remote and true or false
 end
@@ -126,6 +131,7 @@ function M.applyElectrics(data)
   end
 end
 
+M.init = M.onInit
 M.onExtensionLoaded = M.onInit
 
 return M

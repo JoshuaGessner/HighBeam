@@ -49,6 +49,7 @@ local _diagLogTimer = 0
 local _udpSentCount = 0
 local _udpEncodeErrorCount = 0
 local _udpSendErrorCount = 0
+local _udpSkipNoSessionHashCount = 0
 local _udpSkippedUnchangedCount = 0
 local _udpSkipMissingVeCount = 0
 local _udpSkipStaleVeCount = 0
@@ -77,6 +78,10 @@ local _tcpPoseSendErrorCount = 0
 local _lastTcpPoseSentAt = {}
 local _forcedKeyframeCount = 0
 local _forcedWatchdogCount = 0
+local _missingSessionHashLogged = false
+local _veZeroGameVidCount = 0
+local _veUnmappedDataCount = 0
+local _veFirstDataLogged = {}
 local _skipStreakByVehicle = {}
 local _udpBindWasConfirmed = false  -- tracks bind flip for keyframe burst
 local _playerVehicleReconcileTimer = 0
@@ -358,9 +363,15 @@ M.tick = function(dt)
   if sendTimer < updateInterval then return end
   sendTimer = sendTimer - updateInterval
 
-  local protocol = require("highbeam/protocol")
   local sessionHash = connection.getSessionHash()
-  if not sessionHash then return end
+  local udpAvailable = type(sessionHash) == "string" and #sessionHash == 16
+  local protocol = nil
+  if udpAvailable then
+    protocol = require("highbeam/protocol")
+  elseif not _missingSessionHashLogged then
+    _missingSessionHashLogged = true
+    log('W', logTag, 'UDP session hash unavailable; TCP vehicle_pose fallback remains active')
+  end
 
   -- Send position updates for all local vehicles
   for gameVid, serverVid in pairs(M.localVehicles) do
@@ -428,49 +439,56 @@ M.tick = function(dt)
         _forcedWatchdogCount = _forcedWatchdogCount + 1
       end
 
-      local okEncode, dataOrErr = pcall(
-        protocol.encodePositionUpdate,
-        sessionHash,
-        serverVid,
-        posArr,
-        rotArr,
-        velArr,
-        sampleTime,
-        inputs,
-        angVel
-      )
+      if udpAvailable then
+        local okEncode, dataOrErr = pcall(
+          protocol.encodePositionUpdate,
+          sessionHash,
+          serverVid,
+          posArr,
+          rotArr,
+          velArr,
+          sampleTime,
+          inputs,
+          angVel
+        )
 
-      if not okEncode then
-        _udpEncodeErrorCount = _udpEncodeErrorCount + 1
-        _logUdpErrorRateLimited('UDP encode threw for vehicle ' .. tostring(serverVid) .. ': ' .. tostring(dataOrErr))
-      elseif not dataOrErr or dataOrErr == '' then
-        _udpEncodeErrorCount = _udpEncodeErrorCount + 1
-        _logUdpErrorRateLimited('UDP encode returned empty packet for vehicle ' .. tostring(serverVid))
-      else
-        local okSend, sendErr = pcall(connection.sendUdp, dataOrErr)
-        if not okSend then
-          _udpSendErrorCount = _udpSendErrorCount + 1
-          _logUdpErrorRateLimited('UDP send threw for vehicle ' .. tostring(serverVid) .. ': ' .. tostring(sendErr))
+        if not okEncode then
+          _udpEncodeErrorCount = _udpEncodeErrorCount + 1
+          _logUdpErrorRateLimited('UDP encode threw for vehicle ' .. tostring(serverVid) .. ': ' .. tostring(dataOrErr))
+        elseif not dataOrErr or dataOrErr == '' then
+          _udpEncodeErrorCount = _udpEncodeErrorCount + 1
+          _logUdpErrorRateLimited('UDP encode returned empty packet for vehicle ' .. tostring(serverVid))
         else
-          _udpSentCount = _udpSentCount + 1
-          _sendSpeedAccum = _sendSpeedAccum + speed
-          _sendSpeedSamples = _sendSpeedSamples + 1
-          _cacheSentState(gameVid, posArr, rotArr, velArr, inputs, now)
-          if _verboseSyncLoggingEnabled() then
-            local queueAge = now - (_veLastDataAt[gameVid] or now)
-            _veQueueAgeAccum = _veQueueAgeAccum + queueAge
-            _veQueueAgeSamples = _veQueueAgeSamples + 1
-            log('D', logTag, 'UDP pose sample gameVid=' .. tostring(gameVid)
-              .. ' serverVid=' .. tostring(serverVid)
-              .. ' sample=' .. string.format('%.6f', sampleTime or 0)
-              .. ' sampleDt=' .. string.format('%.6f', sampleDelta or 0)
-              .. ' geQueueAge=' .. string.format('%.4f', queueAge)
-              .. ' speed=' .. string.format('%.2f', speed or 0))
+          local okSend, sendResult, sendErr = pcall(connection.sendUdp, dataOrErr)
+          if not okSend then
+            _udpSendErrorCount = _udpSendErrorCount + 1
+            _logUdpErrorRateLimited('UDP send threw for vehicle ' .. tostring(serverVid) .. ': ' .. tostring(sendResult))
+          elseif not sendResult then
+            _udpSendErrorCount = _udpSendErrorCount + 1
+            _logUdpErrorRateLimited('UDP send failed for vehicle ' .. tostring(serverVid) .. ': ' .. tostring(sendErr or sendResult))
+          else
+            _udpSentCount = _udpSentCount + 1
+            _sendSpeedAccum = _sendSpeedAccum + speed
+            _sendSpeedSamples = _sendSpeedSamples + 1
+            _cacheSentState(gameVid, posArr, rotArr, velArr, inputs, now)
+            if _verboseSyncLoggingEnabled() then
+              local queueAge = now - (_veLastDataAt[gameVid] or now)
+              _veQueueAgeAccum = _veQueueAgeAccum + queueAge
+              _veQueueAgeSamples = _veQueueAgeSamples + 1
+              log('D', logTag, 'UDP pose sample gameVid=' .. tostring(gameVid)
+                .. ' serverVid=' .. tostring(serverVid)
+                .. ' sample=' .. string.format('%.6f', sampleTime or 0)
+                .. ' sampleDt=' .. string.format('%.6f', sampleDelta or 0)
+                .. ' geQueueAge=' .. string.format('%.4f', queueAge)
+                .. ' speed=' .. string.format('%.2f', speed or 0))
+            end
           end
         end
+      else
+        _udpSkipNoSessionHashCount = _udpSkipNoSessionHashCount + 1
       end
 
-      if connection and connection._udpBindConfirmed == false then
+      if (not udpAvailable) or (connection and connection._udpBindConfirmed == false) then
         local fallbackInterval = math.max(0.1, math.min(0.5, _getConfigNumber("tcpPoseFallbackIntervalSec", DEFAULT_TCP_POSE_FALLBACK_INTERVAL_SEC)))
         local lastPoseAt = _lastTcpPoseSentAt[gameVid] or 0
         if (now - lastPoseAt) >= fallbackInterval then
@@ -527,12 +545,15 @@ M.tick = function(dt)
       .. ' udpSkippedUnchanged=' .. tostring(_udpSkippedUnchangedCount)
       .. ' udpSkipMissingVE=' .. tostring(_udpSkipMissingVeCount)
       .. ' udpSkipStaleVE=' .. tostring(_udpSkipStaleVeCount)
+      .. ' udpSkipNoHash=' .. tostring(_udpSkipNoSessionHashCount)
       .. ' udpEncodeErr=' .. tostring(_udpEncodeErrorCount)
       .. ' udpSendErr=' .. tostring(_udpSendErrorCount)
       .. ' udpForcedKeyframe=' .. tostring(_forcedKeyframeCount)
       .. ' udpForcedWatchdog=' .. tostring(_forcedWatchdogCount)
       .. ' tcpPoseSent=' .. tostring(_tcpPoseSentCount)
       .. ' tcpPoseErr=' .. tostring(_tcpPoseSendErrorCount)
+      .. ' veZeroGameVid=' .. tostring(_veZeroGameVidCount)
+      .. ' veUnmappedData=' .. tostring(_veUnmappedDataCount)
       .. ' reconcileSpawn=' .. tostring(_playerVehicleReconcileCount)
       .. ' reconcileDelete=' .. tostring(_playerVehicleReconcileDeleteCount)
       .. ' pollLuaCmd=' .. tostring(_pollLuaCommandCount)
@@ -559,6 +580,7 @@ M.tick = function(dt)
     _udpSkippedUnchangedCount = 0
     _udpSkipMissingVeCount = 0
     _udpSkipStaleVeCount = 0
+    _udpSkipNoSessionHashCount = 0
     _udpEncodeErrorCount = 0
     _udpSendErrorCount = 0
     _forcedKeyframeCount = 0
@@ -917,6 +939,20 @@ end
 M.onVEData = function(gameVid, px, py, pz, rx, ry, rz, rw, vx, vy, vz, avx, avy, avz,
     steer, throttle, brake, gear, handbrake, sampleTime, sampleDelta)
   local geReceivedAt = os.clock()
+  local numericGameVid = tonumber(gameVid) or 0
+  if numericGameVid == 0 then
+    _veZeroGameVidCount = _veZeroGameVidCount + 1
+  elseif not M.localVehicles[numericGameVid] then
+    _veUnmappedDataCount = _veUnmappedDataCount + 1
+  end
+  if not _veFirstDataLogged[numericGameVid] then
+    _veFirstDataLogged[numericGameVid] = true
+    log('I', logTag, 'First VE data sample gameVid=' .. tostring(numericGameVid)
+      .. ' mapped=' .. tostring(M.localVehicles[numericGameVid] ~= nil)
+      .. ' inflight=' .. tostring(M._inflightByGameVid[numericGameVid] ~= nil)
+      .. ' sample=' .. string.format('%.6f', tonumber(sampleTime) or 0)
+      .. ' sampleDt=' .. string.format('%.6f', tonumber(sampleDelta) or 0))
+  end
   _vePos[gameVid] = { tonumber(px) or 0, tonumber(py) or 0, tonumber(pz) or 0 }
   _veRot[gameVid] = { tonumber(rx) or 0, tonumber(ry) or 0, tonumber(rz) or 0, tonumber(rw) or 1 }
   _veVel[gameVid] = { tonumber(vx) or 0, tonumber(vy) or 0, tonumber(vz) or 0 }
@@ -1260,8 +1296,10 @@ M.onDisconnect = function()
   _udpSkippedUnchangedCount = 0
   _udpSkipMissingVeCount = 0
   _udpSkipStaleVeCount = 0
+  _udpSkipNoSessionHashCount = 0
   _udpEncodeErrorCount = 0
   _udpSendErrorCount = 0
+  _missingSessionHashLogged = false
   _sendSpeedAccum = 0
   _sendSpeedSamples = 0
   _componentTxStats = {
@@ -1284,6 +1322,9 @@ M.onDisconnect = function()
   _damageFallbackCursor = 0
   _tcpPoseSentCount = 0
   _tcpPoseSendErrorCount = 0
+  _veZeroGameVidCount = 0
+  _veUnmappedDataCount = 0
+  _veFirstDataLogged = {}
   _lastTcpPoseSentAt = {}
 end
 

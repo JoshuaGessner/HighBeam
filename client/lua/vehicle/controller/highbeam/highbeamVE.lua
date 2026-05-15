@@ -1,8 +1,10 @@
 local M = {}
+M.type = "auxiliary"
 
 local isRemote = false
 local isActive = false
 local gameVehicleId = 0
+local initialized = false
 
 local sendTimer = 0
 local motionTimer = 0
@@ -17,44 +19,85 @@ local function _getController(name)
   return nil
 end
 
+local function _ensureControllerInit(mod)
+  if not mod then return end
+  if mod.init then
+    pcall(mod.init)
+  elseif mod.onInit then
+    pcall(mod.onInit)
+  end
+end
+
 function M.onInit()
   if obj and obj.getID then
     gameVehicleId = obj:getID()
+  else
+    return
   end
+  if initialized then
+    return
+  end
+  initialized = true
   -- Use the native BeamNG physics-step hook so the engine dispatches
   -- onPhysicsStep to ALL loaded VE extensions. No custom dispatcher needed.
   if enablePhysicsStepHook then
     enablePhysicsStepHook()
   end
+  if obj and obj.queueGameEngineLua then
+    obj:queueGameEngineLua(string.format(
+      "extensions.highbeam.onVEControllerInit(%d,%q,%s)",
+      gameVehicleId,
+      "highbeamVE",
+      tostring(enablePhysicsStepHook ~= nil)
+    ))
+  end
 end
 
 function M.setActive(active, remote)
+  M.onInit()
   isActive = active and true or false
   isRemote = remote and true or false
 
+  local velVE = _getController("highbeamVelocityVE")
+  _ensureControllerInit(velVE)
+
   local posVE = _getController("highbeamPositionVE")
+  _ensureControllerInit(posVE)
   if posVE and posVE.setRemote then
     pcall(posVE.setRemote, isRemote)
   end
 
   local inputsVE = _getController("highbeamInputsVE")
+  _ensureControllerInit(inputsVE)
   if inputsVE and inputsVE.setActive then
     pcall(inputsVE.setActive, isActive, isRemote)
   end
 
   local electricsVE = _getController("highbeamElectricsVE")
+  _ensureControllerInit(electricsVE)
   if electricsVE and electricsVE.setActive then
     pcall(electricsVE.setActive, isActive, isRemote)
   end
 
   local powertrainVE = _getController("highbeamPowertrainVE")
+  _ensureControllerInit(powertrainVE)
   if powertrainVE and powertrainVE.setActive then
     pcall(powertrainVE.setActive, isActive, isRemote)
   end
 
   local damageVE = _getController("highbeamDamageVE")
+  _ensureControllerInit(damageVE)
   if damageVE and damageVE.setActive then
     pcall(damageVE.setActive, isActive, isRemote)
+  end
+
+  if obj and obj.queueGameEngineLua then
+    obj:queueGameEngineLua(string.format(
+      "extensions.highbeam.onVEControllerActive(%d,%s,%s)",
+      gameVehicleId,
+      tostring(isActive),
+      tostring(isRemote)
+    ))
   end
 end
 
@@ -132,6 +175,7 @@ function M.updateGFX(dt)
   end
 end
 
+M.init = M.onInit
 M.onExtensionLoaded = M.onInit
 
 return M

@@ -1,8 +1,10 @@
 local M = {}
+M.type = "auxiliary"
 
 local isRemote = false
 local isActive = false
 local gameVehicleId = 0
+local initialized = false
 
 local lastSent = { s = 0, t = 0, b = 0, p = 0, c = 0, g = 0 }
 local ROUND_FACTOR = 10000
@@ -133,11 +135,14 @@ function M.onInit()
   if obj and obj.getID then
     gameVehicleId = obj:getID()
   end
+  if initialized then return end
+  initialized = true
   lastSent = { s = 0, t = 0, b = 0, p = 0, c = 0, g = 0 }
   smoothing = { s = 0, t = 0, b = 0, p = 0, c = 0 }
 end
 
 function M.setActive(active, remote)
+  M.onInit()
   isActive = active and true or false
   isRemote = remote and true or false
   if isActive and isRemote then
@@ -357,6 +362,7 @@ function M.onHighBeamRemoteReset()
   smoothing = { s = 0, t = 0, b = 0, p = 0, c = 0 }
 end
 
+M.init = M.onInit
 M.onExtensionLoaded = M.onInit
 
 return M

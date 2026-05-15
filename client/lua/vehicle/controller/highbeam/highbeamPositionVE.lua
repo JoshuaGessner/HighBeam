@@ -1,4 +1,5 @@
 local M = {}
+M.type = "auxiliary"
 
 local velocityVE
 local inputsVE
@@ -12,6 +13,7 @@ local targetAngAcc = { 0, 0, 0 }
 local targetTime = 0
 local hasTarget = false
 local isRemote = false
+local initialized = false
 local localMotionTimer = 0
 local diagnosticsEnabled = false
 local diagnosticsTimer = 0
@@ -283,6 +285,8 @@ local function _currentRotation()
 end
 
 function M.onInit()
+  if initialized then return end
+  initialized = true
   _getVelocityModule()
   _getInputsModule()
   refNodeId = 0
@@ -291,6 +295,7 @@ function M.onInit()
 end
 
 function M.setRemote(remote)
+  M.onInit()
   isRemote = remote and true or false
   hasTarget = false
   _resetSmoothers()
@@ -660,6 +665,7 @@ function M.onPhysicsStep(dtSim)
   end
 end
 
+M.init = M.onInit
 M.onExtensionLoaded = M.onInit
 
 return M

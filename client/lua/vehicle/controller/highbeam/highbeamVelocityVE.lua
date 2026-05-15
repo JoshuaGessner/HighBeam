@@ -1,4 +1,5 @@
 local M = {}
+M.type = "auxiliary"
 
 local connectedNodes = {}
 local connectedNodeCount = 0
@@ -9,6 +10,7 @@ local recalcTimer = 0
 local RECALC_DELAY = 0.2
 
 local lastDtSim = 0.0005
+local initialized = false
 
 local function _makeVec(x, y, z)
   if float3 then return float3(x, y, z) end
@@ -72,6 +74,8 @@ function M.recalcConnectivity()
 end
 
 function M.onInit()
+  if initialized then return end
+  initialized = true
   M.recalcConnectivity()
   -- enablePhysicsStepHook() is called by highbeamVE; the engine will
   -- natively dispatch onPhysicsStep to every loaded VE extension.
@@ -202,6 +206,7 @@ function M.getConnectedNodeCount()
   return connectedNodeCount
 end
 
+M.init = M.onInit
 M.onExtensionLoaded = M.onInit
 
 return M
