@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-05-15
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.2-dev.43 (protocol v2)
+> **Current version:** v0.8.2-dev.44 (protocol v2)
 > **Status:** v0.8.1 released | v0.8.2 in development
 
 ---
@@ -1202,6 +1202,13 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.2-dev.44 - 2026-05-15 (draft)
+- Fixed remote vehicle live motion by making `highbeamVE` own the native physics-step hook and explicitly dispatch physics ticks to the position and velocity child controllers.
+- Moved child controller physics work behind HighBeam-specific step handlers so remote pose corrections cannot be double-applied if BeamNG dispatch behavior changes.
+- Added `PositionVE` diagnostics for physics tick count and local motion time, making future logs prove whether the remote physics clock is advancing.
+- Updated the client architecture docs for the coordinator-owned physics dispatch model and rebuilt `launcher/payload/highbeam.zip` from `client/`.
+- Server and launcher versions bumped to `0.8.2-dev.44`; protocol remains `v2`.
 
 ### v0.8.2-dev.43 - 2026-05-15 (draft)
 - Fixed the dev.42 client load failure by splitting `state.lua`'s oversized `M.tick` closure into smaller helper functions so BeamNG/LuaJIT no longer rejects it for exceeding the 60-upvalue limit.
