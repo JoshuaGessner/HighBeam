@@ -280,12 +280,7 @@ local function _reconcileLocalPlayerVehicle()
   log('I', logTag, 'Reconcile requested spawn for active player vehicle gameVid=' .. tostring(gameVid))
 end
 
-M.tick = function(dt)
-  if not connection or connection.getState() ~= connection.STATE_CONNECTED then return end
-
-  local now = os.clock()
-
-  -- Clean up stale spawn requests so mapping cannot drift forever after dropped/rejected responses.
+local function _cleanupStaleSpawnRequests(now)
   for requestId, pending in pairs(M._pendingSpawns) do
     local sentAt = (type(pending) == "table" and pending.sentAt) or 0
     if (now - sentAt) >= _pendingSpawnTimeoutSec then
@@ -306,18 +301,19 @@ M.tick = function(dt)
       end
     end
   end
+end
 
-  local updateRate = (config and config.get("updateRate")) or 20
-
+local function _reconcileLocalVehicleIfDue(dt)
   _playerVehicleReconcileTimer = _playerVehicleReconcileTimer + dt
   local reconcileInterval = math.max(0.25, math.min(5.0, _getConfigNumber("localVehicleReconcileSec", DEFAULT_LOCAL_VEHICLE_RECONCILE_SEC)))
   if _playerVehicleReconcileTimer >= reconcileInterval then
     _playerVehicleReconcileTimer = 0
     _reconcileLocalPlayerVehicle()
   end
+end
 
-  -- Adaptive send rate with conservative caps to reduce script + network load.
-  -- Idle vehicles stay modest; active vehicles default near BeamMP's 50Hz loop.
+local function _computePoseUpdateRate()
+  local updateRate = (config and config.get("updateRate")) or 20
   local adaptiveSendRate = config and config.get("adaptiveSendRate")
   local maxAdaptiveSendRate = math.max(20, math.min(60, math.floor(_getConfigNumber("maxAdaptiveSendRate", 50))))
   if adaptiveSendRate ~= false then
@@ -351,18 +347,19 @@ M.tick = function(dt)
     updateRate = math.min(updateRate, 10)
   end
 
+  return updateRate
+end
+
+local function _forceKeyframesAfterUdpBind()
   -- When UDP bind just confirmed, clear cached state to force immediate keyframes
   if connection and connection._udpBindConfirmed == true and not _udpBindWasConfirmed then
     _udpBindWasConfirmed = true
     M._lastSentState = {}
     log('I', logTag, 'UDP bind confirmed — forcing position keyframes for all local vehicles')
   end
+end
 
-  local updateInterval = 1.0 / updateRate
-  sendTimer = sendTimer + dt
-  if sendTimer < updateInterval then return end
-  sendTimer = sendTimer - updateInterval
-
+local function _sendLocalVehiclePoses(now)
   local sessionHash = connection.getSessionHash()
   local udpAvailable = type(sessionHash) == "string" and #sessionHash == 16
   local protocol = nil
@@ -534,7 +531,9 @@ M.tick = function(dt)
     end
     ::continue_local_vehicle::
   end
+end
 
+local function _logAndResetSyncStats(updateRate, dt)
   _diagLogTimer = _diagLogTimer + dt
   if _diagLogTimer >= _diagLogIntervalSec then
     _diagLogTimer = 0
@@ -608,7 +607,9 @@ M.tick = function(dt)
       powertrain_send_failed = 0,
     }
   end
+end
 
+local function _pollLowFrequencyVehicleState(dt)
   -- ── Damage polling (every 1000ms on dirty vehicles) ───────────────
   -- P3.2: Only poll damage for vehicles that have recently had a collision.
   -- We track a per-vehicle "dirty" flag that is set by onBeamBroke / manual triggers.
@@ -675,6 +676,27 @@ M.tick = function(dt)
       end
     end
   end
+end
+
+M.tick = function(dt)
+  if not connection or connection.getState() ~= connection.STATE_CONNECTED then return end
+
+  local now = os.clock()
+  _cleanupStaleSpawnRequests(now)
+  _reconcileLocalVehicleIfDue(dt)
+
+  local updateRate = _computePoseUpdateRate()
+  _forceKeyframesAfterUdpBind()
+
+  local updateInterval = 1.0 / updateRate
+  sendTimer = sendTimer + dt
+  if sendTimer < updateInterval then return end
+  sendTimer = sendTimer - updateInterval
+
+  _sendLocalVehiclePoses(now)
+
+  _logAndResetSyncStats(updateRate, dt)
+  _pollLowFrequencyVehicleState(dt)
 end
 
 -- ── Damage polling ───────────────────────────────────────────────────
