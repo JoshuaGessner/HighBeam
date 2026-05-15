@@ -28,13 +28,6 @@ local function _ensureControllerInit(mod)
   end
 end
 
-local function _callChildPhysics(name, dtSim)
-  local mod = _getController(name)
-  if mod and mod.onHighBeamPhysicsStep then
-    pcall(mod.onHighBeamPhysicsStep, dtSim)
-  end
-end
-
 function M.onInit()
   if obj and obj.getID then
     gameVehicleId = obj:getID()
@@ -126,9 +119,8 @@ function M.onBeamBroke(beamId, energy)
 end
 
 function M.onPhysicsStep(dtSim)
-  if not isActive then return end
-  _callChildPhysics("highbeamVelocityVE", dtSim)
-  _callChildPhysics("highbeamPositionVE", dtSim)
+  -- Controller-loaded HighBeam modules do not receive this callback reliably in
+  -- BeamNG 0.38. Remote motion is driven from highbeamPositionVE.updateGFX.
 end
 
 function M.updateGFX(dt)

@@ -23,7 +23,7 @@ local _diag = {
   hardDelayed = 0,
   packetTimeout = 0,
   targetAgeDrops = 0,
-  physicsTicks = 0,
+  applyTicks = 0,
   targets = 0,
 }
 
@@ -53,6 +53,10 @@ local TARGET_BUFFER_MAX = 8
 local INTERP_BACK_TIME = 0.10
 local MAX_EXTRAPOLATION_SEC = 0.15
 local PACKET_TIMEOUT_SEC = 0.25
+local APPLY_FIXED_DT = 1 / 120
+local APPLY_MAX_FRAME_DT = 0.10
+local APPLY_MAX_STEPS = 8
+local applyAccumulator = 0
 
 local refNodeId = 0
 
@@ -86,6 +90,7 @@ local function _resetSmoothers()
   prevTargetTime = nil
   lastLocalVel = nil
   localAcc = { 0, 0, 0 }
+    applyAccumulator = 0
 end
 
 local function _getVelocityModule()
@@ -291,7 +296,9 @@ function M.onInit()
   _getVelocityModule()
   _getInputsModule()
   refNodeId = 0
-  -- highbeamVE owns the native physics hook and dispatches to child controllers.
+  -- updateGFX drives the remote apply loop through a bounded fixed-step
+  -- accumulator because controller-loaded modules do not receive native
+  -- onPhysicsStep callbacks reliably in BeamNG 0.38.
 end
 
 function M.setRemote(remote)
@@ -439,40 +446,14 @@ function M.onHighBeamRemoteReset()
   _resetSmoothers()
 end
 
--- updateGFX is called by the extension framework unconditionally, so the
--- heartbeat fires even if the physics hook is somehow not registered.
-function M.updateGFX(dt)
-  if not isRemote or not obj then return end
-  diagnosticsSummaryTimer = diagnosticsSummaryTimer + (dt or 0)
-  if diagnosticsSummaryTimer >= 5.0 then
-    diagnosticsSummaryTimer = 0
-    if diagnosticsEnabled then
-      log('I', 'HighBeam.PositionVE', 'Position apply diag=hardInstant=' .. tostring(_diag.hardInstant or 0)
-        .. ',hardDelayed=' .. tostring(_diag.hardDelayed or 0)
-        .. ',packetTimeout=' .. tostring(_diag.packetTimeout or 0)
-        .. ',targetAgeDrops=' .. tostring(_diag.targetAgeDrops or 0)
-        .. ',physicsTicks=' .. tostring(_diag.physicsTicks or 0)
-        .. ',localTime=' .. string.format('%.6f', localMotionTimer or 0)
-        .. ',targets=' .. tostring(_diag.targets or 0))
-    end
-    _diag = { hardInstant = 0, hardDelayed = 0, packetTimeout = 0, targetAgeDrops = 0, physicsTicks = 0, targets = 0 }
-  end
-  heartbeatTimer = heartbeatTimer + (dt or 0)
-  if heartbeatTimer >= HEARTBEAT_INTERVAL then
-    heartbeatTimer = 0
-    if obj.queueGameEngineLua then
-      obj:queueGameEngineLua(string.format(
-        "extensions.highbeam.onVEHeartbeat(%d)", obj:getID()
-      ))
-    end
-  end
-end
-
-function M.onHighBeamPhysicsStep(dtSim)
+local function _stepRemoteApply(dtSim)
   local velMod = _getVelocityModule()
-  local d = dtSim or 0.0005
+  local d = dtSim or APPLY_FIXED_DT
   if d > 0 then localMotionTimer = localMotionTimer + d end
-  _diag.physicsTicks = (_diag.physicsTicks or 0) + 1
+  _diag.applyTicks = (_diag.applyTicks or 0) + 1
+  if velMod and velMod.onHighBeamPhysicsStep then
+    pcall(velMod.onHighBeamPhysicsStep, d)
+  end
   if diagnosticsTimer > 0 then diagnosticsTimer = math.max(0, diagnosticsTimer - d) end
   if not isRemote or not hasTarget then return end
   if not obj then return end
@@ -512,9 +493,6 @@ function M.onHighBeamPhysicsStep(dtSim)
   local predY = predPos[2] or 0
   local predZ = predPos[3] or 0
 
-  -- Apply decaying blend correction for smooth packet-to-packet transitions.
-  -- This offsets the predicted position by a correction that linearly fades
-  -- to zero over BLEND_DURATION, smoothing out the jump when new data arrives.
   if blendRemaining > 0 then
     local blendFrac = blendRemaining / BLEND_DURATION
     predX = predX + blendCorrX * blendFrac
@@ -616,8 +594,6 @@ function M.onHighBeamPhysicsStep(dtSim)
   local accErrY = (predAcc[2] or 0) - (localAcc[2] or 0)
   local accErrZ = (predAcc[3] or 0) - (localAcc[3] or 0)
 
-  -- Keep correction active while the remote driver is moving so the vehicle
-  -- stays live instead of drifting and later hard-snapping into place.
   local inMod = _getInputsModule()
   local inputActivity = (inMod and inMod.getInputActivity) and inMod.getInputActivity() or 0
   local posGainScale = 1.0 - 0.2 * inputActivity
@@ -666,6 +642,59 @@ function M.onHighBeamPhysicsStep(dtSim)
     end
     velMod.addAngularVelocity(finalAVX * d, finalAVY * d, finalAVZ * d, cogX, cogY, cogZ)
   end
+end
+
+local function _runApplySteps(frameDt)
+  local dt = frameDt or 0
+  if dt <= 0 then return end
+  if dt > APPLY_MAX_FRAME_DT then dt = APPLY_MAX_FRAME_DT end
+  applyAccumulator = applyAccumulator + dt
+
+  local steps = 0
+  while applyAccumulator >= APPLY_FIXED_DT and steps < APPLY_MAX_STEPS do
+    _stepRemoteApply(APPLY_FIXED_DT)
+    applyAccumulator = applyAccumulator - APPLY_FIXED_DT
+    steps = steps + 1
+  end
+
+  if steps >= APPLY_MAX_STEPS and applyAccumulator > APPLY_FIXED_DT then
+    applyAccumulator = APPLY_FIXED_DT
+  end
+end
+
+-- updateGFX is the reliable callback for controller-loaded HighBeam modules.
+-- Remote motion is advanced through bounded fixed substeps to preserve stable
+-- controller behavior across different render frame rates.
+function M.updateGFX(dt)
+  if not isRemote or not obj then return end
+  _runApplySteps(dt)
+  diagnosticsSummaryTimer = diagnosticsSummaryTimer + (dt or 0)
+  if diagnosticsSummaryTimer >= 5.0 then
+    diagnosticsSummaryTimer = 0
+    if diagnosticsEnabled then
+      log('I', 'HighBeam.PositionVE', 'Position apply diag=hardInstant=' .. tostring(_diag.hardInstant or 0)
+        .. ',hardDelayed=' .. tostring(_diag.hardDelayed or 0)
+        .. ',packetTimeout=' .. tostring(_diag.packetTimeout or 0)
+        .. ',targetAgeDrops=' .. tostring(_diag.targetAgeDrops or 0)
+        .. ',applyTicks=' .. tostring(_diag.applyTicks or 0)
+        .. ',localTime=' .. string.format('%.6f', localMotionTimer or 0)
+        .. ',targets=' .. tostring(_diag.targets or 0))
+    end
+    _diag = { hardInstant = 0, hardDelayed = 0, packetTimeout = 0, targetAgeDrops = 0, applyTicks = 0, targets = 0 }
+  end
+  heartbeatTimer = heartbeatTimer + (dt or 0)
+  if heartbeatTimer >= HEARTBEAT_INTERVAL then
+    heartbeatTimer = 0
+    if obj.queueGameEngineLua then
+      obj:queueGameEngineLua(string.format(
+        "extensions.highbeam.onVEHeartbeat(%d)", obj:getID()
+      ))
+    end
+  end
+end
+
+function M.onHighBeamPhysicsStep(dtSim)
+  _stepRemoteApply(dtSim or APPLY_FIXED_DT)
 end
 
 M.init = M.onInit
