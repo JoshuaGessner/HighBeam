@@ -1,8 +1,8 @@
 # HighBeam Version Plan
 
-> **Last updated:** 2026-05-02
+> **Last updated:** 2026-05-15
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.2-dev.41 (protocol v2)
+> **Current version:** v0.8.2-dev.42 (protocol v2)
 > **Status:** v0.8.1 released | v0.8.2 in development
 
 ---
@@ -1202,6 +1202,14 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.2-dev.42 - 2026-05-15 (draft)
+- Restored remote vehicle live sync by making all HighBeam VE runtime modules register as auxiliary vehicle controllers with `M.init` lifecycle exports and idempotent initialization.
+- Ensured local and remote VE activation initializes the position, velocity, inputs, electrics, powertrain, and damage controllers through `controller.loadControllerExternal`/`controller.getController` without any extension fallback path.
+- Fixed the outbound pose sender so missing UDP session hashes only disable UDP packets; TCP `vehicle_pose` fallback continues while UDP bind/hash setup is unavailable.
+- Added temporary diagnostics for VE controller init/active callbacks, first VE pose samples, zero or unmapped game vehicle IDs, missing UDP hash skips, TCP pose fallback sends, and UDP send failures.
+- Updated client and protocol architecture docs for the controller-based VE runtime and TCP pose fallback behavior, then rebuilt `launcher/payload/highbeam.zip` from `client/`.
+- Server and launcher versions bumped to `0.8.2-dev.42`; protocol remains `v2`.
 
 ### v0.8.2-dev.41 - 2026-05-02 (draft)
 - Merged the VE controller registration/path recovery fix to main (`fix(client,launcher): restore VE controller registration`, PR #70).

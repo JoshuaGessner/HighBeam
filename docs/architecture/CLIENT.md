@@ -1,7 +1,7 @@
 # HighBeam Client Architecture
 
-> **Last updated:** 2026-04-03
-> **Applies to:** v0.8.0
+> **Last updated:** 2026-05-15
+> **Applies to:** v0.8.2-dev.42
 > **Parent doc:** [OVERVIEW.md](OVERVIEW.md)
 
 ---
@@ -24,18 +24,28 @@ The HighBeam client is a BeamNG.drive mod written in Lua. It runs inside BeamNG'
 ```
 client/
 ├── lua/
-│   └── ge/
-│       └── extensions/
-│           ├── highbeam.lua            # Main extension entry point
+│   ├── ge/
+│   │   └── extensions/
+│   │       ├── highbeam.lua            # Main extension entry point
+│   │       └── highbeam/
+│   │           ├── browser.lua         # IMGUI server browser window (Direct Connect, Browse, Favorites, Recent)
+│   │           ├── connection.lua      # TCP + UDP connection management, custom event API
+│   │           ├── protocol.lua        # Packet encoding/decoding (UDP binary format)
+│   │           ├── vehicles.lua        # Remote vehicle lifecycle
+│   │           ├── state.lua           # Local state tracking
+│   │           ├── chat.lua            # Chat message handling
+│   │           ├── config.lua          # Client configuration
+│   │           └── math.lua            # Interpolation helpers (lerp, slerp)
+│   └── vehicle/
+│       └── controller/
 │           └── highbeam/
-│               ├── browser.lua         # IMGUI server browser window (Direct Connect, Browse, Favorites, Recent)
-│               ├── connection.lua      # TCP + UDP connection management, custom event API
-│               ├── protocol.lua        # Packet encoding/decoding (UDP binary format)
-│               ├── vehicles.lua        # Remote vehicle lifecycle
-│               ├── state.lua           # Local state tracking
-│               ├── chat.lua            # Chat message handling
-│               ├── config.lua          # Client configuration
-│               └── math.lua            # Interpolation helpers (lerp, slerp)
+│               ├── highbeamVE.lua           # VE coordinator for local samples and remote activation
+│               ├── highbeamPositionVE.lua   # Remote pose buffering, prediction, and correction
+│               ├── highbeamVelocityVE.lua   # Velocity correction helpers
+│               ├── highbeamInputsVE.lua     # Local/remote input sync
+│               ├── highbeamElectricsVE.lua  # Electrics sync
+│               ├── highbeamPowertrainVE.lua # Powertrain state sync
+│               └── highbeamDamageVE.lua     # Damage dirty tracking and apply hooks
 ├── scripts/
 │   ├── modScript.lua               # Root-level BeamNG mod bootstrap script
 │   └── highbeam/
@@ -138,6 +148,16 @@ Manages the lifecycle of remote player vehicles in the game world.
 - Lerp position and slerp rotation between snapshots
 - Extrapolate forward using velocity when packets are late
 
+### Vehicle Controller Runtime (`lua/vehicle/controller/highbeam/`)
+
+High-frequency physics-facing work runs inside BeamNG's vehicle Lua context as auxiliary controllers. GE code loads these modules with `controller.loadControllerExternal("highbeam/<name>", "<name>")` and retrieves them with `controller.getController("<name>")`; do not load them through the GE extension loader.
+
+**Lifecycle expectations:**
+- Each VE module exports `M.type = "auxiliary"` and `M.init = M.onInit`.
+- Initialization must be idempotent because local spawn, remote bootstrap, reconnect, and diagnostics may all probe the same controller.
+- `highbeamVE.lua` is the coordinator. Its `setActive(active, remote)` call initializes child controllers and toggles local sampling versus remote apply behavior.
+- Queued GE callbacks from VE must target functions exposed by `extensions.highbeam`, then forward into subsystem modules as needed.
+
 ### State Tracker (`state.lua`)
 
 Tracks local game state relevant to multiplayer.
@@ -147,6 +167,8 @@ Tracks local game state relevant to multiplayer.
 - Detect vehicle spawns, edits, resets, and deletions
 - Rate-limit position updates (target: 20 Hz default, configurable)
 - Diff vehicle configs to only send changes
+- Prefer UDP binary pose updates when the session hash and UDP bind are ready
+- Continue sending TCP `vehicle_pose` fallback while UDP hash/bind setup is unavailable
 
 ### Chat Handler (`chat.lua`)
 
@@ -222,4 +244,4 @@ highbeam.zip/
 └── ui/chat.html
 ```
 
-This zip is what gets committed under `client/` in the repo. The **HighBeam Launcher** installs it into `%LOCALAPPDATA%/BeamNG.drive/mods/` automatically.
+The source lives under `client/`; the rebuilt distributable zip is committed as `launcher/payload/highbeam.zip`. The **HighBeam Launcher** installs it into `%LOCALAPPDATA%/BeamNG.drive/mods/` automatically.

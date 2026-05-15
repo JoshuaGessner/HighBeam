@@ -1,8 +1,8 @@
 # HighBeam Network Protocol Specification
 
-> **Last updated:** 2026-04-03
+> **Last updated:** 2026-05-15
 > **Protocol version:** 2
-> **Applies to:** v0.8.0
+> **Applies to:** v0.8.2-dev.42
 > **Parent doc:** [OVERVIEW.md](OVERVIEW.md)
 
 ---
@@ -156,6 +156,7 @@ Client                                  Server
 | `vehicle_edit` | Local vehicle edited | `vehicle_id`, `data` (config JSON) |
 | `vehicle_delete` | Local vehicle deleted | `vehicle_id` |
 | `vehicle_reset` | Local vehicle reset | `vehicle_id`, `data` (position JSON) |
+| `vehicle_pose` | TCP fallback local pose update | `vehicle_id`, `data` (pose JSON) |
 | `chat_message` | Chat message | `text` |
 | `trigger_server_event` | Custom plugin event sent to server | `name`, `payload` |
 | `ping_pong` | Heartbeat response | `seq` |
@@ -166,7 +167,7 @@ Client                                  Server
 
 ### Position Update (Client → Server, Server → Client)
 
-Type byte: `0x10`
+Type bytes: `0x10` for base pose, `0x11` when input deltas are appended.
 
 ```
 ┌──────────────┬──────┬──────────┬────────────────┬────────────────┬────────────────┬──────┐
@@ -176,6 +177,8 @@ Type byte: `0x10`
 ```
 
 Total: 16 + 1 + 2 + 12 + 16 + 12 + 4 = **63 bytes per update**
+
+The extended `0x11` packet appends compact steering, throttle, brake, gear, and handbrake fields (five 16-bit values). When angular velocity is available, three additional `f32` values are appended after the inputs.
 
 When server relays to other clients, it prepends the player_id:
 
@@ -196,6 +199,30 @@ Total: 16 + 1 + 2 + 2 + 12 + 16 + 12 + 4 = **65 bytes per relayed update**
 | `rot` | 4x f32 | Rotation quaternion (x, y, z, w) |
 | `vel` | 3x f32 | Linear velocity (x, y, z) |
 | `time` | f32 | Simulation time since vehicle spawn |
+
+### TCP Pose Fallback
+
+Clients continue to send a reliable `vehicle_pose` packet while the UDP bind is pending or when the client cannot compute the 16-byte UDP session hash. The fallback payload mirrors the UDP pose fields as JSON:
+
+```json
+{
+  "pos": [0.0, 0.0, 0.0],
+  "rot": [0.0, 0.0, 0.0, 1.0],
+  "vel": [0.0, 0.0, 0.0],
+  "time": 0.0,
+  "sampleDelta": 0.016,
+  "inputs": {
+    "steer": 0.0,
+    "throttle": 0.0,
+    "brake": 0.0,
+    "gear": 0.0,
+    "handbrake": 0.0
+  },
+  "angVel": [0.0, 0.0, 0.0]
+}
+```
+
+The server validates vehicle ownership exactly as it does for other vehicle packets, then relays the pose to peers over the reliable channel. Once UDP is bound and the session hash is available, UDP remains the preferred high-frequency path.
 
 ---
 
