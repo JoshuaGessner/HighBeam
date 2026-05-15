@@ -156,6 +156,7 @@ High-frequency physics-facing work runs inside BeamNG's vehicle Lua context as a
 - Each VE module exports `M.type = "auxiliary"` and `M.init = M.onInit`.
 - Initialization must be idempotent because local spawn, remote bootstrap, reconnect, and diagnostics may all probe the same controller.
 - `highbeamVE.lua` is the coordinator. Its `setActive(active, remote)` call initializes child controllers and toggles local sampling versus remote apply behavior.
+- `highbeamVE.lua` owns the native physics-step hook and explicitly dispatches physics ticks to child controllers; child modules expose HighBeam-specific step handlers instead of relying on BeamNG to fan out `onPhysicsStep` across controller-loaded children.
 - Queued GE callbacks from VE must target functions exposed by `extensions.highbeam`, then forward into subsystem modules as needed.
 
 ### State Tracker (`state.lua`)

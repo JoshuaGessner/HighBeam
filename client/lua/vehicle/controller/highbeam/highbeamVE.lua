@@ -28,6 +28,13 @@ local function _ensureControllerInit(mod)
   end
 end
 
+local function _callChildPhysics(name, dtSim)
+  local mod = _getController(name)
+  if mod and mod.onHighBeamPhysicsStep then
+    pcall(mod.onHighBeamPhysicsStep, dtSim)
+  end
+end
+
 function M.onInit()
   if obj and obj.getID then
     gameVehicleId = obj:getID()
@@ -38,8 +45,9 @@ function M.onInit()
     return
   end
   initialized = true
-  -- Use the native BeamNG physics-step hook so the engine dispatches
-  -- onPhysicsStep to ALL loaded VE extensions. No custom dispatcher needed.
+  -- Use one native BeamNG physics-step hook on the coordinator, then dispatch
+  -- to child HighBeam controllers explicitly. Controller-loaded children do not
+  -- receive native onPhysicsStep callbacks reliably in all runtime paths.
   if enablePhysicsStepHook then
     enablePhysicsStepHook()
   end
@@ -115,6 +123,12 @@ function M.onBeamBroke(beamId, energy)
   if velVE and velVE.onBeamBroke then
     pcall(velVE.onBeamBroke, beamId, energy)
   end
+end
+
+function M.onPhysicsStep(dtSim)
+  if not isActive then return end
+  _callChildPhysics("highbeamVelocityVE", dtSim)
+  _callChildPhysics("highbeamPositionVE", dtSim)
 end
 
 function M.updateGFX(dt)
