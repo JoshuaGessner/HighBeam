@@ -445,13 +445,25 @@ end
 
 M.onLocalVEReady = function(gameVid, ready, missingCsv)
   if ready == true or tostring(ready) == "true" then
-    if config and config.get and config.get("verboseSyncLogging") == true then
-      log('D', logTag, 'Local VE confirmed gameVid=' .. tostring(gameVid))
-    end
+    log('I', logTag, 'Local VE confirmed gameVid=' .. tostring(gameVid))
     return
   end
   log('E', logTag, 'Local VE missing gameVid=' .. tostring(gameVid)
     .. ' missing=' .. tostring(missingCsv or ''))
+end
+
+-- Temporary sync diagnostics: confirms controller lifecycle hooks are firing
+-- after controller.loadControllerExternal registration.
+M.onVEControllerInit = function(gameVid, controllerName, physicsHookAvailable)
+  log('I', logTag, 'VE controller init name=' .. tostring(controllerName)
+    .. ' gameVid=' .. tostring(gameVid)
+    .. ' physicsHookAvailable=' .. tostring(physicsHookAvailable))
+end
+
+M.onVEControllerActive = function(gameVid, active, remote)
+  log('I', logTag, 'VE controller active gameVid=' .. tostring(gameVid)
+    .. ' active=' .. tostring(active)
+    .. ' remote=' .. tostring(remote))
 end
 
 -- Teleport request coming from VE PD controller when error is too large.
