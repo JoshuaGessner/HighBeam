@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-05-15
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.2-dev.44 (protocol v2)
+> **Current version:** v0.8.2-dev.45 (protocol v2)
 > **Status:** v0.8.1 released | v0.8.2 in development
 
 ---
@@ -1202,6 +1202,13 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.2-dev.45 - 2026-05-15 (draft)
+- Fixed remote vehicle live motion by moving `PositionVE`'s apply loop onto the proven `updateGFX(dt)` callback for controller-loaded HighBeam modules.
+- Preserved the existing smoothing, prediction, teleport safety, and velocity/angular correction behavior by running the remote apply loop through a bounded 120 Hz fixed-step accumulator instead of raw render-frame stepping.
+- Fed `highbeamVelocityVE` with the same bounded apply dt before each correction so force scaling remains stable across client frame rates.
+- Rebuilt `launcher/payload/highbeam.zip` from `client/` and verified payload parity for the changed VE controllers.
+- Server and launcher versions bumped to `0.8.2-dev.45`; protocol remains `v2`.
 
 ### v0.8.2-dev.44 - 2026-05-15 (draft)
 - Fixed remote vehicle live motion by making `highbeamVE` own the native physics-step hook and explicitly dispatch physics ticks to the position and velocity child controllers.
