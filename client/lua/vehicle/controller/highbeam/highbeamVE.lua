@@ -119,8 +119,24 @@ function M.onBeamBroke(beamId, energy)
 end
 
 function M.onPhysicsStep(dtSim)
-  -- Controller-loaded HighBeam modules do not receive this callback reliably in
-  -- BeamNG 0.38. Remote motion is driven from highbeamPositionVE.updateGFX.
+  -- Coordinator owns the single native physics-step hook (enabled in onInit via
+  -- enablePhysicsStepHook). Dispatch the REAL dtSim to the child controllers so
+  -- remote correction forces integrate over the genuine physics step. The
+  -- velocity module is fed first so its physicsFps (1/dtSim) is current before
+  -- the position module applies this step's stored correction.
+  if not isActive then return end
+  local d = dtSim or 0
+  if d <= 0 then return end
+
+  local velVE = _getController("highbeamVelocityVE")
+  if velVE and velVE.onHighBeamPhysicsStep then
+    pcall(velVE.onHighBeamPhysicsStep, d)
+  end
+
+  local posVE = _getController("highbeamPositionVE")
+  if posVE and posVE.onHighBeamPhysicsStep then
+    pcall(posVE.onHighBeamPhysicsStep, d)
+  end
 end
 
 function M.updateGFX(dt)

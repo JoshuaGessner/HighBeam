@@ -1,8 +1,8 @@
 # HighBeam Version Plan
 
-> **Last updated:** 2026-05-15
+> **Last updated:** 2026-06-03
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.2-dev.45 (protocol v2)
+> **Current version:** v0.8.2-dev.46 (protocol v2)
 > **Status:** v0.8.1 released | v0.8.2 in development
 
 ---
@@ -1202,6 +1202,17 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.2-dev.46 - 2026-06-03 (draft)
+- Fixed the root cause of remote vehicles not moving / periodically teleporting: correction forces are now applied on the real BeamNG physics step instead of being batched into synthetic 1/120 substeps from the render frame (regression from dev.45).
+- Split `PositionVE` responsibilities: `updateGFX(dt)` keeps all frame-rate-tolerant bookkeeping (interpolation buffer, time-offset estimation, prediction, blend-on-arrival, teleport decisions, heartbeat, diagnostics) and now only *computes and stores* the desired correction; the stored correction is applied once per physics step via `onHighBeamPhysicsStep(dtSim)` with the genuine `dtSim`.
+- `highbeamVE` coordinator now dispatches the real physics `dtSim` to `highbeamVelocityVE` (first, so `physicsFps` is current) then `highbeamPositionVE`, so `applyForceVector`/`applyClusterLinearAngularAccel` integrate over the actual ~1/2000 s step (correct F = m·a) instead of a fabricated 1/120 s dt.
+- Removed the fake `onHighBeamPhysicsStep(1/120)` feed into `highbeamVelocityVE`; the velocity module is fed the real `dtSim` so force scaling is physically correct.
+- Kept `updateGFX` as a guarded fallback driver only when the native physics hook genuinely stalls (`physicsTickAge >= PHYSICS_TICK_TIMEOUT`), preserving motion in runtime paths where `onPhysicsStep` does not fire for child controllers (the historical reason dev.45 abandoned the hook).
+- Added `physicsTicks`/`fallbackTicks`/`physicsHookHealthy` diagnostics to the `PositionVE` summary to make the physics-clock health observable.
+- Preserved all improvements over BeamMP (buffered interpolation, time-offset min-filter, acceleration-aware prediction, blend-on-arrival, LOD relay, teleport safety); no wire protocol or server relay changes.
+- Rebuilt `launcher/payload/highbeam.zip` from `client/` and verified payload parity for the changed VE controllers.
+- Server and launcher versions bumped to `0.8.2-dev.46`; protocol remains `v2`.
 
 ### v0.8.2-dev.45 - 2026-05-15 (draft)
 - Fixed remote vehicle live motion by moving `PositionVE`'s apply loop onto the proven `updateGFX(dt)` callback for controller-loaded HighBeam modules.

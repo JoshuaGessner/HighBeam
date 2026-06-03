@@ -25,7 +25,28 @@ local _diag = {
   targetAgeDrops = 0,
   applyTicks = 0,
   targets = 0,
+  physicsTicks = 0,
+  fallbackTicks = 0,
 }
+
+-- Correction is computed once per render frame (bookkeeping: target
+-- resolution, prediction, blend, teleport decisions) but the resulting forces
+-- must be applied once per *real* BeamNG physics step. We therefore store the
+-- desired per-step correction here and replay it from onHighBeamPhysicsStep.
+local desiredAccX, desiredAccY, desiredAccZ = 0, 0, 0
+local desiredAngVX, desiredAngVY, desiredAngVZ = 0, 0, 0
+local desiredCogX, desiredCogY, desiredCogZ = 0, 0, 0
+local desiredHasAng = false
+local applyEnabled = false
+
+-- Physics-hook health: when the coordinator's native onPhysicsStep dispatch is
+-- delivering ticks, physicsTickAge stays near zero and force application runs
+-- on the real physics step. If ticks stall (the historical BeamNG failure that
+-- caused earlier regressions), updateGFX falls back to a bounded fixed-step
+-- driver so remote motion never fully freezes. Start "stale" so the fallback
+-- keeps motion alive until the first real physics tick confirms the hook.
+local physicsTickAge = math.huge
+local PHYSICS_TICK_TIMEOUT = 0.1
 
 local TELEPORT_BASE_DIST = 5.0
 local TELEPORT_SPEED_SCALE = 0.5
@@ -90,7 +111,12 @@ local function _resetSmoothers()
   prevTargetTime = nil
   lastLocalVel = nil
   localAcc = { 0, 0, 0 }
-    applyAccumulator = 0
+  applyAccumulator = 0
+  desiredAccX, desiredAccY, desiredAccZ = 0, 0, 0
+  desiredAngVX, desiredAngVY, desiredAngVZ = 0, 0, 0
+  desiredCogX, desiredCogY, desiredCogZ = 0, 0, 0
+  desiredHasAng = false
+  applyEnabled = false
 end
 
 local function _getVelocityModule()
@@ -446,15 +472,20 @@ function M.onHighBeamRemoteReset()
   _resetSmoothers()
 end
 
-local function _stepRemoteApply(dtSim)
+-- _computeCorrection runs once per render frame (bookkeeping clock). It resolves
+-- the interpolation buffer, runs prediction/blend, makes teleport decisions, and
+-- stores the desired per-physics-step correction (acceleration + angular). The
+-- forces themselves are NOT applied here — they are replayed once per real
+-- BeamNG physics step by _applyStoredCorrection so the engine integrates them
+-- over the genuine physics dt instead of a fabricated 1/120 substep.
+local function _computeCorrection(frameDt)
   local velMod = _getVelocityModule()
-  local d = dtSim or APPLY_FIXED_DT
-  if d > 0 then localMotionTimer = localMotionTimer + d end
-  _diag.applyTicks = (_diag.applyTicks or 0) + 1
-  if velMod and velMod.onHighBeamPhysicsStep then
-    pcall(velMod.onHighBeamPhysicsStep, d)
+  -- Disabled until we reach the PD path below with a valid, non-teleporting
+  -- correction outside the post-teleport grace window.
+  applyEnabled = false
+  if frameDt and frameDt > 0 then
+    if diagnosticsTimer > 0 then diagnosticsTimer = math.max(0, diagnosticsTimer - frameDt) end
   end
-  if diagnosticsTimer > 0 then diagnosticsTimer = math.max(0, diagnosticsTimer - d) end
   if not isRemote or not hasTarget then return end
   if not obj then return end
 
@@ -465,7 +496,7 @@ local function _stepRemoteApply(dtSim)
   local now = _now()
 
   if postTeleportGrace > 0 then
-    postTeleportGrace = math.max(0, postTeleportGrace - d)
+    postTeleportGrace = math.max(0, postTeleportGrace - frameDt)
   end
 
   local newest = targetBuffer[#targetBuffer]
@@ -479,11 +510,11 @@ local function _stepRemoteApply(dtSim)
     return
   end
 
-  if lastLocalVel and d > 0 then
+  if lastLocalVel and frameDt > 0 then
     localAcc = {
-      ((curVel.x or 0) - (lastLocalVel[1] or 0)) / d,
-      ((curVel.y or 0) - (lastLocalVel[2] or 0)) / d,
-      ((curVel.z or 0) - (lastLocalVel[3] or 0)) / d,
+      ((curVel.x or 0) - (lastLocalVel[1] or 0)) / frameDt,
+      ((curVel.y or 0) - (lastLocalVel[2] or 0)) / frameDt,
+      ((curVel.z or 0) - (lastLocalVel[3] or 0)) / frameDt,
     }
   end
   lastLocalVel = { curVel.x or 0, curVel.y or 0, curVel.z or 0 }
@@ -498,7 +529,7 @@ local function _stepRemoteApply(dtSim)
     predX = predX + blendCorrX * blendFrac
     predY = predY + blendCorrY * blendFrac
     predZ = predZ + blendCorrZ * blendFrac
-    blendRemaining = blendRemaining - d
+    blendRemaining = blendRemaining - frameDt
     if blendRemaining <= 0 then
       blendRemaining = 0
       blendCorrX, blendCorrY, blendCorrZ = 0, 0, 0
@@ -551,7 +582,7 @@ local function _stepRemoteApply(dtSim)
   end
 
   if errDist > teleportDist then
-    teleportTimer = teleportTimer + d
+    teleportTimer = teleportTimer + frameDt
     local delayNeeded = TELEPORT_DELAY_SEC + 0.1 * speed
     if teleportTimer > delayNeeded then
       _diag.hardDelayed = (_diag.hardDelayed or 0) + 1
@@ -615,12 +646,12 @@ local function _stepRemoteApply(dtSim)
     accZ = accZ * scale
   end
 
-  if velMod and velMod.addVelocity and postTeleportGrace <= 0 then
-    velMod.addVelocity(accX * d, accY * d, accZ * d)
-  end
+  -- Store linear correction for per-physics-step application.
+  desiredAccX, desiredAccY, desiredAccZ = accX, accY, accZ
+  desiredHasAng = false
 
   local curRot = _currentRotation()
-  if curRot and velMod and velMod.addAngularVelocity and postTeleportGrace <= 0 then
+  if curRot and velMod and velMod.addAngularVelocity then
     local reX, reY, reZ = _rotationErrorAngVel(curRot, predRot, 0.15)
 
     local finalAVX = reX * 0.7 + (predAngVel[1] or 0) * 0.3
@@ -640,19 +671,62 @@ local function _stepRemoteApply(dtSim)
     if velMod.getCOG then
       cogX, cogY, cogZ = velMod.getCOG()
     end
-    velMod.addAngularVelocity(finalAVX * d, finalAVY * d, finalAVZ * d, cogX, cogY, cogZ)
+
+    -- Store angular correction for per-physics-step application.
+    desiredAngVX, desiredAngVY, desiredAngVZ = finalAVX, finalAVY, finalAVZ
+    desiredCogX, desiredCogY, desiredCogZ = cogX, cogY, cogZ
+    desiredHasAng = true
+  end
+
+  -- Forces are suppressed during the post-teleport grace window; gate the
+  -- physics-step applier accordingly.
+  applyEnabled = (postTeleportGrace <= 0)
+end
+
+-- _applyStoredCorrection replays the most recently computed correction once for
+-- a single physics step of duration d. addVelocity/addAngularVelocity convert
+-- the (acceleration * dt) deltas into per-node forces using physicsFps = 1/dt;
+-- because the velocity module is fed the SAME real dt this step, the dt cancels
+-- and the net effect is the intended acceleration applied every physics step.
+local function _applyStoredCorrection(d)
+  if not applyEnabled then return end
+  if not isRemote or not hasTarget or not obj then return end
+  if not d or d <= 0 then return end
+  local velMod = _getVelocityModule()
+  if not velMod then return end
+  _diag.applyTicks = (_diag.applyTicks or 0) + 1
+  if velMod.addVelocity then
+    velMod.addVelocity(desiredAccX * d, desiredAccY * d, desiredAccZ * d)
+  end
+  if desiredHasAng and velMod.addAngularVelocity then
+    velMod.addAngularVelocity(desiredAngVX * d, desiredAngVY * d, desiredAngVZ * d,
+      desiredCogX, desiredCogY, desiredCogZ)
   end
 end
 
-local function _runApplySteps(frameDt)
+-- Fallback driver: only runs when the native physics-step hook is not delivering
+-- ticks (physicsTickAge >= PHYSICS_TICK_TIMEOUT). Applies the stored correction
+-- through bounded fixed substeps from the render frame, feeding the velocity
+-- module the matching substep dt so force scaling stays consistent. This keeps
+-- remote motion alive in runtime paths where onPhysicsStep never fires.
+local function _runFallbackApply(frameDt)
+  if not applyEnabled then
+    applyAccumulator = 0
+    return
+  end
   local dt = frameDt or 0
   if dt <= 0 then return end
   if dt > APPLY_MAX_FRAME_DT then dt = APPLY_MAX_FRAME_DT end
   applyAccumulator = applyAccumulator + dt
 
+  local velMod = _getVelocityModule()
   local steps = 0
   while applyAccumulator >= APPLY_FIXED_DT and steps < APPLY_MAX_STEPS do
-    _stepRemoteApply(APPLY_FIXED_DT)
+    if velMod and velMod.onHighBeamPhysicsStep then
+      pcall(velMod.onHighBeamPhysicsStep, APPLY_FIXED_DT)
+    end
+    _applyStoredCorrection(APPLY_FIXED_DT)
+    _diag.fallbackTicks = (_diag.fallbackTicks or 0) + 1
     applyAccumulator = applyAccumulator - APPLY_FIXED_DT
     steps = steps + 1
   end
@@ -662,12 +736,29 @@ local function _runApplySteps(frameDt)
   end
 end
 
--- updateGFX is the reliable callback for controller-loaded HighBeam modules.
--- Remote motion is advanced through bounded fixed substeps to preserve stable
--- controller behavior across different render frame rates.
+-- updateGFX is the reliable render-frame callback for controller-loaded HighBeam
+-- modules. It advances the bookkeeping clock, recomputes the desired correction,
+-- and (only when the physics hook has stalled) drives the fallback applier.
 function M.updateGFX(dt)
   if not isRemote or not obj then return end
-  _runApplySteps(dt)
+  local d = dt or 0
+
+  -- Advance the bookkeeping clock used for buffer sampling and time-offset.
+  if d > 0 then localMotionTimer = localMotionTimer + d end
+
+  -- Track physics-hook health. A real physics tick resets physicsTickAge to 0.
+  physicsTickAge = physicsTickAge + d
+  local physicsHookHealthy = physicsTickAge < PHYSICS_TICK_TIMEOUT
+
+  _computeCorrection(d)
+
+  if physicsHookHealthy then
+    -- Forces are applied on the real physics step; keep the fallback idle.
+    applyAccumulator = 0
+  else
+    _runFallbackApply(d)
+  end
+
   diagnosticsSummaryTimer = diagnosticsSummaryTimer + (dt or 0)
   if diagnosticsSummaryTimer >= 5.0 then
     diagnosticsSummaryTimer = 0
@@ -677,10 +768,14 @@ function M.updateGFX(dt)
         .. ',packetTimeout=' .. tostring(_diag.packetTimeout or 0)
         .. ',targetAgeDrops=' .. tostring(_diag.targetAgeDrops or 0)
         .. ',applyTicks=' .. tostring(_diag.applyTicks or 0)
+        .. ',physicsTicks=' .. tostring(_diag.physicsTicks or 0)
+        .. ',fallbackTicks=' .. tostring(_diag.fallbackTicks or 0)
+        .. ',physicsHookHealthy=' .. tostring(physicsHookHealthy)
         .. ',localTime=' .. string.format('%.6f', localMotionTimer or 0)
         .. ',targets=' .. tostring(_diag.targets or 0))
     end
-    _diag = { hardInstant = 0, hardDelayed = 0, packetTimeout = 0, targetAgeDrops = 0, applyTicks = 0, targets = 0 }
+    _diag = { hardInstant = 0, hardDelayed = 0, packetTimeout = 0, targetAgeDrops = 0,
+      applyTicks = 0, targets = 0, physicsTicks = 0, fallbackTicks = 0 }
   end
   heartbeatTimer = heartbeatTimer + (dt or 0)
   if heartbeatTimer >= HEARTBEAT_INTERVAL then
@@ -693,8 +788,16 @@ function M.updateGFX(dt)
   end
 end
 
+-- onHighBeamPhysicsStep is dispatched by the highbeamVE coordinator from the
+-- native BeamNG physics-step hook with the REAL dtSim. This is the primary
+-- force-application path: it marks the hook healthy and applies the stored
+-- correction exactly once for this physics step.
 function M.onHighBeamPhysicsStep(dtSim)
-  _stepRemoteApply(dtSim or APPLY_FIXED_DT)
+  if not isRemote then return end
+  local d = (dtSim and dtSim > 0) and dtSim or APPLY_FIXED_DT
+  physicsTickAge = 0
+  _diag.physicsTicks = (_diag.physicsTicks or 0) + 1
+  _applyStoredCorrection(d)
 end
 
 M.init = M.onInit
