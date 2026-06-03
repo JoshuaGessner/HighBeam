@@ -180,6 +180,20 @@ Total: 16 + 1 + 2 + 12 + 16 + 12 + 4 = **63 bytes per update**
 
 The extended `0x11` packet appends compact steering, throttle, brake, gear, and handbrake fields (five 16-bit values). When angular velocity is available, three additional `f32` values are appended after the inputs.
 
+Exact client→server datagram sizes are validated by the server (other lengths are
+dropped, not relayed):
+
+| Type | Inputs | Angular velocity | Size |
+|------|--------|------------------|------|
+| `0x10` | no | no | 63 bytes |
+| `0x10` | no | yes | 75 bytes |
+| `0x11` | yes | no | 73 bytes |
+| `0x11` | yes | yes | 85 bytes |
+
+Receiving clients apply the `0x11` inputs (steering/throttle/brake/handbrake) to
+remote vehicles for smoother animation; discrete gear changes are delivered over
+the reliable TCP input channel rather than UDP.
+
 When server relays to other clients, it prepends the player_id:
 
 ```
@@ -282,7 +296,10 @@ For each requested mod, the server sends a binary frame followed by the raw file
 
 ## Bandwidth Estimation
 
-At 20 Hz position updates:
+The client send rate is **adaptive** (roughly 5–60 Hz depending on motion and
+configuration), not a fixed 20 Hz. The server additionally throttles relays per
+(player, vehicle) to its configured tick rate. Using 20 Hz purely as a worked
+example:
 - **Per vehicle sent**: 63 bytes × 20 = ~1.26 KB/s
 - **Per vehicle received** (from server): 65 bytes × 20 = ~1.3 KB/s
 - **20-player server, 1 car each**: each client sends 1.26 KB/s, receives 19 × 1.3 = ~24.7 KB/s
@@ -298,8 +315,24 @@ At 20 Hz position updates:
 
 ### UDP Errors
 - UDP packets from unknown session tokens are silently dropped.
-- If no UDP packet received from a client for 10 seconds, server sends a TCP keepalive probe.
-- If no response for 30 seconds, session is terminated.
+- A UDP pose is only accepted and relayed if the sending player owns the vehicle
+  it references; datagrams with an unexpected length for their type are dropped.
+- Inbound poses are capped per (player, vehicle) to bound flooding.
+
+### Liveness
+Liveness is enforced over TCP, not UDP:
+- The server pings each client over TCP roughly every 30 seconds and expects a pong.
+- Vehicles whose pose has not updated for ~60 seconds are reaped (a `VehicleDelete`
+  is broadcast), and idle TCP connections are closed after ~60 seconds.
+
+### Trust Model
+Like BeamMP, remote motion is **server-relayed and client-trusts-server**: the
+server zeroes the session hash on relay and receiving clients do not authenticate
+relayed poses. An attacker who can reach a client's UDP ip:port and guess a
+`playerId`/`vehicleId` could inject fake remote motion. This is a known, accepted
+limitation. Because the session token doubles as the UDP credential, running with
+TLS disabled additionally exposes that token (and therefore the UDP session hash)
+to on-path observers — enable TLS on untrusted networks.
 
 ### Protocol Version Mismatch
 - The `server_hello` includes the protocol version.

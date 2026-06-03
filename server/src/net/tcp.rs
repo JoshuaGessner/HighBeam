@@ -353,40 +353,39 @@ where
     //       SessionManager assigns player_id and generates the session token.
     let (tcp_tx, mut tcp_rx) = mpsc::channel::<TcpPacket>(64);
     let tcp_tx_ping = tcp_tx.clone(); // Clone for ping task
-    let (player_id, session_token) =
-        match sessions.add_player(
-            username.clone(),
-            addr,
-            tcp_tx.clone(),
-            config.general.max_players,
-        ) {
-            Ok(result) => result,
-            Err(crate::session::manager::AddPlayerError::Full) => {
-                // Authoritative, race-free capacity rejection (the earlier
-                // player_count() pre-check is only a fast path; this closes the
-                // TOCTOU window when many clients authenticate concurrently).
-                tracing::warn!(%addr, name = %username, "Server full ({} players)", config.general.max_players);
-                let response = TcpPacket::AuthResponse {
-                    success: false,
-                    player_id: None,
-                    session_token: None,
-                    error: Some("Server is full.".into()),
-                };
-                write_packet_generic(&mut stream, &response).await?;
-                return Ok(());
-            }
-            Err(e) => {
-                tracing::warn!(%addr, error = %e, "Failed to create session");
-                let response = TcpPacket::AuthResponse {
-                    success: false,
-                    player_id: None,
-                    session_token: None,
-                    error: Some(format!("Session creation failed: {e}")),
-                };
-                write_packet_generic(&mut stream, &response).await?;
-                return Ok(());
-            }
-        };
+    let (player_id, session_token) = match sessions.add_player(
+        username.clone(),
+        addr,
+        tcp_tx.clone(),
+        config.general.max_players,
+    ) {
+        Ok(result) => result,
+        Err(crate::session::manager::AddPlayerError::Full) => {
+            // Authoritative, race-free capacity rejection (the earlier
+            // player_count() pre-check is only a fast path; this closes the
+            // TOCTOU window when many clients authenticate concurrently).
+            tracing::warn!(%addr, name = %username, "Server full ({} players)", config.general.max_players);
+            let response = TcpPacket::AuthResponse {
+                success: false,
+                player_id: None,
+                session_token: None,
+                error: Some("Server is full.".into()),
+            };
+            write_packet_generic(&mut stream, &response).await?;
+            return Ok(());
+        }
+        Err(e) => {
+            tracing::warn!(%addr, error = %e, "Failed to create session");
+            let response = TcpPacket::AuthResponse {
+                success: false,
+                player_id: None,
+                session_token: None,
+                error: Some(format!("Session creation failed: {e}")),
+            };
+            write_packet_generic(&mut stream, &response).await?;
+            return Ok(());
+        }
+    };
 
     tracing::info!(player_id, %addr, name = %username, "Player authenticated");
 
@@ -682,7 +681,11 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                 let vid = match world.try_spawn_vehicle(player_id, data.clone(), max_cars) {
                     Some(vid) => vid,
                     None => {
-                        tracing::warn!(player_id, max_cars, "MaxCarsPerPlayer limit reached (atomic)");
+                        tracing::warn!(
+                            player_id,
+                            max_cars,
+                            "MaxCarsPerPlayer limit reached (atomic)"
+                        );
                         reject_spawn("max_cars_reached");
                         continue;
                     }

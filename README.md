@@ -23,7 +23,7 @@ HighBeam lets you host and join real-time multiplayer sessions in BeamNG.drive �
 | Feature | Status |
 |---------|--------|
 | TCP connection & authentication | ✅ Done |
-| Real-time vehicle sync (UDP, 20 Hz) | ✅ Done |
+| Real-time vehicle sync (UDP, adaptive ~5–60 Hz) | ✅ Done |
 | Chat | ✅ Done |
 | Mod distribution via launcher | ✅ Done |
 | Password & allowlist auth | ✅ Done |
