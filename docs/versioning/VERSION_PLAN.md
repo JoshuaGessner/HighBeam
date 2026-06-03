@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-06-03
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.2-dev.47 (protocol v2)
+> **Current version:** v0.8.2-dev.48 (protocol v2)
 > **Status:** v0.8.1 released | v0.8.2 in development
 
 ---
@@ -1202,6 +1202,10 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.2-dev.48 - 2026-06-03 (draft)
+- Synced local `main` with `origin/main` to include latest merged sync hardening and browser updates before cutting this iteration.
+- Server and launcher versions bumped to `0.8.2-dev.48`; protocol remains `v2`.
 
 ### v0.8.2-dev.47 - 2026-06-03 (draft)
 - Server browser UI: the browser window now opens centered on screen, and the in-game players overlay stays hidden until a connection is established.
