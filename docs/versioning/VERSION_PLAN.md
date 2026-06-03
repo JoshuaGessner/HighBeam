@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-06-03
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.2-dev.46 (protocol v2)
+> **Current version:** v0.8.2-dev.47 (protocol v2)
 > **Status:** v0.8.1 released | v0.8.2 in development
 
 ---
@@ -1202,6 +1202,14 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.2-dev.47 - 2026-06-03 (draft)
+- Server browser UI: the browser window now opens centered on screen, and the in-game players overlay stays hidden until a connection is established.
+- Standardized on American spelling and clearer `pcall` result variable names in the client browser module.
+- Hardened the server UDP/TCP relay and session handling: added session caps, rate-limiter tightening, and additional world-state guards (A1, A2, A4, B1, B3, C1, E1).
+- UDP inputs are now applied visually on the client (A3); aligned protocol docs/README and cleaned up TCP relay handling (A5, B2, E2, E3), with inline UDP size-composition comments.
+- Rebuilt `launcher/payload/highbeam.zip` from `client/` and verified payload parity (content unchanged from dev.46 sync).
+- Server and launcher versions bumped to `0.8.2-dev.47`; protocol remains `v2`.
 
 ### v0.8.2-dev.46 - 2026-06-03 (draft)
 - Fixed the root cause of remote vehicles not moving / periodically teleporting: correction forces are now applied on the real BeamNG physics step instead of being batched into synthetic 1/120 substeps from the render frame (regression from dev.45).
