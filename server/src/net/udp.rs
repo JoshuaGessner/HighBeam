@@ -213,7 +213,9 @@ pub async fn start_udp(
                 //   + 5x f16 inputs (0x11)       = +10 bytes
                 //   + 3x f32 angular velocity    = +12 bytes
                 let valid_len = match packet_type {
+                    // 63 = base, 75 = base + angvel
                     0x10 => len == 63 || len == 75,
+                    // 73 = base + inputs, 85 = base + inputs + angvel
                     0x11 => len == 73 || len == 85,
                     _ => false,
                 };
