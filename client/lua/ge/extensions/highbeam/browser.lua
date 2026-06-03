@@ -1223,19 +1223,19 @@ end
 -- Main render — called every frame by highbeam.lua onPreRender
 -- ──────────────────────────────────────────────────────────────────────────────
 
--- Returns the centre point (ImVec2) of the active ImGui viewport, falling back to
--- the IO DisplaySize when the multi-viewport API is unavailable. Used to centre
--- the browser window resolution-independently on each fresh open.
+-- Returns the center point (ImVec2) of the active ImGui viewport, falling back to
+-- the IO DisplaySize when the multi-viewport API is unavailable. Used to center
+-- the browser window resolution-independent of display size on each fresh open.
 local function _viewportCenter()
-  local ok, vp = pcall(function() return _im.GetMainViewport() end)
-  if ok and vp and vp.Pos and vp.Size and vp.Size.x and vp.Size.x > 0 then
+  local vpOk, vp = pcall(function() return _im.GetMainViewport() end)
+  if vpOk and vp and vp.Pos and vp.Size and vp.Size.x and vp.Size.x > 0 then
     return _im.ImVec2(vp.Pos.x + vp.Size.x * 0.5, vp.Pos.y + vp.Size.y * 0.5)
   end
-  local ok2, io = pcall(function() return _im.GetIO() end)
-  if ok2 and io and io.DisplaySize and io.DisplaySize.x and io.DisplaySize.x > 0 then
+  local ioOk, io = pcall(function() return _im.GetIO() end)
+  if ioOk and io and io.DisplaySize and io.DisplaySize.x and io.DisplaySize.x > 0 then
     return _im.ImVec2(io.DisplaySize.x * 0.5, io.DisplaySize.y * 0.5)
   end
-  -- Last-resort fallback: a reasonable centre for a 1080p display.
+  -- Last-resort fallback: a reasonable center for a 1080p display.
   return _im.ImVec2(960, 540)
 end
 
@@ -1255,7 +1255,7 @@ M.renderUI = function()
   -- ImGuiCond_FirstUseEver = 4, ImGuiCond_Always = 1
   _im.SetNextWindowSize(_im.ImVec2(760, 540), 4)
   if M._centerOnShow then
-    -- Centre the window over the viewport this frame (pivot at its own centre),
+    -- Center the window over the viewport this frame (pivot at its own center),
     -- then clear the flag so the user can freely drag it afterwards.
     _im.SetNextWindowPos(_viewportCenter(), 1, _im.ImVec2(0.5, 0.5))
     M._centerOnShow = false
