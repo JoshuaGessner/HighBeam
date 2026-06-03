@@ -478,13 +478,13 @@ end
 -- forces themselves are NOT applied here — they are replayed once per real
 -- BeamNG physics step by _applyStoredCorrection so the engine integrates them
 -- over the genuine physics dt instead of a fabricated 1/120 substep.
-local function _computeCorrection(d)
+local function _computeCorrection(frameDt)
   local velMod = _getVelocityModule()
   -- Disabled until we reach the PD path below with a valid, non-teleporting
   -- correction outside the post-teleport grace window.
   applyEnabled = false
-  if d and d > 0 then
-    if diagnosticsTimer > 0 then diagnosticsTimer = math.max(0, diagnosticsTimer - d) end
+  if frameDt and frameDt > 0 then
+    if diagnosticsTimer > 0 then diagnosticsTimer = math.max(0, diagnosticsTimer - frameDt) end
   end
   if not isRemote or not hasTarget then return end
   if not obj then return end
@@ -496,7 +496,7 @@ local function _computeCorrection(d)
   local now = _now()
 
   if postTeleportGrace > 0 then
-    postTeleportGrace = math.max(0, postTeleportGrace - d)
+    postTeleportGrace = math.max(0, postTeleportGrace - frameDt)
   end
 
   local newest = targetBuffer[#targetBuffer]
@@ -510,11 +510,11 @@ local function _computeCorrection(d)
     return
   end
 
-  if lastLocalVel and d > 0 then
+  if lastLocalVel and frameDt > 0 then
     localAcc = {
-      ((curVel.x or 0) - (lastLocalVel[1] or 0)) / d,
-      ((curVel.y or 0) - (lastLocalVel[2] or 0)) / d,
-      ((curVel.z or 0) - (lastLocalVel[3] or 0)) / d,
+      ((curVel.x or 0) - (lastLocalVel[1] or 0)) / frameDt,
+      ((curVel.y or 0) - (lastLocalVel[2] or 0)) / frameDt,
+      ((curVel.z or 0) - (lastLocalVel[3] or 0)) / frameDt,
     }
   end
   lastLocalVel = { curVel.x or 0, curVel.y or 0, curVel.z or 0 }
@@ -529,7 +529,7 @@ local function _computeCorrection(d)
     predX = predX + blendCorrX * blendFrac
     predY = predY + blendCorrY * blendFrac
     predZ = predZ + blendCorrZ * blendFrac
-    blendRemaining = blendRemaining - d
+    blendRemaining = blendRemaining - frameDt
     if blendRemaining <= 0 then
       blendRemaining = 0
       blendCorrX, blendCorrY, blendCorrZ = 0, 0, 0
@@ -582,7 +582,7 @@ local function _computeCorrection(d)
   end
 
   if errDist > teleportDist then
-    teleportTimer = teleportTimer + d
+    teleportTimer = teleportTimer + frameDt
     local delayNeeded = TELEPORT_DELAY_SEC + 0.1 * speed
     if teleportTimer > delayNeeded then
       _diag.hardDelayed = (_diag.hardDelayed or 0) + 1
@@ -794,8 +794,7 @@ end
 -- correction exactly once for this physics step.
 function M.onHighBeamPhysicsStep(dtSim)
   if not isRemote then return end
-  local d = dtSim or APPLY_FIXED_DT
-  if d <= 0 then d = APPLY_FIXED_DT end
+  local d = (dtSim and dtSim > 0) and dtSim or APPLY_FIXED_DT
   physicsTickAge = 0
   _diag.physicsTicks = (_diag.physicsTicks or 0) + 1
   _applyStoredCorrection(d)
