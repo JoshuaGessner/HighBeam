@@ -85,6 +85,7 @@ end
 
 M._visible      = false
 M._connectError = ""
+M._centerOnShow = false  -- one-shot: center the window the next frame it is shown
 
 -- Data stores
 M._favorites       = {}   -- [{serverId?, host?, port?, name, description?, addedAt}]
@@ -843,6 +844,7 @@ M.onConnectionStatus = function(status, detail)
   if status == "kicked" then
     M._connectError = "Kicked from server: " .. (detail or "No reason given")
     M._visible = true  -- Re-open browser to show kick reason
+    M._centerOnShow = true
     if M._bridge.state == "syncing" then
       M._bridge.state = "failed"
       M._bridge.error = detail or "Kicked"
@@ -870,7 +872,7 @@ end
 -- Visibility
 -- ──────────────────────────────────────────────────────────────────────────────
 
-M.open   = function() M._visible = true  end
+M.open   = function() M._visible = true; M._centerOnShow = true end
 M.close  = function() M._visible = false end
 M.isOpen = function() return M._visible  end
 
@@ -1221,6 +1223,22 @@ end
 -- Main render — called every frame by highbeam.lua onPreRender
 -- ──────────────────────────────────────────────────────────────────────────────
 
+-- Returns the centre point (ImVec2) of the active ImGui viewport, falling back to
+-- the IO DisplaySize when the multi-viewport API is unavailable. Used to centre
+-- the browser window resolution-independently on each fresh open.
+local function _viewportCenter()
+  local ok, vp = pcall(function() return _im.GetMainViewport() end)
+  if ok and vp and vp.Pos and vp.Size and vp.Size.x and vp.Size.x > 0 then
+    return _im.ImVec2(vp.Pos.x + vp.Size.x * 0.5, vp.Pos.y + vp.Size.y * 0.5)
+  end
+  local ok2, io = pcall(function() return _im.GetIO() end)
+  if ok2 and io and io.DisplaySize and io.DisplaySize.x and io.DisplaySize.x > 0 then
+    return _im.ImVec2(io.DisplaySize.x * 0.5, io.DisplaySize.y * 0.5)
+  end
+  -- Last-resort fallback: a reasonable centre for a 1080p display.
+  return _im.ImVec2(960, 540)
+end
+
 M.renderUI = function()
   _bridgePoll()
   _communityPoll()
@@ -1234,9 +1252,16 @@ M.renderUI = function()
 
   if _resolve.state == "resolving" then M._connectError = "Resolving server address..." end
 
-  -- ImGuiCond_FirstUseEver = 4
+  -- ImGuiCond_FirstUseEver = 4, ImGuiCond_Always = 1
   _im.SetNextWindowSize(_im.ImVec2(760, 540), 4)
-  _im.SetNextWindowPos( _im.ImVec2(160, 160), 4)
+  if M._centerOnShow then
+    -- Centre the window over the viewport this frame (pivot at its own centre),
+    -- then clear the flag so the user can freely drag it afterwards.
+    _im.SetNextWindowPos(_viewportCenter(), 1, _im.ImVec2(0.5, 0.5))
+    M._centerOnShow = false
+  else
+    _im.SetNextWindowPos(_im.ImVec2(160, 160), 4)
+  end
 
   if _im.Begin("HighBeam Multiplayer##hb_main") then
     if M._connectError ~= "" then
@@ -1269,6 +1294,7 @@ M.load = function(conn, cfg)
   M.loadRecents()
   M.loadCommunityNodes()
   M._visible = true
+  M._centerOnShow = true
   log("I", logTag, "Browser module loaded (window visible)")
 end
 
