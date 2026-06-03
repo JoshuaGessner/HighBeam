@@ -104,9 +104,12 @@ M.load = function(connectionRef, vehiclesRef, stateRef, chatRef, configRef)
     _refreshInterval = 1.0 / math.max(1.0, refreshHz)
   end
 
-  _visible = not (_config and _config.get and _config.get("overlayVisible") == false)
+  -- Stay hidden at startup (main menu). overlayVisible is treated as the user's
+  -- preferred state to restore once connected, not an at-launch state, so the
+  -- server players list never appears before joining a server.
+  _visible = false
   _collectRows()
-  log('I', logTag, 'Overlay loaded visible=' .. tostring(_visible))
+  log('I', logTag, 'Overlay loaded (hidden until connected)')
 end
 
 M.onConnectionStatus = function(status, _detail)
@@ -117,6 +120,8 @@ M.onConnectionStatus = function(status, _detail)
     end
   elseif status == "disconnected" or status == "reconnect_failed" then
     _collectRows()
+    -- Leaving a server returns to a clean main menu: hide the players list.
+    _visible = false
   end
 end
 
@@ -166,6 +171,11 @@ M.render = function()
 
   local state = _connection and _connection.getState and _connection.getState() or -1
   local connected = _connection and _connection.STATE_CONNECTED and state == _connection.STATE_CONNECTED
+
+  -- Never draw the players list unless actually connected to a server. This
+  -- keeps the overlay off the main menu even if it was left visible (e.g. via
+  -- the More-menu toggle) while disconnected.
+  if not connected then return end
 
   _im.SetNextWindowSize(_im.ImVec2(600, 420), 4)
   _im.SetNextWindowPos(_im.ImVec2(40, 180), 4)

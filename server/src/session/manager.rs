@@ -1,7 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use anyhow::{bail, Result};
 use dashmap::DashMap;
 use sha2::{Digest, Sha256};
 use tokio::net::UdpSocket;
@@ -12,6 +11,27 @@ use crate::net::packet::{PlayerInfo, PlayerPingInfo, TcpPacket};
 
 use super::player::Player;
 
+/// Error returned when a new player cannot be admitted.
+#[derive(Debug)]
+pub enum AddPlayerError {
+    /// The server is at capacity (`MaxPlayers` reached).
+    Full,
+    /// The request was invalid (e.g. empty username) or a session token
+    /// could not be generated.
+    Invalid(String),
+}
+
+impl std::fmt::Display for AddPlayerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AddPlayerError::Full => write!(f, "Server is full"),
+            AddPlayerError::Invalid(msg) => write!(f, "{msg}"),
+        }
+    }
+}
+
+impl std::error::Error for AddPlayerError {}
+
 /// Thread-safe session manager. Tracks all connected players.
 pub struct SessionManager {
     players: DashMap<u32, Player>,
@@ -19,6 +39,10 @@ pub struct SessionManager {
     /// Truncated SHA-256 of session token → player_id (for UDP authentication).
     session_hashes: DashMap<[u8; 16], u32>,
     next_id: AtomicU32,
+    /// Serializes the capacity check + insert in `add_player` so concurrent
+    /// authentications cannot race past `MaxPlayers` (TOCTOU). Held only for the
+    /// brief, non-async admission critical section.
+    admit_guard: std::sync::Mutex<()>,
 }
 
 #[derive(Debug, Clone)]
@@ -44,20 +68,36 @@ impl SessionManager {
             token_map: DashMap::new(),
             session_hashes: DashMap::new(),
             next_id: AtomicU32::new(1),
+            admit_guard: std::sync::Mutex::new(()),
         }
     }
 
     /// Register a new player. Returns `(player_id, session_token)`.
+    ///
+    /// `max_players` is enforced atomically with the insert under `admit_guard`,
+    /// so concurrent connections cannot collectively exceed the cap.
     pub fn add_player(
         &self,
         name: String,
         addr: SocketAddr,
         tcp_tx: mpsc::Sender<TcpPacket>,
-    ) -> Result<(u32, String)> {
+        max_players: u32,
+    ) -> Result<(u32, String), AddPlayerError> {
         let trimmed_name = name.trim();
         if trimmed_name.is_empty() {
             tracing::warn!(%addr, "Rejected player with empty username at session creation");
-            bail!("Username cannot be empty");
+            return Err(AddPlayerError::Invalid("Username cannot be empty".into()));
+        }
+
+        // Serialize the capacity check + insert. The lock is never held across an
+        // await (this function is synchronous), so a std Mutex is appropriate.
+        let _admit = self
+            .admit_guard
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        if self.players.len() >= max_players as usize {
+            return Err(AddPlayerError::Full);
         }
 
         let player_id = self.next_id.fetch_add(1, Ordering::Relaxed);
@@ -95,9 +135,9 @@ impl SessionManager {
                 "Session hash collision detected (extremely rare), retrying..."
             );
             if attempt == MAX_TOKEN_ATTEMPTS {
-                bail!(
+                return Err(AddPlayerError::Invalid(format!(
                     "Failed to generate unique session token after {MAX_TOKEN_ATTEMPTS} attempts"
-                );
+                )));
             }
         }
 
@@ -111,7 +151,6 @@ impl SessionManager {
             udp_addr: None,
             session_hash,
             connected_at: now,
-            last_activity: now,
             last_pong_time: now, // Initialize pong time (Phase 2.2)
             last_ping_seq_sent: None,
             last_ping_sent_at: None,
@@ -240,15 +279,19 @@ impl SessionManager {
 
     /// Broadcast a UDP packet to all players with registered UDP addresses, optionally excluding one.
     pub async fn broadcast_udp(&self, socket: &UdpSocket, data: &[u8], exclude: Option<u32>) {
-        for entry in self.players.iter() {
-            let player = entry.value();
-            if Some(player.id) == exclude {
-                continue;
-            }
-            if let Some(addr) = player.udp_addr {
-                if let Err(e) = socket.send_to(data, addr).await {
-                    tracing::warn!(player_id = player.id, %addr, "UDP send failed: {e}");
-                }
+        // C1: snapshot targets first, then release all DashMap guards before
+        // awaiting any send. Holding shard guards across `await send_to` serialized
+        // the UDP task against map contention and added latency under load.
+        let targets: Vec<(u32, SocketAddr)> = self
+            .players
+            .iter()
+            .filter(|entry| Some(entry.value().id) != exclude)
+            .filter_map(|entry| entry.value().udp_addr.map(|addr| (entry.value().id, addr)))
+            .collect();
+
+        for (player_id, addr) in targets {
+            if let Err(e) = socket.send_to(data, addr).await {
+                tracing::warn!(player_id, %addr, "UDP send failed: {e}");
             }
         }
     }
@@ -265,25 +308,34 @@ impl SessionManager {
         lod_distance_sq: f32,
         get_centroid: impl Fn(u32) -> Option<[f32; 3]>,
     ) {
-        for entry in self.players.iter() {
-            let player = entry.value();
-            if player.id == exclude {
-                continue;
-            }
-            if let Some(addr) = player.udp_addr {
-                // Distance check: skip if receiver is too far
+        // C1: resolve the eligible targets (including the distance check, which
+        // calls `get_centroid` → WorldState) into a snapshot while iterating, then
+        // drop the iterator/guards before awaiting any send.
+        let targets: Vec<(u32, SocketAddr)> = self
+            .players
+            .iter()
+            .filter_map(|entry| {
+                let player = entry.value();
+                if player.id == exclude {
+                    return None;
+                }
+                let addr = player.udp_addr?;
+                // Distance check: skip if receiver is too far.
                 if let Some(recv_pos) = get_centroid(player.id) {
                     let dx = sender_pos[0] - recv_pos[0];
                     let dy = sender_pos[1] - recv_pos[1];
                     let dz = sender_pos[2] - recv_pos[2];
-                    let dist_sq = dx * dx + dy * dy + dz * dz;
-                    if dist_sq > lod_distance_sq {
-                        continue;
+                    if dx * dx + dy * dy + dz * dz > lod_distance_sq {
+                        return None;
                     }
                 }
-                if let Err(e) = socket.send_to(data, addr).await {
-                    tracing::warn!(player_id = player.id, %addr, "UDP send failed: {e}");
-                }
+                Some((player.id, addr))
+            })
+            .collect();
+
+        for (player_id, addr) in targets {
+            if let Err(e) = socket.send_to(data, addr).await {
+                tracing::warn!(player_id, %addr, "UDP send failed: {e}");
             }
         }
     }
@@ -303,7 +355,7 @@ mod tests {
             let (tx, _rx) = mpsc::channel(8);
             let username = format!("player_{i}");
             let (player_id, _token) = manager
-                .add_player(username, addr, tx)
+                .add_player(username, addr, tx, u32::MAX)
                 .expect("add player should succeed");
             ids.push(player_id);
 
@@ -326,7 +378,7 @@ mod tests {
         for i in 0..100 {
             let (tx, _rx) = mpsc::channel(8);
             let (player_id, token) = manager
-                .add_player(format!("bulk_{i}"), addr, tx)
+                .add_player(format!("bulk_{i}"), addr, tx, u32::MAX)
                 .expect("add player should succeed");
             player_ids.push((player_id, token));
         }
@@ -345,5 +397,27 @@ mod tests {
         }
 
         assert_eq!(manager.player_count(), 0);
+    }
+
+    #[test]
+    fn test_add_player_enforces_max_players() {
+        let manager = SessionManager::new();
+        let addr: SocketAddr = "127.0.0.1:18862".parse().expect("valid socket addr");
+
+        for i in 0..3 {
+            let (tx, _rx) = mpsc::channel(8);
+            manager
+                .add_player(format!("cap_{i}"), addr, tx, 3)
+                .expect("under cap should succeed");
+        }
+        assert_eq!(manager.player_count(), 3);
+
+        let (tx, _rx) = mpsc::channel(8);
+        let result = manager.add_player("overflow".into(), addr, tx, 3);
+        assert!(
+            matches!(result, Err(AddPlayerError::Full)),
+            "exceeding MaxPlayers should return Full"
+        );
+        assert_eq!(manager.player_count(), 3);
     }
 }

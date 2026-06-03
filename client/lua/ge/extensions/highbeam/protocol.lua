@@ -3,14 +3,10 @@ local logTag = "HighBeam.Protocol"
 
 M.VERSION = 2
 
--- TCP packet encode/decode stubs
-M.encodeTcp = function(packetType, data)
-  return nil
-end
-
-M.decodeTcp = function(rawData)
-  return nil
-end
+-- NOTE: TCP packets are JSON-encoded by connection.lua today; there is no binary
+-- TCP codec. The previous encodeTcp/decodeTcp stubs always returned nil and were
+-- unused, so they were removed to avoid being mistaken for working code. If a
+-- binary TCP format is added later, implement it here.
 
 -- UDP packet encode/decode (binary, zero JSON overhead)
 -- See PROTOCOL.md for packet layouts

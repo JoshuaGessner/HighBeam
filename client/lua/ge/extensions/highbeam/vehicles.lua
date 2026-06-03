@@ -622,6 +622,24 @@ M.updateRemote = function(decoded)
       decoded.time or 0
     )
     _queueVeLuaCommand(rv.gameVehicle, cmd, "position")
+
+    -- A3: apply the UDP inputs visually for smoother remote animation
+    -- (steering/throttle/brake/handbrake). Discrete gear changes deliberately
+    -- stay on the reliable TCP path, so gear is intentionally excluded here.
+    -- The UDP steer value is the normalized steering_input (-1..1); it is fed
+    -- through the same applyInputs pipeline the TCP path uses so smoothing and
+    -- guards stay consistent.
+    if decoded.inputs then
+      local di = decoded.inputs
+      local deltaStr = string.format(
+        "s=%.4f,t=%.4f,b=%.4f,p=%.4f",
+        tonumber(di.steer) or 0,
+        tonumber(di.throttle) or 0,
+        tonumber(di.brake) or 0,
+        tonumber(di.handbrake) or 0
+      )
+      M.applyInputs(decoded.playerId, decoded.vehicleId, deltaStr)
+    end
   elseif _verboseSyncLoggingEnabled() then
     log('D', logTag, 'Skipping remote pose until VE controller is ready key=' .. key)
   end
@@ -1096,7 +1114,11 @@ end
 
 -- Apply coupling/trailer state
 M.applyCoupling = function(playerId, vehicleId, targetVehicleId, coupled, nodeId, targetNodeId)
-  -- Find both remote vehicles by server vehicle ID
+  -- Find both remote vehicles by server vehicle ID.
+  -- NOTE: the target is matched by vehicleId alone (server vehicle IDs are
+  -- currently globally unique — see server next_vehicle_id atomic in world.rs),
+  -- which is why this is safe today. If server IDs ever become per-player, also
+  -- match the target's owning playerId here to avoid coupling to the wrong car.
   local sourceRv = nil
   local targetRv = nil
   for _, rv in pairs(M.remoteVehicles) do

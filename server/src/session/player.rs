@@ -18,7 +18,6 @@ pub struct Player {
     /// First 16 bytes of SHA-256(session_token), used to authenticate UDP packets.
     pub session_hash: [u8; 16],
     pub connected_at: Instant,
-    pub last_activity: Instant,
     /// Last time a pong was received from this player (Phase 2.2 heartbeat).
     pub last_pong_time: Instant,
     /// Last ping sequence sent to this player.
