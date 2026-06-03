@@ -53,6 +53,15 @@ pub async fn start_listener(
     } else {
         None
     };
+    if tls_acceptor.is_none() {
+        // B3: the session token doubles as the UDP credential; with TLS off it
+        // travels in cleartext, so an on-path observer can derive the UDP session
+        // hash and spoof remote poses. Surface this for untrusted networks.
+        tracing::warn!(
+            "TLS is disabled: session tokens (which authorize UDP) travel in cleartext. \
+             Enable TLS in ServerConfig for servers exposed to untrusted networks."
+        );
+    }
     let tls_acceptor = Arc::new(tls_acceptor);
 
     // Create rate limiters
@@ -345,8 +354,27 @@ where
     let (tcp_tx, mut tcp_rx) = mpsc::channel::<TcpPacket>(64);
     let tcp_tx_ping = tcp_tx.clone(); // Clone for ping task
     let (player_id, session_token) =
-        match sessions.add_player(username.clone(), addr, tcp_tx.clone()) {
+        match sessions.add_player(
+            username.clone(),
+            addr,
+            tcp_tx.clone(),
+            config.general.max_players,
+        ) {
             Ok(result) => result,
+            Err(crate::session::manager::AddPlayerError::Full) => {
+                // Authoritative, race-free capacity rejection (the earlier
+                // player_count() pre-check is only a fast path; this closes the
+                // TOCTOU window when many clients authenticate concurrently).
+                tracing::warn!(%addr, name = %username, "Server full ({} players)", config.general.max_players);
+                let response = TcpPacket::AuthResponse {
+                    success: false,
+                    player_id: None,
+                    session_token: None,
+                    error: Some("Server is full.".into()),
+                };
+                write_packet_generic(&mut stream, &response).await?;
+                return Ok(());
+            }
             Err(e) => {
                 tracing::warn!(%addr, error = %e, "Failed to create session");
                 let response = TcpPacket::AuthResponse {
@@ -628,7 +656,8 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                     continue;
                 }
 
-                // Enforce MaxCarsPerPlayer
+                // Enforce MaxCarsPerPlayer (fast-path pre-check; the authoritative,
+                // race-free enforcement happens atomically in try_spawn_vehicle below).
                 let current_count = world.vehicle_count_for_player(player_id);
                 if current_count >= max_cars {
                     tracing::warn!(
@@ -650,7 +679,14 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                     continue;
                 }
 
-                let vid = world.spawn_vehicle(player_id, data.clone());
+                let vid = match world.try_spawn_vehicle(player_id, data.clone(), max_cars) {
+                    Some(vid) => vid,
+                    None => {
+                        tracing::warn!(player_id, max_cars, "MaxCarsPerPlayer limit reached (atomic)");
+                        reject_spawn("max_cars_reached");
+                        continue;
+                    }
+                };
                 // Step 1: Confirm to the spawner first so they learn the
                 // server-assigned vehicle_id before anyone else sends updates.
                 sessions.send_to_player(
@@ -678,6 +714,11 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
             } => {
                 diag_component_rx += 1;
                 diag_edit_rx += 1;
+                // B1: throttle high-cost edits (config blobs re-broadcast to all peers).
+                if !rate_limiters.check_vehicle_op_limit(player_id).await {
+                    tracing::warn!(player_id, "VehicleEdit rate limit exceeded; dropping");
+                    continue;
+                }
                 // Validate vehicle ID and config
                 if let Err(e) = crate::validation::validate_vehicle_id(vehicle_id) {
                     diag_component_reject_validation += 1;
@@ -738,6 +779,11 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
             } => {
                 diag_component_rx += 1;
                 diag_reset_rx += 1;
+                // B1: throttle high-cost resets (re-broadcast to all peers).
+                if !rate_limiters.check_vehicle_op_limit(player_id).await {
+                    tracing::warn!(player_id, "VehicleReset rate limit exceeded; dropping");
+                    continue;
+                }
                 if let Err(e) = crate::validation::validate_vehicle_id(vehicle_id) {
                     diag_component_reject_validation += 1;
                     tracing::warn!(player_id, vehicle_id, error = %e, "VehicleReset: invalid vehicle ID");

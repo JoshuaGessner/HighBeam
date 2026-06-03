@@ -100,6 +100,9 @@ pub struct ServerRateLimiters {
     pub chat_limiter: RateLimiter,
     /// Vehicle spawns per player (prevent lag).
     pub spawn_limiter: RateLimiter,
+    /// High-cost vehicle ops per player (edit/reset re-broadcast config blobs to
+    /// every peer; cap floods without affecting human-rate tuning/recovery).
+    pub vehicle_op_limiter: RateLimiter,
 }
 
 impl ServerRateLimiters {
@@ -112,6 +115,10 @@ impl ServerRateLimiters {
             chat_limiter: RateLimiter::new(Duration::from_secs(10), 10),
             // 5 vehicle spawns per 5 seconds per player
             spawn_limiter: RateLimiter::new(Duration::from_secs(5), 5),
+            // 60 high-cost vehicle ops per 2 seconds per player. Far above any
+            // human tuning/reset rate, but stops a client from saturating every
+            // peer with config-blob re-broadcasts.
+            vehicle_op_limiter: RateLimiter::new(Duration::from_secs(2), 60),
         }
     }
 
@@ -133,11 +140,18 @@ impl ServerRateLimiters {
         self.spawn_limiter.check_and_record(&key).await
     }
 
+    /// Check the high-cost vehicle-op rate limit by player_id.
+    pub async fn check_vehicle_op_limit(&self, player_id: u32) -> bool {
+        let key = format!("vop:{}", player_id);
+        self.vehicle_op_limiter.check_and_record(&key).await
+    }
+
     pub async fn prune_expired(&self) -> usize {
         let auth = self.auth_limiter.prune_expired().await;
         let chat = self.chat_limiter.prune_expired().await;
         let spawn = self.spawn_limiter.prune_expired().await;
-        auth + chat + spawn
+        let vop = self.vehicle_op_limiter.prune_expired().await;
+        auth + chat + spawn + vop
     }
 }
 

@@ -58,6 +58,15 @@ pub async fn start_udp(
     let mut buf = vec![0u8; 65535];
     let relay_interval = Duration::from_secs_f64(1.0 / tick_rate.max(1) as f64);
     let mut last_relay_at = std::collections::HashMap::<(u32, u16), Instant>::new();
+
+    // B1: per-(player, vehicle) inbound pose ceiling. Bounds CPU/relay work from
+    // a single client flooding pose packets. The ceiling is generous (well above
+    // any legitimate ~60 Hz send rate) so it never affects normal gameplay.
+    const POSE_RX_CEILING_PER_SEC: u32 = 240;
+    let pose_rx_window = Duration::from_secs(1);
+    let mut pose_rx_rate = std::collections::HashMap::<(u32, u16), (u32, Instant)>::new();
+    let pose_rx_prune_interval = Duration::from_secs(30);
+    let mut pose_rx_last_prune = Instant::now();
     let mut diag_last = Instant::now();
     let diag_interval = Duration::from_secs(5);
     let mut diag_discovery_rx: u64 = 0;
@@ -65,6 +74,9 @@ pub async fn start_udp(
     let mut diag_drop_unknown_session: u64 = 0;
     let mut diag_drop_invalid_pose: u64 = 0;
     let mut diag_drop_rate_limited: u64 = 0;
+    let mut diag_drop_bad_len: u64 = 0;
+    let mut diag_drop_unowned: u64 = 0;
+    let mut diag_drop_pose_flood: u64 = 0;
     let mut diag_bind_count: u64 = 0;
     let mut diag_pos_rx: u64 = 0;
     let mut diag_pos_relay_packets: u64 = 0;
@@ -190,14 +202,60 @@ pub async fn start_udp(
             // Client 0x11: 69 bytes: [16B hash][0x11][2B vid][12B pos][16B rot][12B vel][4B time][6B inputs]
             // Server relays: inserts 2B pid after type byte (65 or 71 bytes)
             0x10 | 0x11 => {
-                let min_size = if packet_type == 0x11 { 69 } else { 63 };
-                if len < min_size {
-                    diag_drop_short += 1;
+                // A2: validate the exact datagram length for the packet type and
+                // relay only that exact slice. Accepting `len >= min` and forwarding
+                // `buf[17..len]` verbatim let an attacker append trailing bytes that
+                // rode along to peers (injection / bandwidth amplification).
+                //
+                // Valid client payload sizes (before the server inserts the 2-byte
+                // player id) — see protocol.lua encodePositionUpdate:
+                //   base                         = 63 bytes (hash+type+vid+pos+rot+vel+time)
+                //   + 5x f16 inputs (0x11)       = +10 bytes
+                //   + 3x f32 angular velocity    = +12 bytes
+                let valid_len = match packet_type {
+                    0x10 => len == 63 || len == 75,
+                    0x11 => len == 73 || len == 85,
+                    _ => false,
+                };
+                if !valid_len {
+                    diag_drop_bad_len += 1;
                     continue;
                 }
 
                 // Extract vehicle_id and position data for world state tracking
                 let vid = u16::from_le_bytes([buf[17], buf[18]]);
+
+                // A1: only accept and relay poses for vehicles this player actually
+                // owns, mirroring the ownership gate every TCP vehicle op enforces.
+                // Without this, a client could emit poses for vids it never spawned
+                // (relay-bandwidth amplification; inconsistent trust model).
+                if !world.is_owner(player_id, vid) {
+                    diag_drop_unowned += 1;
+                    continue;
+                }
+
+                // B1: per-(player, vid) inbound pose ceiling.
+                let now = Instant::now();
+                let pose_allowed = {
+                    let entry = pose_rx_rate.entry((player_id, vid)).or_insert((0, now));
+                    if now.duration_since(entry.1) > pose_rx_window {
+                        *entry = (1, now);
+                        true
+                    } else if entry.0 < POSE_RX_CEILING_PER_SEC {
+                        entry.0 += 1;
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if !pose_allowed {
+                    diag_drop_pose_flood += 1;
+                    continue;
+                }
+                if now.duration_since(pose_rx_last_prune) >= pose_rx_prune_interval {
+                    pose_rx_rate.retain(|_, (_, ts)| now.duration_since(*ts) < pose_rx_window);
+                    pose_rx_last_prune = now;
+                }
 
                 // Parse position, rotation, velocity from the binary payload
                 let pos = read_f32x3(&buf[19..31]);
@@ -215,7 +273,6 @@ pub async fn start_udp(
                 // Update world state
                 world.update_position(player_id, vid, pos, rot, vel);
 
-                let now = Instant::now();
                 let throttle_key = (player_id, vid);
                 let should_relay = last_relay_at
                     .get(&throttle_key)
@@ -277,6 +334,9 @@ pub async fn start_udp(
                 drop_unknown_session = diag_drop_unknown_session,
                 drop_invalid_pose = diag_drop_invalid_pose,
                 drop_rate_limited = diag_drop_rate_limited,
+                drop_bad_len = diag_drop_bad_len,
+                drop_unowned = diag_drop_unowned,
+                drop_pose_flood = diag_drop_pose_flood,
                 binds = diag_bind_count,
                 pos_rx = diag_pos_rx,
                 pos_relays = diag_pos_relay_packets,
@@ -293,6 +353,9 @@ pub async fn start_udp(
             diag_drop_unknown_session = 0;
             diag_drop_invalid_pose = 0;
             diag_drop_rate_limited = 0;
+            diag_drop_bad_len = 0;
+            diag_drop_unowned = 0;
+            diag_drop_pose_flood = 0;
             diag_bind_count = 0;
             diag_pos_rx = 0;
             diag_pos_relay_packets = 0;

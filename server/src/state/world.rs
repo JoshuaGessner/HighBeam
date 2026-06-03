@@ -12,6 +12,9 @@ pub struct WorldState {
     /// Key: (player_id, vehicle_id) → Vehicle
     vehicles: DashMap<(u32, u16), Vehicle>,
     next_vehicle_id: AtomicU16,
+    /// Serializes the per-player count check + insert in `try_spawn_vehicle` so
+    /// concurrent spawns cannot collectively exceed `MaxCarsPerPlayer` (TOCTOU).
+    spawn_guard: std::sync::Mutex<()>,
 }
 
 impl WorldState {
@@ -19,6 +22,7 @@ impl WorldState {
         Self {
             vehicles: DashMap::new(),
             next_vehicle_id: AtomicU16::new(1),
+            spawn_guard: std::sync::Mutex::new(()),
         }
     }
 
@@ -69,6 +73,23 @@ impl WorldState {
         self.vehicles.insert((owner_id, vid), vehicle);
         tracing::debug!(owner_id, vid, "Vehicle spawned");
         vid
+    }
+
+    /// Atomically enforce `max_cars` per player and spawn if there is room.
+    /// Returns the new vehicle_id, or `None` if the player is already at the cap.
+    ///
+    /// The count + insert run under `spawn_guard` so concurrent spawns from the
+    /// same player cannot race past the limit (the previous check-then-spawn was
+    /// a TOCTOU window).
+    pub fn try_spawn_vehicle(&self, owner_id: u32, config: String, max_cars: u32) -> Option<u16> {
+        let _guard = self
+            .spawn_guard
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if self.vehicle_count_for_player(owner_id) >= max_cars {
+            return None;
+        }
+        Some(self.spawn_vehicle(owner_id, config))
     }
 
     /// Remove a specific vehicle.
