@@ -1,0 +1,17 @@
+# Keep Docker build context minimal for faster remote builds
+# Build outputs
+/target
+
+# VCS and editor metadata
+/.git
+/.gitignore
+/.DS_Store
+
+# Local runtime/config artifacts (not needed for image build)
+/ServerConfig.toml
+/server.log
+/community_node.json
+/server_state.json
+
+# Misc local assets not used by Dockerfile build steps
+/assets

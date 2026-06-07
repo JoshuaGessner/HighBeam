@@ -17,6 +17,7 @@ mod config;
 mod control;
 mod discovery_relay;
 mod firewall;
+#[cfg(feature = "gui")]
 mod gui;
 mod log_rotation;
 mod metrics;
@@ -30,6 +31,19 @@ mod state;
 mod tls;
 mod updater;
 mod validation;
+
+#[cfg(not(feature = "gui"))]
+mod gui {
+    use std::sync::Arc;
+
+    use crate::control::ControlPlane;
+
+    pub fn run(_control: Arc<ControlPlane>) {
+        tracing::error!(
+            "GUI mode requested, but this build was compiled without the 'gui' feature"
+        );
+    }
+}
 
 fn main() -> Result<()> {
     let cli = cli::CliArgs::parse()?;

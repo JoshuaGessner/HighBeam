@@ -1,4 +1,5 @@
-FROM rust:1.87-bookworm AS builder
+# syntax=docker/dockerfile:1.7
+FROM rust:1.88-bookworm AS builder
 
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
@@ -6,7 +7,10 @@ COPY src ./src
 COPY Resources ./Resources
 COPY ServerConfig.default.toml ./ServerConfig.default.toml
 
-RUN cargo build --release
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    cargo build --release --no-default-features \
+    && cp target/release/highbeam-server /tmp/highbeam-server
 
 FROM debian:bookworm-slim
 
@@ -16,7 +20,7 @@ RUN apt-get update \
 
 WORKDIR /opt/highbeam
 
-COPY --from=builder /app/target/release/highbeam-server ./highbeam-server
+COPY --from=builder /tmp/highbeam-server ./highbeam-server
 COPY --from=builder /app/ServerConfig.default.toml ./ServerConfig.toml
 COPY --from=builder /app/Resources ./Resources
 
