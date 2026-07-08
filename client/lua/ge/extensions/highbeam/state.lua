@@ -88,66 +88,9 @@ local _playerVehicleReconcileTimer = 0
 local _playerVehicleReconcileCount = 0
 local _playerVehicleReconcileDeleteCount = 0
 
-local POS_SEND_DELTA_SQ = 0.01 * 0.01
-local ROT_SEND_DELTA_RAD = math.rad(0.5)
-local VEL_SEND_DELTA_SQ = 0.05 * 0.05
-local INPUT_SEND_DELTA = 0.005
 local ABSOLUTE_SEND_RATE_CAP = 60
 local DEFAULT_TCP_POSE_FALLBACK_INTERVAL_SEC = 0.2
-local DEFAULT_FORCE_KEYFRAME_INTERVAL_SEC = 0.25
-local DEFAULT_MOTION_WATCHDOG_SEC = 0.35
-local DEFAULT_MOTION_WATCHDOG_MIN_SPEED = 0.5
 local DEFAULT_LOCAL_VEHICLE_RECONCILE_SEC = 1.0
-
-local function _rotErrorRad(a, b)
-  if not a or not b then return math.huge end
-  local dot = a[1]*b[1] + a[2]*b[2] + a[3]*b[3] + a[4]*b[4]
-  dot = math.abs(dot)
-  if dot > 1 then dot = 1 end
-  return 2 * math.acos(dot)
-end
-
-local function _inputsChanged(lastInputs, inputs)
-  if (not lastInputs) and inputs then return true end
-  if lastInputs and (not inputs) then return true end
-  if not lastInputs and not inputs then return false end
-
-  local function changed(k)
-    local a = tonumber(lastInputs[k] or 0) or 0
-    local b = tonumber(inputs[k] or 0) or 0
-    return math.abs(a - b) > INPUT_SEND_DELTA
-  end
-
-  return changed("steer")
-    or changed("throttle")
-    or changed("brake")
-    or changed("gear")
-    or changed("handbrake")
-end
-
-local function _shouldSendDelta(gameVid, posArr, rotArr, velArr, inputs)
-  local last = M._lastSentState[gameVid]
-  if not last then return true end
-
-  local dx = posArr[1] - last.pos[1]
-  local dy = posArr[2] - last.pos[2]
-  local dz = posArr[3] - last.pos[3]
-  local posDeltaSq = dx*dx + dy*dy + dz*dz
-  if posDeltaSq > POS_SEND_DELTA_SQ then return true end
-
-  local dvx = velArr[1] - last.vel[1]
-  local dvy = velArr[2] - last.vel[2]
-  local dvz = velArr[3] - last.vel[3]
-  local velDeltaSq = dvx*dvx + dvy*dvy + dvz*dvz
-  if velDeltaSq > VEL_SEND_DELTA_SQ then return true end
-
-  local rotDelta = _rotErrorRad(rotArr, last.rot)
-  if rotDelta > ROT_SEND_DELTA_RAD then return true end
-
-  if _inputsChanged(last.inputs, inputs) then return true end
-
-  return false
-end
 
 local function _cacheSentState(gameVid, posArr, rotArr, velArr, inputs, now)
   M._lastSentState[gameVid] = {
@@ -408,34 +351,10 @@ local function _sendLocalVehiclePoses(now)
       local inputs = M._cachedInputs and M._cachedInputs[gameVid] or nil
       local angVel = M._cachedAngVel and M._cachedAngVel[gameVid] or nil
 
-      local forceReason = nil
-      local lastSent = M._lastSentState[gameVid]
-      if lastSent then
-        local forceKeyframeInterval = math.max(0.2, math.min(2.0, _getConfigNumber("forceKeyframeIntervalSec", DEFAULT_FORCE_KEYFRAME_INTERVAL_SEC)))
-        local motionWatchdogSec = math.max(0.2, math.min(3.0, _getConfigNumber("motionWatchdogSec", DEFAULT_MOTION_WATCHDOG_SEC)))
-        local motionWatchdogMinSpeed = math.max(0.0, math.min(20.0, _getConfigNumber("motionWatchdogMinSpeed", DEFAULT_MOTION_WATCHDOG_MIN_SPEED)))
-
-        local sinceLastSent = now - (lastSent.sentAt or 0)
-        if sinceLastSent >= forceKeyframeInterval then
-          forceReason = "keyframe"
-        elseif speed >= motionWatchdogMinSpeed and sinceLastSent >= motionWatchdogSec then
-          forceReason = "watchdog"
-        end
-      end
-
-      if not forceReason and not _shouldSendDelta(gameVid, posArr, rotArr, velArr, inputs) then
-        _udpSkippedUnchangedCount = _udpSkippedUnchangedCount + 1
-        _skipStreakByVehicle[gameVid] = (_skipStreakByVehicle[gameVid] or 0) + 1
-        goto continue_local_vehicle
-      end
-
-      _skipStreakByVehicle[gameVid] = 0
-      if forceReason == "keyframe" then
-        _forcedKeyframeCount = _forcedKeyframeCount + 1
-      elseif forceReason == "watchdog" then
-        _forcedWatchdogCount = _forcedWatchdogCount + 1
-      end
-
+      -- Poses are sent unconditionally at the (adaptive) tick rate — no delta
+      -- suppression. The receiver's packet-timeout/prediction logic depends on
+      -- a steady stream; suppressing "unchanged" poses starves it and stalls
+      -- corrections (BeamMP likewise streams poses at a fixed 50 Hz).
       if udpAvailable then
         local okEncode, dataOrErr = pcall(
           protocol.encodePositionUpdate,

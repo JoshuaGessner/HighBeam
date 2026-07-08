@@ -467,16 +467,46 @@ M.onVEControllerActive = function(gameVid, active, remote)
 end
 
 -- Teleport request coming from VE PD controller when error is too large.
+-- Moves the cluster without a physics reset (setClusterPosRelRot takes the
+-- rotation RELATIVE to the current one) and restores the target linear
+-- velocity in GE, which does not damage the vehicle. Angular velocity cannot
+-- be set from GE, so it is queued back into the vehicle's velocity module.
 M.onVETeleportRequest = function(gameVid, px, py, pz, rx, ry, rz, rw, vx, vy, vz, avx, avy, avz, errDist)
   local veh = be:getObjectByID(gameVid)
-  if veh then
+  if not veh then return end
+
+  local ok = pcall(function()
+    local refId = veh:getRefNodeId()
+    local vehRot = quatFromDir(-veh:getDirectionVector(), veh:getDirectionVectorUp())
+    local relRot = vehRot:inversed() * quat(rx, ry, rz, rw)
+    veh:setClusterPosRelRot(refId, px, py, pz, relRot.x, relRot.y, relRot.z, relRot.w)
+    -- setClusterPosRelRot rotates existing node velocities along with the
+    -- cluster; add the difference to land on the target velocity (scale=1
+    -- keeps the rotated velocity, then adds).
+    local localVel = vec3(veh:getVelocity()):rotated(relRot)
+    veh:applyClusterVelocityScaleAdd(refId, 1,
+      (tonumber(vx) or 0) - localVel.x,
+      (tonumber(vy) or 0) - localVel.y,
+      (tonumber(vz) or 0) - localVel.z)
+  end)
+  if not ok then
+    -- Last-resort fallback: physics-resetting teleport.
     pcall(veh.setPositionRotation, veh, px, py, pz, rx, ry, rz, rw)
-    if config and config.get and config.get("verboseSyncLogging") == true then
-      log('D', logTag, 'VE coherent correction gameVid=' .. tostring(gameVid)
-        .. ' err=' .. string.format('%.3f', tonumber(errDist) or 0)
-        .. ' vel=' .. string.format('%.2f,%.2f,%.2f', tonumber(vx) or 0, tonumber(vy) or 0, tonumber(vz) or 0)
-        .. ' angVel=' .. string.format('%.2f,%.2f,%.2f', tonumber(avx) or 0, tonumber(avy) or 0, tonumber(avz) or 0))
-    end
+  end
+
+  pcall(function()
+    veh:queueLuaCommand(string.format(
+      "local _hb = controller and controller.getController and controller.getController('highbeamVelocityVE') or nil; if _hb and _hb.setAngularVelocity then _hb.setAngularVelocity(%.4f,%.4f,%.4f) end",
+      tonumber(avx) or 0, tonumber(avy) or 0, tonumber(avz) or 0
+    ))
+  end)
+
+  if config and config.get and config.get("verboseSyncLogging") == true then
+    log('D', logTag, 'VE coherent correction gameVid=' .. tostring(gameVid)
+      .. ' cluster=' .. tostring(ok)
+      .. ' err=' .. string.format('%.3f', tonumber(errDist) or 0)
+      .. ' vel=' .. string.format('%.2f,%.2f,%.2f', tonumber(vx) or 0, tonumber(vy) or 0, tonumber(vz) or 0)
+      .. ' angVel=' .. string.format('%.2f,%.2f,%.2f', tonumber(avx) or 0, tonumber(avy) or 0, tonumber(avz) or 0))
   end
 end
 

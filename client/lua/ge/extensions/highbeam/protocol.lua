@@ -181,6 +181,15 @@ M.decodePositionUpdate = function(data)
     result.rot = { r1/rlen, r2/rlen, r3/rlen, r4/rlen }
   end
 
+  -- Decode angular velocity on a legacy 0x10 packet (sent when inputs were
+  -- unavailable on the sender but angular velocity was not).
+  if typeByte == 0x10 and #data >= (o + 12) then
+    local avx = read_f32_le(data, o); o = o + 4
+    local avy = read_f32_le(data, o); o = o + 4
+    local avz = read_f32_le(data, o); o = o + 4
+    result.angVel = { avx, avy, avz }
+  end
+
   -- Decode inputs if present.
   if typeByte == 0x11 and #data >= 71 then
     local iSteer = read_u16_le(data, o); o = o + 2

@@ -38,18 +38,12 @@ function M.onInit()
     return
   end
   initialized = true
-  -- Use one native BeamNG physics-step hook on the coordinator, then dispatch
-  -- to child HighBeam controllers explicitly. Controller-loaded children do not
-  -- receive native onPhysicsStep callbacks reliably in all runtime paths.
-  if enablePhysicsStepHook then
-    enablePhysicsStepHook()
-  end
   if obj and obj.queueGameEngineLua then
     obj:queueGameEngineLua(string.format(
       "extensions.highbeam.onVEControllerInit(%d,%q,%s)",
       gameVehicleId,
       "highbeamVE",
-      tostring(enablePhysicsStepHook ~= nil)
+      "false"
     ))
   end
 end
@@ -118,27 +112,6 @@ function M.onBeamBroke(beamId, energy)
   end
 end
 
-function M.onPhysicsStep(dtSim)
-  -- Coordinator owns the single native physics-step hook (enabled in onInit via
-  -- enablePhysicsStepHook). Dispatch the REAL dtSim to the child controllers so
-  -- remote correction forces integrate over the genuine physics step. The
-  -- velocity module is fed first so its physicsFps (1/dtSim) is current before
-  -- the position module applies this step's stored correction.
-  if not isActive then return end
-  local d = dtSim or 0
-  if d <= 0 then return end
-
-  local velVE = _getController("highbeamVelocityVE")
-  if velVE and velVE.onHighBeamPhysicsStep then
-    pcall(velVE.onHighBeamPhysicsStep, d)
-  end
-
-  local posVE = _getController("highbeamPositionVE")
-  if posVE and posVE.onHighBeamPhysicsStep then
-    pcall(posVE.onHighBeamPhysicsStep, d)
-  end
-end
-
 function M.updateGFX(dt)
   if not isActive or isRemote then return end
 
@@ -175,10 +148,16 @@ function M.updateGFX(dt)
   local gear = e.gear_A or 0
   local handbrake = e.parkingbrake_input or e.parkingbrake or 0
 
+  -- World-frame angular velocity: the physics core exposes pitch/roll/yaw
+  -- rates in the vehicle's local frame; rotate them by the vehicle rotation.
+  -- (obj:getClusterAngularVelocity does not exist in BeamNG vlua.)
   local avx, avy, avz = 0, 0, 0
-  if obj.getClusterAngularVelocity then
-    local ok, angVel = pcall(obj.getClusterAngularVelocity, obj)
-    if ok and angVel then
+  if obj.getPitchAngularVelocity and obj.getRollAngularVelocity and obj.getYawAngularVelocity then
+    local okAV, angVel = pcall(function()
+      return vec3(obj:getPitchAngularVelocity(), obj:getRollAngularVelocity(), obj:getYawAngularVelocity())
+        :rotated(rot)
+    end)
+    if okAV and angVel then
       avx, avy, avz = angVel.x or 0, angVel.y or 0, angVel.z or 0
     end
   end

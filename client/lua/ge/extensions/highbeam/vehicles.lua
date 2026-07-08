@@ -753,7 +753,11 @@ M.resetRemote = function(playerId, vehicleId, data)
         .. ' source=reset')
     end
     if rv._hasVE and rv.gameVehicle then
-      _queueVeLuaCommand(rv.gameVehicle, 'extensions.hook("onHighBeamRemoteReset")', "reset_hook")
+      -- positionVE is a controller, not a vlua extension — extensions.hook()
+      -- would never reach it; call it through the controller registry.
+      _queueVeLuaCommand(rv.gameVehicle,
+        "local _hb=controller and controller.getController and controller.getController('highbeamPositionVE') or nil; if _hb and _hb.onHighBeamRemoteReset then _hb.onHighBeamRemoteReset() end",
+        "reset_hook")
     end
     local okPos = pcall(function()
       veh:setPositionRotation(
@@ -828,18 +832,6 @@ M.applyDamage = function(playerId, vehicleId, damageData)
   end
 
   local commandsQueued = 0
-
-  -- Apply beam deformation data via queueLuaCommand
-  if dmg.deformGroup then
-    local ok = pcall(function()
-      veh:queueLuaCommand('obj:applyClusterVelocityScaleAdd(' .. tostring(dmg.deformGroup) .. ', 0, 0, 0, ' .. tostring(dmg.deformScale or 1) .. ')')
-    end)
-    if ok then
-      commandsQueued = commandsQueued + 1
-    else
-      _bumpApplyStat("damage_error_deform_group")
-    end
-  end
 
   -- Apply beam breaks (sender field name is 'broken')
   if dmg.broken then
