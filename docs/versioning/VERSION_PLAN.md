@@ -1,8 +1,8 @@
 # HighBeam Version Plan
 
-> **Last updated:** 2026-06-03
+> **Last updated:** 2026-07-08
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.2-dev.48 (protocol v2)
+> **Current version:** v0.8.2-dev.49 (protocol v2)
 > **Status:** v0.8.1 released | v0.8.2 in development
 
 ---
@@ -1202,6 +1202,16 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.2-dev.49 - 2026-07-08 (draft)
+- **Fix remote vehicle sync — correction forces were never applied.** `obj:applyClusterLinearAngularAccel` requires the cluster reference node id as its first argument; the old calls omitted it and the failure was swallowed by `pcall`, so remote vehicles received zero forces and only ever hard-teleported. `highbeamVelocityVE` rewritten on the BeamMP/NGMP-verified model: refNode cluster call, per-node forces scaled by the real `obj:getPhysicsFPS()`, vehicle-local COG (`cogRel`) re-rotated at apply time, and the `r × ω` tangential formula matching BeamNG's angular-velocity conventions.
+- **Apply corrections once per render frame with dt-scaled velocity deltas** (BeamMP-proven gains: pos 5/5/cap 100 m/s², rot 7/7/cap 50 rad/s²). Removed the dead per-physics-step path (controllers never receive `onPhysicsStep`; that hook only reaches vlua extensions) and its 1/120 fixed-step fallback whose force scaling was ~16x too weak.
+- **Teleports no longer physics-reset the vehicle:** GE hard corrections now use `setClusterPosRelRot` (relative rotation) + `applyClusterVelocityScaleAdd` to preserve/restore velocity, with angular velocity queued back into the VE module; `setPositionRotation` remains only as a fallback.
+- **Sender now transmits real angular velocity** via `getPitch/Roll/YawAngularVelocity` rotated to world (`obj:getClusterAngularVelocity` does not exist and always yielded zeros).
+- **Pose stream is now unconditional** at the adaptive 24–60 Hz rate — delta suppression removed so the receiver's packet-timeout/prediction logic is never starved (BeamMP parity).
+- Protocol: `0x10` packets now decode the optional trailing angular velocity block (encode/relay/decode round-trip covered by a test harness).
+- Removed a broken `deformGroup` damage apply that misused `applyClusterVelocityScaleAdd`, and fixed the remote-reset hook to dispatch through the controller registry instead of `extensions.hook`.
+- Server and launcher versions bumped to `0.8.2-dev.49`; protocol remains `v2`.
 
 ### v0.8.2-dev.48 - 2026-06-03 (draft)
 - Synced local `main` with `origin/main` to include latest merged sync hardening and browser updates before cutting this iteration.
