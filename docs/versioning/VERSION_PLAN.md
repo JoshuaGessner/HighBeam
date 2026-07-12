@@ -1,8 +1,8 @@
 # HighBeam Version Plan
 
-> **Last updated:** 2026-07-08
+> **Last updated:** 2026-07-11
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.2-dev.49 (protocol v2)
+> **Current version:** v0.8.2-dev.50 (protocol v2)
 > **Status:** v0.8.1 released | v0.8.2 in development
 
 ---
@@ -1202,6 +1202,33 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.2-dev.50 - 2026-07-11 (draft)
+- **Keep the remote-vehicle simulation alive.** Remote puppets stopped
+  simulating until a reset because their in-vehicle Lua VM died shortly after
+  spawn — the engine crashed on synced electrics and the soft-body detonated
+  under a bulk damage dump. Once the VE died, heartbeats stopped and every pose
+  update was dropped, so only GE-side resets moved the car.
+- **Electrics deny-list expanded** to cover every locally simulated
+  engine/drivetrain/physics output (`engineRunning`, `throttleFactor`,
+  `throttleOverride`, `clutchRatio*`, `exhaustFlow`, `radiatorFanSpin`, `boost`,
+  `abs`/`tcs`/`esc`, `disp_*`, `driveshaft_F/R`, …). The puppet regenerates
+  these from synced inputs, so writing or nulling them corrupted the running sim
+  and triggered `combustionEngine` "attempt to compare number with nil".
+  Over-blocking simulation outputs is safe; lighting/signal keys still replicate.
+- **Damage applied incrementally:** break only newly-broken beams (tracked per
+  vehicle) instead of re-dumping the full break set every packet, and defer
+  damage until the puppet settles after spawn — fixes the "Instability detected"
+  blowups. The applied-beam cache clears on repair-reset and respawn.
+- **Input smoothing uses the real elapsed time** between packets (clamped)
+  instead of a fixed `1/60`, so animation rate is independent of packet cadence
+  and framerate.
+- Cleanup: removed the now-dead skip-unchanged pose caching + forced-keyframe
+  machinery (the pose stream is already unconditional), the dead
+  `vePos*/veRot*/veMax*/veTeleport*` config keys (VE gains are compile-time
+  constants in the vehicle VM and never read GE-side config), and the unused
+  launcher `resolve_userfolder`.
+- Server and launcher versions bumped to `0.8.2-dev.50`; protocol remains `v2`.
 
 ### v0.8.2-dev.49 - 2026-07-08 (draft)
 - **Fix remote vehicle sync — correction forces were never applied.** `obj:applyClusterLinearAngularAccel` requires the cluster reference node id as its first argument; the old calls omitted it and the failure was swallowed by `pcall`, so remote vehicles received zero forces and only ever hard-teleported. `highbeamVelocityVE` rewritten on the BeamMP/NGMP-verified model: refNode cluster call, per-node forces scaled by the real `obj:getPhysicsFPS()`, vehicle-local COG (`cogRel`) re-rotated at apply time, and the `r × ω` tangential formula matching BeamNG's angular-velocity conventions.
