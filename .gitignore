@@ -21,6 +21,10 @@ Desktop.ini
 client/build/
 *.zip.bak
 
+# Launcher client payload — generated from client/ by launcher/build.rs on every
+# build (see build_payload_zip). Never commit; a checked-in copy only goes stale.
+launcher/payload/highbeam.zip
+
 # Server runtime files
 server.log
 ServerConfig.toml
@@ -48,3 +52,36 @@ docs/reference/BEAMMP_RESEARCH.md
 .env
 .env.local
 docs/SYNC_IMPROVEMENT_PLAN.md
+VAULT/HighBeam/2026-05-31.md
+VAULT/HighBeam/HighBeam Knowledge Map.canvas
+VAULT/HighBeam/Untitled 1.canvas
+VAULT/HighBeam/Untitled.base
+VAULT/HighBeam/Untitled.canvas
+VAULT/HighBeam/Welcome.md
+VAULT/HighBeam/.obsidian/app.json
+VAULT/HighBeam/.obsidian/appearance.json
+VAULT/HighBeam/.obsidian/core-plugins.json
+VAULT/HighBeam/.obsidian/graph.json
+VAULT/HighBeam/.obsidian/workspace.json
+VAULT/HighBeam/Components/Client Mod.md
+VAULT/HighBeam/Components/Client Sync Internals.md
+VAULT/HighBeam/Components/Discovery Mesh.md
+VAULT/HighBeam/Components/In-Game UI.md
+VAULT/HighBeam/Components/Launcher Join and Mod Sync.md
+VAULT/HighBeam/Components/Launcher.md
+VAULT/HighBeam/Components/Server Networking.md
+VAULT/HighBeam/Components/Server Plugins.md
+VAULT/HighBeam/Components/Server.md
+VAULT/HighBeam/Components/Vehicle Controllers.md
+VAULT/HighBeam/Flows/Protocol Map.md
+VAULT/HighBeam/Flows/Runtime Flows.md
+VAULT/HighBeam/Flows/Vehicle Sync Pipeline.md
+VAULT/HighBeam/Maps/Codebase Structure.md
+VAULT/HighBeam/Maps/HighBeam Knowledge Map.md
+VAULT/HighBeam/Reference/Build Release Deployment.md
+VAULT/HighBeam/Reference/Change Risk Map.md
+VAULT/HighBeam/Reference/Configuration Surface.md
+VAULT/HighBeam/Reference/Debugging Guide.md
+VAULT/HighBeam/Reference/Development Playbook.md
+VAULT/HighBeam/Reference/Glossary.md
+VAULT/HighBeam/Reference/Task Routing Guide.md

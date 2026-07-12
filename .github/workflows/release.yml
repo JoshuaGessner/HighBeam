@@ -93,13 +93,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Rebuild launcher payload zip from client sources
+      - name: Validate launcher Cargo version matches release tag
         shell: pwsh
         run: |
-          Remove-Item -Force "launcher/payload/highbeam.zip" -ErrorAction SilentlyContinue
-          Push-Location client
-          Compress-Archive -Path scripts, lua, ui -DestinationPath ../launcher/payload/highbeam.zip
-          Pop-Location
+          $tagVersion = "${{ github.ref_name }}".TrimStart('v')
+          $match = Select-String -Path "launcher/Cargo.toml" -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1
+          if (-not $match) {
+            throw "Could not read launcher version from launcher/Cargo.toml"
+          }
+          $cargoVersion = $match.Matches[0].Groups[1].Value
+          if ($tagVersion -ne $cargoVersion) {
+            throw "Release tag version ($tagVersion) does not match launcher Cargo version ($cargoVersion)."
+          }
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      # launcher/build.rs packages client/{scripts,lua,ui} into
+      # launcher/payload/highbeam.zip during the build, so the payload is always
+      # rebuilt fresh from source (it is intentionally not committed).
+      - name: Build release binary
+        working-directory: launcher
+        run: cargo build --release --target x86_64-pc-windows-msvc
 
       - name: Validate launcher payload contains required VE files
         shell: pwsh
@@ -107,7 +124,7 @@ jobs:
           Add-Type -AssemblyName System.IO.Compression.FileSystem
           $zipPath = "launcher/payload/highbeam.zip"
           if (-not (Test-Path $zipPath)) {
-            throw "Payload zip missing: $zipPath"
+            throw "Payload zip missing (build.rs did not generate it): $zipPath"
           }
           $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $zipPath))
           try {
@@ -138,28 +155,6 @@ jobs:
           } finally {
             $zip.Dispose()
           }
-
-      - name: Validate launcher Cargo version matches release tag
-        shell: pwsh
-        run: |
-          $tagVersion = "${{ github.ref_name }}".TrimStart('v')
-          $match = Select-String -Path "launcher/Cargo.toml" -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1
-          if (-not $match) {
-            throw "Could not read launcher version from launcher/Cargo.toml"
-          }
-          $cargoVersion = $match.Matches[0].Groups[1].Value
-          if ($tagVersion -ne $cargoVersion) {
-            throw "Release tag version ($tagVersion) does not match launcher Cargo version ($cargoVersion)."
-          }
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-msvc
-
-      - name: Build release binary
-        working-directory: launcher
-        run: cargo build --release --target x86_64-pc-windows-msvc
 
       - name: Package
         shell: pwsh
