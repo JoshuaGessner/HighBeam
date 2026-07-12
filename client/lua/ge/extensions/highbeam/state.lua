@@ -34,10 +34,8 @@ M._cachedVluaRot = {} -- [gameVehicleId] = {x, y, z, w} rotation from vlua physi
 M._cachedVluaRotTime = {} -- [gameVehicleId] = os.clock timestamp for cached rotation
 M._cachedAngVel = {}  -- [gameVehicleId] = {x, y, z} angular velocity (rad/s) from quat delta
 M._damageDirty = {}   -- P3.2: [gameVehicleId] = true when damage event fires
-M._lastSentState = {} -- [gameVehicleId] = {pos={x,y,z}, rot={x,y,z,w}, vel={x,y,z}, inputs={...}, sentAt=time}
 M._debugStats = {
   sendRateHz = 20,
-  skippedUnchanged = 0,
   sentPackets = 0,
   avgSendSpeed = 0,
 }
@@ -50,7 +48,6 @@ local _udpSentCount = 0
 local _udpEncodeErrorCount = 0
 local _udpSendErrorCount = 0
 local _udpSkipNoSessionHashCount = 0
-local _udpSkippedUnchangedCount = 0
 local _udpSkipMissingVeCount = 0
 local _udpSkipStaleVeCount = 0
 local _sendSpeedAccum = 0
@@ -76,14 +73,10 @@ local _damageFallbackCursor = 0
 local _tcpPoseSentCount = 0
 local _tcpPoseSendErrorCount = 0
 local _lastTcpPoseSentAt = {}
-local _forcedKeyframeCount = 0
-local _forcedWatchdogCount = 0
 local _missingSessionHashLogged = false
 local _veZeroGameVidCount = 0
 local _veUnmappedDataCount = 0
 local _veFirstDataLogged = {}
-local _skipStreakByVehicle = {}
-local _udpBindWasConfirmed = false  -- tracks bind flip for keyframe burst
 local _playerVehicleReconcileTimer = 0
 local _playerVehicleReconcileCount = 0
 local _playerVehicleReconcileDeleteCount = 0
@@ -91,22 +84,6 @@ local _playerVehicleReconcileDeleteCount = 0
 local ABSOLUTE_SEND_RATE_CAP = 60
 local DEFAULT_TCP_POSE_FALLBACK_INTERVAL_SEC = 0.2
 local DEFAULT_LOCAL_VEHICLE_RECONCILE_SEC = 1.0
-
-local function _cacheSentState(gameVid, posArr, rotArr, velArr, inputs, now)
-  M._lastSentState[gameVid] = {
-    pos = { posArr[1], posArr[2], posArr[3] },
-    rot = { rotArr[1], rotArr[2], rotArr[3], rotArr[4] },
-    vel = { velArr[1], velArr[2], velArr[3] },
-    inputs = inputs and {
-      steer = inputs.steer or 0,
-      throttle = inputs.throttle or 0,
-      brake = inputs.brake or 0,
-      gear = inputs.gear or 0,
-      handbrake = inputs.handbrake or 0,
-    } or nil,
-    sentAt = now,
-  }
-end
 
 local function _countPendingSpawns()
   local count = 0
@@ -293,15 +270,6 @@ local function _computePoseUpdateRate()
   return updateRate
 end
 
-local function _forceKeyframesAfterUdpBind()
-  -- When UDP bind just confirmed, clear cached state to force immediate keyframes
-  if connection and connection._udpBindConfirmed == true and not _udpBindWasConfirmed then
-    _udpBindWasConfirmed = true
-    M._lastSentState = {}
-    log('I', logTag, 'UDP bind confirmed — forcing position keyframes for all local vehicles')
-  end
-end
-
 local function _sendLocalVehiclePoses(now)
   local sessionHash = connection.getSessionHash()
   local udpAvailable = type(sessionHash) == "string" and #sessionHash == 16
@@ -386,7 +354,6 @@ local function _sendLocalVehiclePoses(now)
             _udpSentCount = _udpSentCount + 1
             _sendSpeedAccum = _sendSpeedAccum + speed
             _sendSpeedSamples = _sendSpeedSamples + 1
-            _cacheSentState(gameVid, posArr, rotArr, velArr, inputs, now)
             if _verboseSyncLoggingEnabled() then
               local queueAge = now - (_veLastDataAt[gameVid] or now)
               _veQueueAgeAccum = _veQueueAgeAccum + queueAge
@@ -460,14 +427,11 @@ local function _logAndResetSyncStats(updateRate, dt)
       'Sync stats locals=' .. tostring(_countLocalVehicles())
       .. ' pendingSpawns=' .. tostring(_countPendingSpawns())
       .. ' udpSent=' .. tostring(_udpSentCount)
-      .. ' udpSkippedUnchanged=' .. tostring(_udpSkippedUnchangedCount)
       .. ' udpSkipMissingVE=' .. tostring(_udpSkipMissingVeCount)
       .. ' udpSkipStaleVE=' .. tostring(_udpSkipStaleVeCount)
       .. ' udpSkipNoHash=' .. tostring(_udpSkipNoSessionHashCount)
       .. ' udpEncodeErr=' .. tostring(_udpEncodeErrorCount)
       .. ' udpSendErr=' .. tostring(_udpSendErrorCount)
-      .. ' udpForcedKeyframe=' .. tostring(_forcedKeyframeCount)
-      .. ' udpForcedWatchdog=' .. tostring(_forcedWatchdogCount)
       .. ' tcpPoseSent=' .. tostring(_tcpPoseSentCount)
       .. ' tcpPoseErr=' .. tostring(_tcpPoseSendErrorCount)
       .. ' veZeroGameVid=' .. tostring(_veZeroGameVidCount)
@@ -490,19 +454,15 @@ local function _logAndResetSyncStats(updateRate, dt)
     )
     M._debugStats = {
       sendRateHz = updateRate,
-      skippedUnchanged = _udpSkippedUnchangedCount,
       sentPackets = _udpSentCount,
       avgSendSpeed = _sendSpeedSamples > 0 and (_sendSpeedAccum / _sendSpeedSamples) or 0,
     }
     _udpSentCount = 0
-    _udpSkippedUnchangedCount = 0
     _udpSkipMissingVeCount = 0
     _udpSkipStaleVeCount = 0
     _udpSkipNoSessionHashCount = 0
     _udpEncodeErrorCount = 0
     _udpSendErrorCount = 0
-    _forcedKeyframeCount = 0
-    _forcedWatchdogCount = 0
     _playerVehicleReconcileCount = 0
     _playerVehicleReconcileDeleteCount = 0
     _sendSpeedAccum = 0
@@ -605,7 +565,6 @@ M.tick = function(dt)
   _reconcileLocalVehicleIfDue(dt)
 
   local updateRate = _computePoseUpdateRate()
-  _forceKeyframesAfterUdpBind()
 
   local updateInterval = 1.0 / updateRate
   sendTimer = sendTimer + dt
@@ -1227,14 +1186,11 @@ M.onDisconnect = function()
   M._cachedVluaRot = {}
   M._cachedVluaRotTime = {}
   M._cachedAngVel = {}
-  M._lastSentState = {}
   M._damageDirty = {}
   M._damageFullTimer = 0
   _lastUdpErrorLogAt = -math.huge
-  _udpBindWasConfirmed = false
   _diagLogTimer = 0
   _udpSentCount = 0
-  _udpSkippedUnchangedCount = 0
   _udpSkipMissingVeCount = 0
   _udpSkipStaleVeCount = 0
   _udpSkipNoSessionHashCount = 0

@@ -70,6 +70,17 @@ local function _isStabilizing(rv)
   return rv and rv._stabilizeUntil and os.clock() < rv._stabilizeUntil
 end
 
+-- A freshly spawned puppet needs a moment for its soft-body to settle before we
+-- start breaking beams. Dropping a large bulk of beam breaks onto an unsettled
+-- structure detonates it ("Instability detected"). We defer damage until the VE
+-- is confirmed alive and a short settle window has elapsed since it became ready.
+local DAMAGE_SETTLE_SEC = 2.0
+local function _isSettling(rv)
+  if not rv then return false end
+  if not rv._hasVE or not rv._veReadyAt then return true end
+  return (os.clock() - rv._veReadyAt) < DAMAGE_SETTLE_SEC
+end
+
 local function _applyDeferredAfterStabilize(rv, key)
   if not rv or _isStabilizing(rv) then return end
   if rv._pendingPowertrainData then
@@ -123,6 +134,7 @@ local function _respawnRemoteVehicle(rv, key, reason)
   rv._componentQueueLen = 0
   rv._pendingDamageData = nil
   rv._pendingPowertrainData = nil
+  rv._appliedBrokenBeams = nil
   rv._stabilizeUntil = nil
 
   local vid, vehObj, spawnErr = _spawnGameVehicle(rv.spawnSpec)
@@ -791,6 +803,11 @@ M.resetRemote = function(playerId, vehicleId, data)
   rv.snapshots = {}
   rv.lastSeqTime = -1
 
+  -- A reset repairs the vehicle to a pristine structure (that is why we
+  -- re-apply the last damage payload below). Drop the applied-beam cache so the
+  -- persisted damage actually re-breaks the now-intact beams.
+  rv._appliedBrokenBeams = nil
+
   -- Keep damage persistent across resets by re-applying last known damage payload.
   local persistDamage = config and config.get and config.get("persistRemoteDamageOnReset")
   if persistDamage ~= false and rv._lastDamageData and rv._lastDamageData ~= '' then
@@ -802,6 +819,27 @@ M.resetRemote = function(playerId, vehicleId, data)
   log('D', logTag, 'Reset remote vehicle: ' .. key
     .. ' burst=' .. tostring(burstCount)
     .. ' stabilizeUntil=' .. string.format('%.2f', rv._stabilizeUntil or 0))
+end
+
+-- Remote component payloads are peer-controlled JSON relayed verbatim by the
+-- server. Any value interpolated into a queueLuaCommand string MUST be coerced
+-- to a validated number first — a raw string field would otherwise execute as
+-- Lua in the vehicle context (and vehicle Lua can escalate to GE Lua). These
+-- helpers return a safe literal or nil; callers skip the entry on nil.
+local function _safeInt(v)
+  local n = tonumber(v)
+  if not n then return nil end
+  -- Reject NaN/inf and non-integral values (node/beam ids are integers).
+  if n ~= n or n == math.huge or n == -math.huge then return nil end
+  n = math.floor(n + 0.5)
+  return string.format("%d", n)
+end
+
+local function _safeNum(v)
+  local n = tonumber(v)
+  if not n then return nil end
+  if n ~= n or n == math.huge or n == -math.huge then return nil end
+  return string.format("%.6g", n)
 end
 
 -- Apply damage data to a remote vehicle
@@ -825,6 +863,15 @@ M.applyDamage = function(playerId, vehicleId, damageData)
     return
   end
 
+  if _isSettling(rv) then
+    rv._pendingDamageData = damageData
+    _bumpApplyStat("damage_deferred_settling")
+    if _verboseSyncLoggingEnabled() then
+      log('D', logTag, 'damage deferred until puppet settles key=' .. key)
+    end
+    return
+  end
+
   local dmg = _decodeJson(damageData)
   if not dmg then
     _bumpApplyStat("damage_drop_decode")
@@ -833,12 +880,24 @@ M.applyDamage = function(playerId, vehicleId, damageData)
 
   local commandsQueued = 0
 
-  -- Apply beam breaks (sender field name is 'broken')
+  -- Apply beam breaks (sender field name is 'broken').
+  -- The sender transmits its full broken-beam set every packet. Re-issuing a
+  -- breakBeam for beams we already broke re-dumps the entire set (e.g. 861
+  -- beams) each frame — pointless churn that also perturbs the structure. Track
+  -- what we have already applied and only break beams that are newly broken, so
+  -- damage is applied incrementally like BeamMP. The cache is cleared whenever
+  -- the puppet is repaired (reset) or respawned.
   if dmg.broken then
+    rv._appliedBrokenBeams = rv._appliedBrokenBeams or {}
+    local applied = rv._appliedBrokenBeams
     local ok = pcall(function()
       for _, beamId in ipairs(dmg.broken) do
-        veh:queueLuaCommand('obj:breakBeam(' .. tostring(beamId) .. ')')
-        commandsQueued = commandsQueued + 1
+        local id = _safeInt(beamId)
+        if id and not applied[id] then
+          applied[id] = true
+          veh:queueLuaCommand('obj:breakBeam(' .. id .. ')')
+          commandsQueued = commandsQueued + 1
+        end
       end
     end)
     if not ok then
@@ -872,11 +931,14 @@ M.applyDamage = function(playerId, vehicleId, damageData)
   if dmg.deform then
     local ok = pcall(function()
       for beamIdStr, val in pairs(dmg.deform) do
-        local cid = tostring(beamIdStr)
-        if type(val) == 'table' and val[2] then
+        local cid = _safeInt(beamIdStr)
+        if cid and type(val) == 'table' and val[2] then
           -- New format: {deformation, restLength}
-          veh:queueLuaCommand('obj:setBeamLength(' .. cid .. ', ' .. tostring(val[2]) .. ')')
-          commandsQueued = commandsQueued + 1
+          local restLen = _safeNum(val[2])
+          if restLen then
+            veh:queueLuaCommand('obj:setBeamLength(' .. cid .. ', ' .. restLen .. ')')
+            commandsQueued = commandsQueued + 1
+          end
         end
       end
     end)
@@ -890,10 +952,13 @@ M.applyDamage = function(playerId, vehicleId, damageData)
     local ok = pcall(function()
       for nodeIdStr, pos in pairs(dmg.nodes) do
         if type(pos) == 'table' and #pos >= 3 then
-          local nid = tostring(nodeIdStr)
-          veh:queueLuaCommand('obj:setNodePosition(' .. nid
-            .. ', float3(' .. tostring(pos[1]) .. ',' .. tostring(pos[2]) .. ',' .. tostring(pos[3]) .. '))')
-          commandsQueued = commandsQueued + 1
+          local nid = _safeInt(nodeIdStr)
+          local x, y, z = _safeNum(pos[1]), _safeNum(pos[2]), _safeNum(pos[3])
+          if nid and x and y and z then
+            veh:queueLuaCommand('obj:setNodePosition(' .. nid
+              .. ', float3(' .. x .. ',' .. y .. ',' .. z .. '))')
+            commandsQueued = commandsQueued + 1
+          end
         end
       end
     end)
@@ -942,50 +1007,38 @@ M.applyElectrics = function(playerId, vehicleId, electricsData)
 
   -- Apply electrics via vehicle-side Lua
   -- P4.3: Added gear and parking brake
+  -- SECURITY: every value below is peer-controlled JSON. Coerce each through
+  -- _safeNum so a crafted string field can never be interpolated as Lua into
+  -- the queued vehicle command. gear_A is intentionally omitted (writing raw
+  -- gear values to electrics causes a desiredGearRatio nil crash in
+  -- automaticGearbox); gear flows only through the validated _applyGear path.
+  -- ignitionLevel is handled exclusively by powertrainVE.
+  local ELECTRICS_TARGETS = {
+    { field = "lights", target = "lights_state" },
+    { field = "signal_L", target = "signal_L" },
+    { field = "signal_R", target = "signal_R" },
+    { field = "hazard", target = "hazard_enabled" },
+    { field = "horn", target = "horn" },
+    { field = "headlights", target = "lowbeam" },
+    { field = "highbeams", target = "highbeam" },
+    { field = "parkingbrake", target = "parkingbrake" },
+    { field = "steering", target = "steering_input" },
+    { field = "steering", target = "steering" },
+    { field = "rpm", target = "rpm" },
+    { field = "wheelspeed", target = "wheelspeed" },
+    { field = "clutch", target = "clutch" },
+  }
   local commandCount = 0
   local ok = pcall(function()
     local cmds = {}
-    if elec.lights ~= nil then
-      table.insert(cmds, 'electrics.values.lights_state = ' .. tostring(elec.lights))
+    for _, entry in ipairs(ELECTRICS_TARGETS) do
+      if elec[entry.field] ~= nil then
+        local num = _safeNum(elec[entry.field])
+        if num then
+          table.insert(cmds, 'electrics.values.' .. entry.target .. ' = ' .. num)
+        end
+      end
     end
-    if elec.signal_L ~= nil then
-      table.insert(cmds, 'electrics.values.signal_L = ' .. tostring(elec.signal_L))
-    end
-    if elec.signal_R ~= nil then
-      table.insert(cmds, 'electrics.values.signal_R = ' .. tostring(elec.signal_R))
-    end
-    if elec.hazard ~= nil then
-      table.insert(cmds, 'electrics.values.hazard_enabled = ' .. tostring(elec.hazard))
-    end
-    if elec.horn ~= nil then
-      table.insert(cmds, 'electrics.values.horn = ' .. tostring(elec.horn))
-    end
-    if elec.headlights ~= nil then
-      table.insert(cmds, 'electrics.values.lowbeam = ' .. tostring(elec.headlights))
-    end
-    if elec.highbeams ~= nil then
-      table.insert(cmds, 'electrics.values.highbeam = ' .. tostring(elec.highbeams))
-    end
-    -- gear_A intentionally omitted: writing raw gear values to electrics causes
-    -- desiredGearRatio nil crash in automaticGearbox.  Gear state flows only
-    -- through the validated _applyGear path in highbeamInputsVE.
-    if elec.parkingbrake ~= nil then
-      table.insert(cmds, 'electrics.values.parkingbrake = ' .. tostring(elec.parkingbrake))
-    end
-    if elec.steering ~= nil then
-      table.insert(cmds, 'electrics.values.steering_input = ' .. tostring(elec.steering))
-      table.insert(cmds, 'electrics.values.steering = ' .. tostring(elec.steering))
-    end
-    if elec.rpm ~= nil then
-      table.insert(cmds, 'electrics.values.rpm = ' .. tostring(elec.rpm))
-    end
-    if elec.wheelspeed ~= nil then
-      table.insert(cmds, 'electrics.values.wheelspeed = ' .. tostring(elec.wheelspeed))
-    end
-    if elec.clutch ~= nil then
-      table.insert(cmds, 'electrics.values.clutch = ' .. tostring(elec.clutch))
-    end
-    -- ignitionLevel is handled exclusively by powertrainVE.
     if #cmds > 0 then
       commandCount = #cmds
       veh:queueLuaCommand(table.concat(cmds, ' '))
@@ -1134,13 +1187,15 @@ M.applyCoupling = function(playerId, vehicleId, targetVehicleId, coupled, nodeId
     return
   end
 
+  -- BeamNG's public beamstate API exposes auto-coupling (attach any couplers
+  -- currently within range) and detachCouplers (release all), matching BeamMP.
+  -- There is no by-node-id attach in vehicle Lua, so node_id/target_node_id
+  -- cannot be honored precisely; the local physics simulation resolves which
+  -- couplers actually engage. (The previous beamstate.attachCouplerByNodeId /
+  -- beamstate.detachCoupler calls did not exist and silently failed.)
   if coupled then
     local ok = pcall(function()
-      sourceVeh:queueLuaCommand(
-        'beamstate.attachCouplerByNodeId(' .. tostring(nodeId or 0) .. ', '
-        .. tostring(targetRv.gameVehicleId) .. ', '
-        .. tostring(targetNodeId or 0) .. ')'
-      )
+      sourceVeh:queueLuaCommand('if beamstate and beamstate.activateAutoCoupling then beamstate.activateAutoCoupling() end')
     end)
     if ok then
       _bumpApplyStat("coupling_applied")
@@ -1150,7 +1205,7 @@ M.applyCoupling = function(playerId, vehicleId, targetVehicleId, coupled, nodeId
     log('D', logTag, 'Applied coupling: ' .. tostring(sourceRv.gameVehicleId) .. ' -> ' .. tostring(targetRv.gameVehicleId))
   else
     local ok = pcall(function()
-      sourceVeh:queueLuaCommand('beamstate.detachCoupler(' .. tostring(nodeId or 0) .. ')')
+      sourceVeh:queueLuaCommand('if beamstate then if beamstate.disableAutoCoupling then beamstate.disableAutoCoupling() end if beamstate.detachCouplers then beamstate.detachCouplers() end end')
     end)
     if ok then
       _bumpApplyStat("coupling_applied")

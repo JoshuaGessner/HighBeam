@@ -209,8 +209,7 @@ M.render = function()
       _im.Text("  Corrections: " .. tostring(stats.correctionCount or 0)
         .. "  Teleports: " .. tostring(stats.teleportCount or 0))
       _im.Text("  SendRate: " .. tostring(stateStats.sendRateHz or 0) .. " Hz"
-        .. "  Sent: " .. tostring(stateStats.sentPackets or 0)
-        .. "  Skipped: " .. tostring(stateStats.skippedUnchanged or 0))
+        .. "  Sent: " .. tostring(stateStats.sentPackets or 0))
       _im.Text("  AvgSendSpeed: " .. string.format("%.2f", stateStats.avgSendSpeed or 0) .. " m/s")
       _im.Text("  UDP RxRate: " .. tostring(conn._udpRxRateHz or 0) .. " pkt/s"
         .. "  TotalRx: " .. tostring(conn._udpRxCount or 0))

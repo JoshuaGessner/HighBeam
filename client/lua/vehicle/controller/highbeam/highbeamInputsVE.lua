@@ -21,6 +21,12 @@ local smoothing = { s = 0, t = 0, b = 0, p = 0, c = 0 }
 local SMOOTH_RATE = 30
 local SNAP_THRESHOLD = 0.2
 local LIMIT_SNAP = 0.05
+-- applyInputs runs per received input packet (remote updateGFX early-returns),
+-- so the smoothing timestep is the real wall-clock gap between packets rather
+-- than a fixed frame time. Clamp it to stay stable across jitter and long gaps.
+local _lastApplyAt = nil
+local APPLY_DT_MIN = 0.005
+local APPLY_DT_MAX = 0.1
 
 local INPUT_NAMES = { "steering", "throttle", "brake", "parkingbrake", "clutch" }
 local _diag = {
@@ -320,6 +326,12 @@ function M.applyInputs(data)
   local now = os.clock()
   local ready = (now - activationTime) >= READINESS_DELAY_SEC
 
+  -- Real elapsed time since the last applied input packet, used as the
+  -- smoothing timestep so the animation rate is independent of packet cadence
+  -- and framerate. Clamped to stay stable across jitter and long gaps.
+  local applyDt = _lastApplyAt and math.max(APPLY_DT_MIN, math.min(APPLY_DT_MAX, now - _lastApplyAt)) or (1 / 60)
+  _lastApplyAt = now
+
   for key, target in pairs(data) do
     if key == "s" or key == "t" or key == "b" or key == "p" or key == "c" then
       local inputName = ({ s = "steering", t = "throttle", b = "brake", p = "parkingbrake", c = "clutch" })[key]
@@ -335,7 +347,7 @@ function M.applyInputs(data)
       if delta > SNAP_THRESHOLD or targetVal < LIMIT_SNAP or targetVal > (1 - LIMIT_SNAP) then
         smoothing[key] = targetVal
       else
-        local alpha = 1 - math.exp(-SMOOTH_RATE * (1 / 60))
+        local alpha = 1 - math.exp(-SMOOTH_RATE * applyDt)
         smoothing[key] = current + (targetVal - current) * alpha
       end
 

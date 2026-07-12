@@ -316,35 +316,6 @@ pub fn resolve_mods_dir_pub(beamng_userfolder: Option<&str>) -> Result<PathBuf> 
     resolve_mods_dir(beamng_userfolder)
 }
 
-/// Resolve the BeamNG userfolder root (the parent of the `mods/` directory).
-/// Returns the root path before `resolve_mods_subdir` is applied.
-pub fn resolve_userfolder(beamng_userfolder: Option<&str>) -> Result<PathBuf> {
-    if let Some(userfolder) = beamng_userfolder {
-        return Ok(expand_tilde(userfolder));
-    }
-    if let Some(userfolder) = crate::detect::detect_beamng_userfolder() {
-        return Ok(userfolder);
-    }
-    #[cfg(target_os = "windows")]
-    {
-        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
-            let modern = PathBuf::from(&local_app_data)
-                .join("BeamNG")
-                .join("BeamNG.drive");
-            if modern.is_dir() {
-                return Ok(modern);
-            }
-            return Ok(PathBuf::from(local_app_data).join("BeamNG.drive"));
-        }
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        return Ok(PathBuf::from(home).join("BeamNG.drive"));
-    }
-    Err(anyhow!(
-        "Unable to resolve BeamNG userfolder; set beamng_userfolder in LauncherConfig.toml"
-    ))
-}
-
 fn expand_tilde(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {
         if let Some(home) = std::env::var_os("HOME") {

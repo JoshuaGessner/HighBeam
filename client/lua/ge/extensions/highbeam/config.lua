@@ -41,14 +41,11 @@ M.defaults = {
   motionWatchdogMinSpeed = 0.5,      -- m/s threshold used by motion watchdog
   localVehicleReconcileSec = 1.0,    -- Re-check active player vehicle mapping interval
   veForceController = true,
-  vePosCorrectMul = 5,
-  vePosForceMul = 5,
-  veMaxPosForce = 100,
-  veRotCorrectMul = 7,
-  veRotForceMul = 7,
-  veMaxRotForce = 50,
-  veTeleportBaseDist = 1.0,
-  veTeleportSpeedScale = 0.1,
+  -- NOTE: highbeamPositionVE/highbeamVelocityVE correction gains, clamps and
+  -- teleport thresholds are compile-time constants in those controllers (they
+  -- run in the vehicle Lua VM and cannot read this GE-side config). Do not
+  -- re-add vePos*/veRot*/veMax*/veTeleport* keys — they would silently do
+  -- nothing.
   inputSyncRate = 30,
   inputSmoothing = true,
   inputSmoothRate = 30,
@@ -246,30 +243,6 @@ local function _sanitizeNumber(key, value)
   end
   if key == "localVehicleReconcileSec" then
     local out = math.max(0.25, math.min(5.0, value))
-    return out, out ~= value
-  end
-  if key == "vePosCorrectMul" or key == "vePosForceMul" then
-    local out = math.max(1, math.min(20, value))
-    return out, out ~= value
-  end
-  if key == "veMaxPosForce" then
-    local out = math.max(10, math.min(500, value))
-    return out, out ~= value
-  end
-  if key == "veRotCorrectMul" or key == "veRotForceMul" then
-    local out = math.max(1, math.min(20, value))
-    return out, out ~= value
-  end
-  if key == "veMaxRotForce" then
-    local out = math.max(10, math.min(200, value))
-    return out, out ~= value
-  end
-  if key == "veTeleportBaseDist" then
-    local out = math.max(0.5, math.min(10.0, value))
-    return out, out ~= value
-  end
-  if key == "veTeleportSpeedScale" then
-    local out = math.max(0.0, math.min(1.0, value))
     return out, out ~= value
   end
   if key == "inputSyncRate" then
@@ -485,48 +458,6 @@ M.set = function(key, value)
 
   if key == "veForceController" or key == "inputSmoothing" then
     M.current[key] = value and true or false
-    return true
-  end
-
-  if key == "vePosCorrectMul" or key == "vePosForceMul" then
-    local numeric = tonumber(value)
-    if not numeric then return false end
-    M.current[key] = math.max(1, math.min(20, numeric))
-    return true
-  end
-
-  if key == "veMaxPosForce" then
-    local numeric = tonumber(value)
-    if not numeric then return false end
-    M.current.veMaxPosForce = math.max(10, math.min(500, numeric))
-    return true
-  end
-
-  if key == "veRotCorrectMul" or key == "veRotForceMul" then
-    local numeric = tonumber(value)
-    if not numeric then return false end
-    M.current[key] = math.max(1, math.min(20, numeric))
-    return true
-  end
-
-  if key == "veMaxRotForce" then
-    local numeric = tonumber(value)
-    if not numeric then return false end
-    M.current.veMaxRotForce = math.max(10, math.min(200, numeric))
-    return true
-  end
-
-  if key == "veTeleportBaseDist" then
-    local numeric = tonumber(value)
-    if not numeric then return false end
-    M.current.veTeleportBaseDist = math.max(0.5, math.min(10.0, numeric))
-    return true
-  end
-
-  if key == "veTeleportSpeedScale" then
-    local numeric = tonumber(value)
-    if not numeric then return false end
-    M.current.veTeleportSpeedScale = math.max(0.0, math.min(1.0, numeric))
     return true
   end
 

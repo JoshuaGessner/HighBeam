@@ -11,27 +11,74 @@ local ROUND_FACTOR = 10000
 local sendTimer = 0
 local SEND_INTERVAL = 1 / 15
 
+-- Keys that must NEVER be written onto a remote (puppet) vehicle.
+--
+-- These are LOCAL simulation OUTPUTS: the puppet runs its own full physics and
+-- powertrain, so it regenerates every one of these each step from the synced
+-- inputs (highbeamInputsVE), powertrain device calls (highbeamPowertrainVE) and
+-- the position/velocity correction. Writing a remote's value over them — or
+-- nulling one via the "isnil" sentinel — corrupts the running sim and can leave
+-- a field that stock combustionEngine/powertrain code compares against as nil
+-- (`combustionEngine.lua: attempt to compare number with nil`).
+--
+-- Over-blocking here is safe (the puppet derives the value itself); UNDER-blocking
+-- is what breaks the engine sim. Lighting/signal keys are deliberately NOT listed
+-- so they still replicate. Mirrors BeamMP's MPElectricsVE disallow set in intent.
 local DENY_LIST = {
-  rpm = true, rpmTacho = true, engineLoad = true, turboBoost = true,
-  turboRPM = true, turboSpin = true, engineThrottle = true,
-  oiltemp = true, watertemp = true, fuel = true,
-  wheelspeed = true, airspeed = true, airflowspeed = true,
-  avgWheelAV = true, driveshaft = true, rpmspin = true,
+  -- Engine core
+  rpm = true, rpmTacho = true, rpmspin = true,
+  engineLoad = true, engineThrottle = true, engineRunning = true,
+  throttle = true, throttle_input = true,
+  throttleFactor = true, throttleFactorFront = true, throttleFactorRear = true,
+  throttleOverride = true, regenThrottle = true,
+  ignitionLevel = true, checkengine = true,
+  oiltemp = true, watertemp = true,
+  exhaustFlow = true, radiatorFanSpin = true,
+  turboBoost = true, turboRPM = true, turboSpin = true, turboRpmRatio = true,
+  boost = true, superchargerBoost = true,
+  nitrousOxideActive = true,
+
+  -- Fuel
+  fuel = true, fuelCapacity = true, lowfuel = true,
+
+  -- Clutch / transmission
+  clutch = true, clutch_input = true,
+  clutchRatio = true, clutchRatio1 = true, clutchRatio2 = true, lockupClutchRatio = true,
+  gear = true, gear_A = true, gear_M = true, gearIndex = true,
+  shouldShift = true, isShifting = true, intershaft = true,
+  targetRPMRatioDecreate = true, smoothShiftLogicAV = true,
+  disp_P = true, disp_R = true, disp_N = true, disp_D = true,
+  disp_S = true, disp_L = true, disp_M = true,
+  disp_1 = true, disp_2 = true, disp_3 = true, disp_4 = true,
+  disp_5 = true, disp_6 = true, disp_7 = true, disp_8 = true,
+
+  -- Driveline
+  driveshaft = true, driveshaft_F = true, driveshaft_R = true, avgWheelAV = true,
+
+  -- Brakes / stability control (state follows the synced brake input)
+  brake = true, brake_input = true, brakelights = true,
+  parkingbrake = true, parkingbrake_input = true,
+  abs = true, absActive = true, hasABS = true,
+  tcs = true, tcsActive = true, hasTCS = true,
+  esc = true, escActive = true, hasESC = true,
+  isYCBrakeActive = true, isTCBrakeActive = true,
   wheelThermalBR = true, wheelThermalBL = true,
   wheelThermalFR = true, wheelThermalFL = true,
-  throttle = true, throttle_input = true,
-  brake = true, brake_input = true,
+
+  -- Steering (hydro output follows the synced steering input)
   steering = true, steering_input = true,
-  clutch = true, clutch_input = true,
-  parkingbrake = true, parkingbrake_input = true,
-  gear = true, gear_A = true, gear_M = true, gearIndex = true,
-  odometer = true, trip = true, altitude = true,
-  virtualAirspeed = true, smoothShiftLogicAV = true,
+  steeringUnassisted = true, steering_timestamp = true,
+
+  -- Cruise control
+  cruiseControlActive = true, cruiseControlTarget = true,
+
+  -- Speeds / physics readouts
+  wheelspeed = true, airspeed = true, airflowspeed = true, virtualAirspeed = true,
   accXSmooth = true, accYSmooth = true, accZSmooth = true,
-  dseColor = true, isShifting = true,
-  checkengine = true, lowfuel = true, lowpressure = true,
-  brakelights = true,
-  ignitionLevel = true,
+  odometer = true, trip = true, altitude = true,
+
+  -- Misc locally-derived state
+  dseColor = true, lowpressure = true,
 }
 
 local function _jsonEncode(v)
