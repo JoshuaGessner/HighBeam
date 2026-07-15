@@ -5,7 +5,11 @@ local socket = nil  -- Loaded lazily via require("socket")
 local tcp = nil
 local udp = nil
 local recvBuffer = ""
+local tcpSendQueue = {}
+local tcpSendOffset = 1
+local tcpSendQueuedBytes = 0
 local HEADER_SIZE = 4  -- 4-byte LE uint32 length prefix
+local MAX_TCP_SEND_QUEUE_BYTES = 4 * 1024 * 1024
 local CONNECT_TIMEOUT = 5  -- 5-second connect timeout (Phase 2.1)
 local PONG_TIMEOUT = 30  -- 30-second pong timeout (Phase 2.2)
 
@@ -80,6 +84,47 @@ local function _bumpCounter(map, key)
   if not map then return end
   local k = tostring(key or "unknown")
   map[k] = (map[k] or 0) + 1
+end
+
+local function _clearTcpSendQueue()
+  tcpSendQueue = {}
+  tcpSendOffset = 1
+  tcpSendQueuedBytes = 0
+end
+
+local function _flushTcpSendQueue()
+  if not tcp then return false end
+
+  while #tcpSendQueue > 0 do
+    local frame = tcpSendQueue[1]
+    local sent, sendErr, lastSent = tcp:send(frame, tcpSendOffset)
+    local lastIndex = sent or lastSent
+    if type(lastIndex) == "number" and lastIndex >= tcpSendOffset then
+      tcpSendOffset = lastIndex + 1
+    end
+
+    if tcpSendOffset > #frame then
+      table.remove(tcpSendQueue, 1)
+      tcpSendQueuedBytes = math.max(0, tcpSendQueuedBytes - #frame)
+      tcpSendOffset = 1
+    elseif sendErr == "timeout" then
+      -- A timeout is normal on a non-blocking socket. Preserve the unsent
+      -- suffix and resume at the exact byte during the next render tick.
+      return true
+    elseif sendErr then
+      M._reportError('W', 'send_packet', 'TCP send failed: ' .. tostring(sendErr))
+      local errStr = tostring(sendErr):lower()
+      if M.state ~= M.STATE_DISCONNECTED
+        and (errStr:find('closed', 1, true) or errStr:find('not connected', 1, true)) then
+        M._onDisconnect('TCP send failed: ' .. tostring(sendErr))
+      end
+      return false
+    else
+      -- Defensive no-progress guard for unusual socket bindings.
+      return true
+    end
+  end
+  return true
 end
 
 local function _syncVerboseLoggingEnabled()
@@ -198,16 +243,23 @@ local function _spawnWorldVehicles(vehiclesList)
   local iterCount = 0
   for _, v in ipairs(vehiclesList) do
     iterCount = iterCount + 1
-    log('I', logTag, '_spawnWorldVehicles: spawning item #' .. iterCount
-      .. ' player_id=' .. tostring(v.player_id)
-      .. ' vehicle_id=' .. tostring(v.vehicle_id)
-      .. ' hasData=' .. tostring(v.data ~= nil)
-      .. ' hasPos=' .. tostring(v.position ~= nil)
-      .. ' hasFn=' .. tostring(vehicles.spawnRemoteFromSnapshot ~= nil))
-    if vehicles.spawnRemoteFromSnapshot then
-      vehicles.spawnRemoteFromSnapshot(v)
+    if v.player_id == M._playerId then
+      -- WorldState includes the reconnecting player's server-side vehicles.
+      -- Those are reconciled to the real local vehicle below; spawning them as
+      -- puppets creates a duplicate self vehicle and corrupts ID ownership.
+      log('D', logTag, '_spawnWorldVehicles: skipping local snapshot vehicle_id=' .. tostring(v.vehicle_id))
     else
-      vehicles.spawnRemote(v.player_id, v.vehicle_id, v.data)
+      log('I', logTag, '_spawnWorldVehicles: spawning item #' .. iterCount
+        .. ' player_id=' .. tostring(v.player_id)
+        .. ' vehicle_id=' .. tostring(v.vehicle_id)
+        .. ' hasData=' .. tostring(v.data ~= nil)
+        .. ' hasPos=' .. tostring(v.position ~= nil)
+        .. ' hasFn=' .. tostring(vehicles.spawnRemoteFromSnapshot ~= nil))
+      if vehicles.spawnRemoteFromSnapshot then
+        vehicles.spawnRemoteFromSnapshot(v)
+      else
+        vehicles.spawnRemote(v.player_id, v.vehicle_id, v.data)
+      end
     end
   end
   if iterCount == 0 then
@@ -408,6 +460,7 @@ M.connect = function(host, port, username, password, udpPort)
   M._reconnectCredentials = { host = host, port = port, username = username, password = password, udpPort = udpPort }
   M._reconnectAttempt = 0
   M._autoReconnect = true
+  _clearTcpSendQueue()
 
   -- Load LuaSocket
   local ok, sock = pcall(require, "socket")
@@ -502,6 +555,7 @@ M.disconnect = function()
     udp = nil
   end
   recvBuffer = ""
+  _clearTcpSendQueue()
   M._sessionHash = nil
   M._lastPingTime = nil
   M._connectStartTime = nil
@@ -587,6 +641,8 @@ M.tick = function(dt)
   end
 
   if M.state == M.STATE_AUTHENTICATING or M.state == M.STATE_CONNECTED then
+    if not _flushTcpSendQueue() or not tcp then return end
+
     -- Read available data (non-blocking)
     local data, err, partial = tcp:receive(8192)
     local chunk = data or partial
@@ -687,6 +743,7 @@ M.tick = function(dt)
         .. ' deferredWorldVehicles=' .. tostring(deferredCount))
       log('I', logTag, 'Sync diag tcpRxTypes=' .. _formatCounterMap(M._tcpRxTypeCounts)
         .. ' tcpTxTypes=' .. _formatCounterMap(M._tcpTxTypeCounts)
+        .. ' tcpTxQueuedBytes=' .. tostring(tcpSendQueuedBytes)
         .. ' udpPerPlayer=' .. _formatCounterMap(M._udpPerPlayerRx)
         .. ' componentRx=' .. _formatCounterMap(M._componentRxStats)
         .. ' reconnectAttempt=' .. tostring(M._reconnectAttempt)
@@ -765,17 +822,16 @@ M._sendPacket = function(packetTable)
     math.floor(len / 65536) % 256,
     math.floor(len / 16777216) % 256
   )
-  local sent, sendErr = tcp:send(header .. jsonStr)
-  if not sent then
-    M._reportError('W', 'send_packet', 'TCP send failed: ' .. tostring(sendErr))
-    local errStr = tostring(sendErr or ''):lower()
-    if M.state == M.STATE_CONNECTED and (errStr:find('closed', 1, true) or errStr:find('not connected', 1, true)) then
-      M._onDisconnect('TCP send failed: ' .. tostring(sendErr))
-    end
+  local frame = header .. jsonStr
+  if tcpSendQueuedBytes + #frame > MAX_TCP_SEND_QUEUE_BYTES then
+    M._reportError('W', 'send_packet', 'TCP send queue full: ' .. tostring(tcpSendQueuedBytes) .. ' bytes')
     return false
   end
+
+  tcpSendQueue[#tcpSendQueue + 1] = frame
+  tcpSendQueuedBytes = tcpSendQueuedBytes + #frame
   _bumpCounter(M._tcpTxTypeCounts, packetTable and packetTable.type)
-  return true
+  return _flushTcpSendQueue()
 end
 
 -- Validate that packet has required fields (Phase 2.3)
@@ -1344,6 +1400,7 @@ M._onDisconnect = function(reason)
     udp = nil
   end
   recvBuffer = ""
+  _clearTcpSendQueue()
   M._sessionHash = nil
   M._lastPingTime = nil  -- Clear ping tracking on disconnect (Phase 2.2)
   M._serverMap = nil
@@ -1392,6 +1449,18 @@ M._onConnectFailedTimeout = function(host)
 
   if timedOutProxy then
     M._notifyStatus("proxy_reconnect_required", reason)
+  end
+end
+
+if rawget(_G, "HIGHBEAM_TEST") then
+  M._testSetTcp = function(fakeTcp, stateValue)
+    tcp = fakeTcp
+    M.state = stateValue or M.STATE_CONNECTED
+    _clearTcpSendQueue()
+  end
+  M._testFlushTcpSendQueue = _flushTcpSendQueue
+  M._testTcpSendQueueState = function()
+    return #tcpSendQueue, tcpSendOffset, tcpSendQueuedBytes
   end
 end
 

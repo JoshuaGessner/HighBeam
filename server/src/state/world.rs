@@ -41,6 +41,7 @@ impl WorldState {
                     position: vehicle.position,
                     rotation: vehicle.rotation,
                     velocity: vehicle.velocity,
+                    damage: vehicle.damage.clone(),
                     last_update: Instant::now(),
                 },
             );
@@ -68,6 +69,7 @@ impl WorldState {
             position: [0.0; 3],
             rotation: [0.0, 0.0, 0.0, 1.0],
             velocity: [0.0; 3],
+            damage: None,
             last_update: now,
         };
         self.vehicles.insert((owner_id, vid), vehicle);
@@ -166,6 +168,9 @@ impl WorldState {
     /// Attempts to parse position/rotation from the JSON data blob.
     pub fn update_reset_position(&self, player_id: u32, vehicle_id: u16, data: &str) {
         if let Some(mut entry) = self.vehicles.get_mut(&(player_id, vehicle_id)) {
+            // Reset/repair begins a new pristine damage epoch even if the
+            // transform payload is malformed.
+            entry.damage = None;
             // Best-effort parse of {"pos":[x,y,z],"rot":[x,y,z,w]}
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(data) {
                 if let Some(pos) = val.get("pos").and_then(|p| p.as_array()) {
@@ -195,6 +200,14 @@ impl WorldState {
         }
     }
 
+    /// Retain the owner's latest full damage snapshot for late joiners and
+    /// internal puppet respawns. Ownership/size validation happens in TCP.
+    pub fn update_damage(&self, player_id: u32, vehicle_id: u16, data: String) {
+        if let Some(mut entry) = self.vehicles.get_mut(&(player_id, vehicle_id)) {
+            entry.damage = Some(data);
+        }
+    }
+
     /// Get a snapshot of the entire world for sending to a newly joined player.
     pub fn get_vehicle_snapshot(&self) -> Vec<VehicleInfo> {
         self.vehicles
@@ -208,6 +221,7 @@ impl WorldState {
                     position: v.position,
                     rotation: v.rotation,
                     velocity: v.velocity,
+                    damage: v.damage.clone(),
                     snapshot_time_ms: Some(
                         SystemTime::now()
                             .duration_since(UNIX_EPOCH)
@@ -299,6 +313,7 @@ mod tests {
                 position: [1.0, 2.0, 3.0],
                 rotation: [0.0, 0.0, 0.0, 1.0],
                 velocity: [0.1, 0.2, 0.3],
+                damage: Some("{\"broken\":[4]}".into()),
                 snapshot_time_ms: Some(1_700_000_000_000),
             },
             VehicleInfo {
@@ -308,6 +323,7 @@ mod tests {
                 position: [4.0, 5.0, 6.0],
                 rotation: [0.0, 0.0, 0.0, 1.0],
                 velocity: [0.0, 0.0, 0.0],
+                damage: None,
                 snapshot_time_ms: Some(1_700_000_000_000),
             },
         ];
@@ -319,5 +335,21 @@ mod tests {
 
         let new_vid = world.spawn_vehicle(9, "{}".into());
         assert_eq!(new_vid, 32);
+    }
+
+    #[test]
+    fn damage_is_retained_for_snapshots_and_cleared_by_reset() {
+        let world = WorldState::new();
+        let vehicle_id = world.spawn_vehicle(7, "{}".into());
+        world.update_damage(7, vehicle_id, "{\"broken\":[12]}".into());
+
+        let snapshot = world.get_vehicle_snapshot();
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].damage.as_deref(), Some("{\"broken\":[12]}"));
+
+        // Damage repair must not depend on successfully parsing reset pose data.
+        world.update_reset_position(7, vehicle_id, "malformed");
+        let snapshot = world.get_vehicle_snapshot();
+        assert_eq!(snapshot[0].damage, None);
     }
 }

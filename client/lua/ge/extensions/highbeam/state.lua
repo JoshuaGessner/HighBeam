@@ -12,9 +12,11 @@ M._nextSpawnRequestId = 1
 local sendTimer = 0
 local connection = nil
 local config = nil
-local _damageTimers = {}  -- [gameVehicleId] = cooldown timer
+local _damageTimers = {}  -- [gameVehicleId] = last send-attempt time
 local _damageTimer = 0  -- global polling timer for damage
-local _lastDamageHashes = {}  -- [gameVehicleId] = hash string of last sent damage
+local _lastDeliveredDamageHashes = {}  -- [gameVehicleId] = last successfully sent damage payload
+local _pendingDamageData = {}  -- [gameVehicleId] = latest unsent/coalesced damage payload
+local _lastSuppressedEmptyDamageHashes = {}  -- [gameVehicleId] = last intentionally unsent empty payload
 local _configPollTimer = 0  -- timer for mid-session config change detection
 local _lastConfigs = {}  -- [gameVehicleId] = last known partConfig string
 local _electricsTimer = 0  -- timer for electrics polling
@@ -84,6 +86,7 @@ local _playerVehicleReconcileDeleteCount = 0
 local ABSOLUTE_SEND_RATE_CAP = 60
 local DEFAULT_TCP_POSE_FALLBACK_INTERVAL_SEC = 0.2
 local DEFAULT_LOCAL_VEHICLE_RECONCILE_SEC = 1.0
+local DAMAGE_SEND_INTERVAL_SEC = 0.2
 
 local function _countPendingSpawns()
   local count = 0
@@ -443,6 +446,7 @@ local function _logAndResetSyncStats(updateRate, dt)
       .. ' dmgSent=' .. tostring(_componentTxStats.damage_sent)
       .. ' dmgThr=' .. tostring(_componentTxStats.damage_throttled)
       .. ' dmgNoMap=' .. tostring(_componentTxStats.damage_no_server_vid)
+      .. ' dmgFail=' .. tostring(_componentTxStats.damage_send_failed)
       .. ' elecSent=' .. tostring(_componentTxStats.electrics_sent)
       .. ' elecUnchanged=' .. tostring(_componentTxStats.electrics_unchanged)
       .. ' elecNoMap=' .. tostring(_componentTxStats.electrics_no_server_vid)
@@ -485,6 +489,52 @@ local function _logAndResetSyncStats(updateRate, dt)
       powertrain_sent = 0,
       powertrain_send_failed = 0,
     }
+  end
+end
+
+local function _isEmptyDamagePayload(payload)
+  if payload == '' or payload == '{}' then return true end
+
+  -- Vehicle-side snapshots now also contain breakGroups. Avoid depending on
+  -- JSON object-key order when recognizing the pristine/empty state.
+  local brokenEmpty = payload:match('"broken"%s*:%s*%[%s*%]') ~= nil
+  local groupsEmpty = payload:match('"breakGroups"%s*:%s*%[%s*%]') ~= nil
+  local deformEmpty = payload:match('"deform"%s*:%s*{%s*}') ~= nil
+  local hasGroupsField = payload:find('"breakGroups"', 1, true) ~= nil
+  return brokenEmpty and deformEmpty and (groupsEmpty or not hasGroupsField)
+end
+
+local function _queueDamageSnapshot(gameVid, damageData)
+  local payload = tostring(damageData or '')
+  if _isEmptyDamagePayload(payload) then
+    -- Damage is monotonic between explicit vehicle resets. Do not let a late
+    -- empty fallback callback erase a newer non-empty snapshot waiting to send.
+    if _pendingDamageData[gameVid] then
+      return false, "empty_ignored_pending"
+    end
+    if _lastSuppressedEmptyDamageHashes[gameVid] == payload then
+      return false, "unchanged_empty"
+    end
+    _lastSuppressedEmptyDamageHashes[gameVid] = payload
+    return false, "empty"
+  end
+
+  if _lastDeliveredDamageHashes[gameVid] == payload then
+    return false, "unchanged"
+  end
+
+  -- Always retain the newest full snapshot. A throttle, missing mapping, or
+  -- transient TCP failure must not make this state disappear.
+  _pendingDamageData[gameVid] = payload
+  return M.sendDamage(gameVid)
+end
+
+local function _flushPendingDamage(now)
+  for gameVid, _ in pairs(_pendingDamageData) do
+    local lastAttempt = _damageTimers[gameVid]
+    if not lastAttempt or (now - lastAttempt) >= DAMAGE_SEND_INTERVAL_SEC then
+      M.sendDamage(gameVid)
+    end
   end
 end
 
@@ -566,15 +616,18 @@ M.tick = function(dt)
 
   local updateRate = _computePoseUpdateRate()
 
+  -- These timers are wall-clock responsibilities, not pose-send work. Advancing
+  -- them only on pose frames stretched a 1s damage poll to several seconds.
+  _pollLowFrequencyVehicleState(dt)
+  _flushPendingDamage(now)
+  _logAndResetSyncStats(updateRate, dt)
+
   local updateInterval = 1.0 / updateRate
   sendTimer = sendTimer + dt
   if sendTimer < updateInterval then return end
   sendTimer = sendTimer - updateInterval
 
   _sendLocalVehiclePoses(now)
-
-  _logAndResetSyncStats(updateRate, dt)
-  _pollLowFrequencyVehicleState(dt)
 end
 
 -- ── Damage polling ───────────────────────────────────────────────────
@@ -636,17 +689,7 @@ end
 
 -- Called back from vehicle-side Lua with damage state JSON
 M.onDamageReport = function(gameVid, damageJson)
-  if not M.localVehicles[gameVid] then return end
-
-  -- Simple change detection: compare JSON string hash
-  local hash = damageJson  -- use the full string as a change key
-  if _lastDamageHashes[gameVid] == hash then return end
-  _lastDamageHashes[gameVid] = hash
-
-  -- Only send if there's actual damage content
-  if damageJson == '{}' or damageJson == '' or damageJson == '{"broken":[],"deform":{}}' then return end
-
-  M.sendDamage(gameVid, damageJson)
+  _queueDamageSnapshot(gameVid, damageJson)
 end
 
 -- ── Config change detection ─────────────────────────────────────────
@@ -969,12 +1012,7 @@ M.onVEPowertrain = function(gameVid, jsonStr)
 end
 
 M.onVEDamage = function(gameVid, jsonStr)
-  if not M.localVehicles[gameVid] then return end
-  local hash = tostring(jsonStr or "")
-  if _lastDamageHashes[gameVid] == hash then return end
-  _lastDamageHashes[gameVid] = hash
-  if hash == '' or hash == '{}' or hash == '{"broken":[],"deform":{}}' then return end
-  M.sendDamage(gameVid, hash)
+  _queueDamageSnapshot(gameVid, jsonStr)
 end
 
 -- P3.2: Mark a vehicle as needing a damage poll on the next cycle.
@@ -987,7 +1025,10 @@ end
 
 -- Bug #3a: Clear damage hash so next poll detects fresh state after reset.
 M.clearDamageHash = function(gameVid)
-  _lastDamageHashes[gameVid] = nil
+  _lastDeliveredDamageHashes[gameVid] = nil
+  _pendingDamageData[gameVid] = nil
+  _lastSuppressedEmptyDamageHashes[gameVid] = nil
+  _damageTimers[gameVid] = nil
 end
 
 M.onWorldState = function(players)
@@ -1125,39 +1166,73 @@ M.requestDelete = function(gameVehicleId)
     M.localVehicles[gameVehicleId] = nil
   end
   M._inflightByGameVid[gameVehicleId] = nil
+  _lastDeliveredDamageHashes[gameVehicleId] = nil
+  _pendingDamageData[gameVehicleId] = nil
+  _lastSuppressedEmptyDamageHashes[gameVehicleId] = nil
+  _damageTimers[gameVehicleId] = nil
+  M._damageDirty[gameVehicleId] = nil
 end
 
 -- Send damage state for a local vehicle (called on collision events)
 M.sendDamage = function(gameVehicleId, damageData)
-  if not connection or connection.getState() ~= connection.STATE_CONNECTED then
-    return
+  if damageData ~= nil then
+    local payload = tostring(damageData or '')
+    if _isEmptyDamagePayload(payload) then
+      if _pendingDamageData[gameVehicleId] then
+        return false, "empty_ignored_pending"
+      end
+      if _lastSuppressedEmptyDamageHashes[gameVehicleId] == payload then
+        return false, "unchanged_empty"
+      end
+      _lastSuppressedEmptyDamageHashes[gameVehicleId] = payload
+      return false, "empty"
+    end
+    if _lastDeliveredDamageHashes[gameVehicleId] == payload then
+      return false, "unchanged"
+    end
+    _pendingDamageData[gameVehicleId] = payload
   end
+
+  local pending = _pendingDamageData[gameVehicleId]
+  if not pending then
+    return false, "no_pending"
+  end
+
+  if not connection or connection.getState() ~= connection.STATE_CONNECTED then
+    return false, "disconnected"
+  end
+
+  local now = os.clock()
+  if _damageTimers[gameVehicleId] and (now - _damageTimers[gameVehicleId]) < DAMAGE_SEND_INTERVAL_SEC then
+    _componentTxStats.damage_throttled = _componentTxStats.damage_throttled + 1
+    return false, "throttled"
+  end
+  _damageTimers[gameVehicleId] = now
+
   local serverVid = M.localVehicles[gameVehicleId]
   if not serverVid then
     _componentTxStats.damage_no_server_vid = _componentTxStats.damage_no_server_vid + 1
     if _verboseSyncLoggingEnabled() then
-      log('D', logTag, 'Damage drop: no server mapping for gameVid=' .. tostring(gameVehicleId))
+      log('D', logTag, 'Damage pending: no server mapping for gameVid=' .. tostring(gameVehicleId))
     end
-    return
+    return false, "no_server_vid"
   end
-
-  -- Throttle damage sends: at most once per 200ms per vehicle
-  local now = os.clock()
-  if _damageTimers[gameVehicleId] and (now - _damageTimers[gameVehicleId]) < 0.2 then
-    _componentTxStats.damage_throttled = _componentTxStats.damage_throttled + 1
-    return
-  end
-  _damageTimers[gameVehicleId] = now
 
   local sent = connection._sendPacket({
     type = "vehicle_damage",
     vehicle_id = serverVid,
-    data = damageData,
+    data = pending,
   })
   if sent then
     _componentTxStats.damage_sent = _componentTxStats.damage_sent + 1
+    _lastDeliveredDamageHashes[gameVehicleId] = pending
+    if _pendingDamageData[gameVehicleId] == pending then
+      _pendingDamageData[gameVehicleId] = nil
+    end
+    return true, "sent"
   else
     _componentTxStats.damage_send_failed = _componentTxStats.damage_send_failed + 1
+    return false, "send_failed"
   end
 end
 
@@ -1172,7 +1247,9 @@ M.onDisconnect = function()
   sendTimer = 0
   _damageTimers = {}
   _damageTimer = 0
-  _lastDamageHashes = {}
+  _lastDeliveredDamageHashes = {}
+  _pendingDamageData = {}
+  _lastSuppressedEmptyDamageHashes = {}
   _configPollTimer = 0
   _lastConfigs = {}
   _electricsTimer = 0
@@ -1223,6 +1300,17 @@ M.onDisconnect = function()
   _veUnmappedDataCount = 0
   _veFirstDataLogged = {}
   _lastTcpPoseSentAt = {}
+end
+
+if rawget(_G, "HIGHBEAM_TEST") then
+  M._testQueueDamageSnapshot = _queueDamageSnapshot
+  M._testFlushPendingDamage = _flushPendingDamage
+  M._testPendingDamage = function(gameVid)
+    return _pendingDamageData[gameVid], _lastDeliveredDamageHashes[gameVid]
+  end
+  M._testClearDamageAttempt = function(gameVid)
+    _damageTimers[gameVid] = nil
+  end
 end
 
 return M

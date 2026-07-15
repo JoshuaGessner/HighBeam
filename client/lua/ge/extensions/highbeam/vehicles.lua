@@ -132,9 +132,13 @@ local function _respawnRemoteVehicle(rv, key, reason)
   rv._hasVE = false
   rv._componentQueue = {}
   rv._componentQueueLen = 0
-  rv._pendingDamageData = nil
+  -- Internal puppet respawns must preserve the latest authoritative damage.
+  -- A player repair reset clears this state separately in resetRemote.
+  rv._pendingDamageData = rv._lastDamageData
   rv._pendingPowertrainData = nil
   rv._appliedBrokenBeams = nil
+  rv._appliedBreakGroups = nil
+  rv._appliedDeformLengths = nil
   rv._stabilizeUntil = nil
 
   local vid, vehObj, spawnErr = _spawnGameVehicle(rv.spawnSpec)
@@ -542,6 +546,8 @@ M.spawnRemote = function(playerId, vehicleId, configData, snapshot)
     _hasVE = false,
     _componentQueue = {},  -- ring buffer for components arriving before VE ready
     _componentQueueLen = 0,
+    _lastDamageData = snapshot and snapshot.damage or nil,
+    _pendingDamageData = snapshot and snapshot.damage or nil,
   }
 
   if snapshot or spec.snapshotTimeMs then
@@ -584,6 +590,7 @@ M.spawnRemoteFromSnapshot = function(vehicle)
     rotation = vehicle.rotation,
     velocity = vehicle.velocity,
     snapshotTimeMs = vehicle.snapshot_time_ms,
+    damage = vehicle.damage,
   })
 end
 
@@ -803,17 +810,17 @@ M.resetRemote = function(playerId, vehicleId, data)
   rv.snapshots = {}
   rv.lastSeqTime = -1
 
-  -- A reset repairs the vehicle to a pristine structure (that is why we
-  -- re-apply the last damage payload below). Drop the applied-beam cache so the
-  -- persisted damage actually re-breaks the now-intact beams.
+  -- A player reset/repair is authoritative pristine state. Do not replay the
+  -- pre-reset damage snapshot; that behavior made repaired remote vehicles
+  -- immediately damage themselves again. Internal puppet respawns preserve
+  -- _lastDamageData in _respawnRemoteVehicle instead.
   rv._appliedBrokenBeams = nil
-
-  -- Keep damage persistent across resets by re-applying last known damage payload.
-  local persistDamage = config and config.get and config.get("persistRemoteDamageOnReset")
-  if persistDamage ~= false and rv._lastDamageData and rv._lastDamageData ~= '' then
-    rv._pendingDamageData = rv._lastDamageData
-    _bumpApplyStat("damage_deferred_after_reset")
-  end
+  rv._appliedBreakGroups = nil
+  rv._appliedDeformLengths = nil
+  rv._lastDamageData = nil
+  rv._lastDamageAt = nil
+  rv._pendingDamageData = nil
+  _bumpApplyStat("damage_cleared_by_reset")
 
   _bumpApplyStat("reset_applied")
   log('D', logTag, 'Reset remote vehicle: ' .. key
@@ -879,6 +886,7 @@ M.applyDamage = function(playerId, vehicleId, damageData)
   end
 
   local commandsQueued = 0
+  local newBroken, newGroups, newDeform, ignoredNodes = 0, 0, 0, 0
 
   -- Apply beam breaks (sender field name is 'broken').
   -- The sender transmits its full broken-beam set every packet. Re-issuing a
@@ -897,6 +905,7 @@ M.applyDamage = function(playerId, vehicleId, damageData)
           applied[id] = true
           veh:queueLuaCommand('obj:breakBeam(' .. id .. ')')
           commandsQueued = commandsQueued + 1
+          newBroken = newBroken + 1
         end
       end
     end)
@@ -905,19 +914,28 @@ M.applyDamage = function(playerId, vehicleId, damageData)
     end
   end
 
-  -- Break group optimization: break all beams that belong to each group.
-  if dmg.breakGroups then
+  -- Legacy group-only payload support. Current senders include the complete
+  -- individual broken-beam set; applying groups on top of that breaks the same
+  -- beams twice. Only use groups when no individual set was supplied.
+  if dmg.breakGroups and (not dmg.broken or #dmg.broken == 0) then
+    rv._appliedBreakGroups = rv._appliedBreakGroups or {}
+    local appliedGroups = rv._appliedBreakGroups
     local ok = pcall(function()
       for _, groupName in ipairs(dmg.breakGroups) do
-        local g = string.format("%q", tostring(groupName))
-        veh:queueLuaCommand(
-          'local _g=' .. g .. ' '
-          .. 'for _i=0,obj:getBeamCount()-1 do '
-          .. '  local _bg=obj:getBreakGroup(_i) '
-          .. '  if _bg==_g then obj:breakBeam(_i) end '
-          .. 'end'
-        )
-        commandsQueued = commandsQueued + 1
+        local groupKey = tostring(groupName)
+        if not appliedGroups[groupKey] then
+          appliedGroups[groupKey] = true
+          local g = string.format("%q", groupKey)
+          veh:queueLuaCommand(
+            'local _g=' .. g .. ' '
+            .. 'for _i=0,obj:getBeamCount()-1 do '
+            .. '  local _bg=obj:getBreakGroup(_i) '
+            .. '  if _bg==_g then obj:breakBeam(_i) end '
+            .. 'end'
+          )
+          commandsQueued = commandsQueued + 1
+          newGroups = newGroups + 1
+        end
       end
     end)
     if not ok then
@@ -929,15 +947,19 @@ M.applyDamage = function(playerId, vehicleId, damageData)
   -- Each entry is {deformVal, restLength} or a plain number (legacy).
   -- We use obj:setBeamLength to set the physical length directly.
   if dmg.deform then
+    rv._appliedDeformLengths = rv._appliedDeformLengths or {}
+    local appliedLengths = rv._appliedDeformLengths
     local ok = pcall(function()
       for beamIdStr, val in pairs(dmg.deform) do
         local cid = _safeInt(beamIdStr)
         if cid and type(val) == 'table' and val[2] then
           -- New format: {deformation, restLength}
           local restLen = _safeNum(val[2])
-          if restLen then
+          if restLen and appliedLengths[cid] ~= restLen then
+            appliedLengths[cid] = restLen
             veh:queueLuaCommand('obj:setBeamLength(' .. cid .. ', ' .. restLen .. ')')
             commandsQueued = commandsQueued + 1
+            newDeform = newDeform + 1
           end
         end
       end
@@ -947,24 +969,14 @@ M.applyDamage = function(playerId, vehicleId, damageData)
     end
   end
 
-  -- Bug #3b: Apply node positions from damage data to reproduce deformed shape
+  -- Node positions are transient simulation state, not durable damage. The
+  -- fallback sender used to include ordinary suspension/wheel travel and this
+  -- direct write fought the puppet's independent physics. Ignore legacy node
+  -- payloads; broken beams and stable rest-length changes carry structural
+  -- damage without freezing suspension.
   if dmg.nodes then
-    local ok = pcall(function()
-      for nodeIdStr, pos in pairs(dmg.nodes) do
-        if type(pos) == 'table' and #pos >= 3 then
-          local nid = _safeInt(nodeIdStr)
-          local x, y, z = _safeNum(pos[1]), _safeNum(pos[2]), _safeNum(pos[3])
-          if nid and x and y and z then
-            veh:queueLuaCommand('obj:setNodePosition(' .. nid
-              .. ', float3(' .. x .. ',' .. y .. ',' .. z .. '))')
-            commandsQueued = commandsQueued + 1
-          end
-        end
-      end
-    end)
-    if not ok then
-      _bumpApplyStat("damage_error_nodes")
-    end
+    for _, _ in pairs(dmg.nodes) do ignoredNodes = ignoredNodes + 1 end
+    if ignoredNodes > 0 then _bumpApplyStat("damage_nodes_ignored") end
   end
 
   if commandsQueued == 0 then
@@ -974,8 +986,10 @@ M.applyDamage = function(playerId, vehicleId, damageData)
     if _verboseSyncLoggingEnabled() then
       log('D', logTag, 'damage applied key=' .. key
         .. ' queued=' .. tostring(commandsQueued)
-        .. ' broken=' .. tostring(dmg.broken and #dmg.broken or 0)
-        .. ' deform=' .. tostring(dmg.deform and 1 or 0))
+        .. ' newBroken=' .. tostring(newBroken)
+        .. ' newGroups=' .. tostring(newGroups)
+        .. ' newDeform=' .. tostring(newDeform)
+        .. ' ignoredNodes=' .. tostring(ignoredNodes))
     end
   end
 end

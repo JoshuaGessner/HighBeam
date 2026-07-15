@@ -10,12 +10,16 @@ M.type = "auxiliary"
 
 local nodeList = {}      -- array of { cid, nodeMass * physicsFPS }
 local nodeCount = 0
+local allNodeCount = 0
+local connectedNodes = {} -- [node cid] = { { adjacent cid, beam cid }, ... }
+local parentNodeId = nil
 local cogRel = nil       -- vehicle-local COG offset; rotated to world at apply time
 local physicsFPS = 2000
 local refNodeId = 0
 local needsRecalc = false
 local recalcTimer = 0
 local RECALC_DELAY = 0.2
+local MAX_BEAM_LENGTH_RATIO = 2
 local initialized = false
 
 local function _makeVec(x, y, z)
@@ -28,18 +32,87 @@ local function _currentRotation()
   return quatFromDir(-vec3(obj:getDirectionVector()), vec3(obj:getDirectionVectorUp()))
 end
 
+local function _buildConnectivityGraph()
+  connectedNodes = {}
+  parentNodeId = nil
+  if not v or not v.data then return end
+
+  for _, beam in pairs(v.data.beams or {}) do
+    -- Pressure, L-beam, and support constraints are not durable structural
+    -- links. Treating them as such keeps detached panels in the correction set.
+    if beam.id1 ~= nil and beam.id2 ~= nil and beam.cid ~= nil
+      and beam.beamType ~= 3 and beam.beamType ~= 4 and beam.beamType ~= 7 then
+      connectedNodes[beam.id1] = connectedNodes[beam.id1] or {}
+      connectedNodes[beam.id2] = connectedNodes[beam.id2] or {}
+      connectedNodes[beam.id1][#connectedNodes[beam.id1] + 1] = { beam.id2, beam.cid }
+      connectedNodes[beam.id2][#connectedNodes[beam.id2] + 1] = { beam.id1, beam.cid }
+    end
+  end
+
+  local refs = v.data.refNodes and v.data.refNodes[0]
+  if refs then
+    local candidates = { refs.ref, refs.back, refs.left, refs.up }
+    for _, cid in ipairs(candidates) do
+      if cid ~= nil and connectedNodes[cid] then
+        parentNodeId = cid
+        break
+      end
+    end
+  end
+end
+
+local function _beamConnects(beamCid)
+  if obj.beamIsBroken then
+    local ok, broken = pcall(obj.beamIsBroken, obj, beamCid)
+    if ok and broken then return false end
+  end
+  if obj.getBeamCurLengthRefRatio then
+    local ok, ratio = pcall(obj.getBeamCurLengthRefRatio, obj, beamCid)
+    if ok and type(ratio) == "number" and ratio >= MAX_BEAM_LENGTH_RATIO then
+      return false
+    end
+  end
+  return true
+end
+
 local function _rebuildNodes()
   nodeList = {}
   nodeCount = 0
+  allNodeCount = 0
   cogRel = nil
   if not obj or not v or not v.data or not v.data.nodes then return end
+
+  for _, n in pairs(v.data.nodes) do
+    local okMass, mass = pcall(obj.getNodeMass, obj, n.cid)
+    if okMass and type(mass) == "number" and mass > 0 then
+      allNodeCount = allNodeCount + 1
+    end
+  end
+
+  local included = nil
+  if parentNodeId then
+    included = {}
+    local stack = { parentNodeId }
+    included[parentNodeId] = true
+    while #stack > 0 do
+      local cid = stack[#stack]
+      stack[#stack] = nil
+      for _, edge in ipairs(connectedNodes[cid] or {}) do
+        local adjacent, beamCid = edge[1], edge[2]
+        if not included[adjacent] and _beamConnects(beamCid) then
+          included[adjacent] = true
+          stack[#stack + 1] = adjacent
+        end
+      end
+    end
+  end
 
   local totalMass = 0
   local cog = vec3(0, 0, 0)
   for _, n in pairs(v.data.nodes) do
     local cid = n.cid
     local okMass, mass = pcall(obj.getNodeMass, obj, cid)
-    if okMass and type(mass) == "number" and mass > 0 then
+    if (not included or included[cid]) and okMass and type(mass) == "number" and mass > 0 then
       nodeCount = nodeCount + 1
       nodeList[nodeCount] = { cid, mass * physicsFPS }
       local p = obj:getNodePosition(cid)
@@ -74,6 +147,7 @@ function M.onInit()
   if v and v.data and v.data.refNodes and v.data.refNodes[0] and v.data.refNodes[0].ref then
     refNodeId = v.data.refNodes[0].ref
   end
+  _buildConnectivityGraph()
   M.recalcConnectivity()
 end
 
@@ -134,7 +208,10 @@ function M.addVelocity(vx, vy, vz)
   -- Pure translation: the cluster API is cheap and unambiguous. Signature is
   -- (clusterNodeId, linearAccel, angularAccel); falls back to per-node forces
   -- if the binding is unavailable or rejects the call.
-  if obj.applyClusterLinearAngularAccel then
+  -- Cluster acceleration also moves structurally disconnected nodes that still
+  -- share the physics cluster briefly. Use it only while the full structure is
+  -- connected; after damage, target the BFS-connected chassis nodes directly.
+  if nodeCount == allNodeCount and obj.applyClusterLinearAngularAccel then
     local ok = pcall(obj.applyClusterLinearAngularAccel, obj, refNodeId,
       vec3(vx, vy, vz) * physicsFPS, vec3(0, 0, 0))
     if ok then return end

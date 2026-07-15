@@ -250,6 +250,8 @@ pub struct VehicleInfo {
     pub rotation: [f32; 4],
     pub velocity: [f32; 3],
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub damage: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot_time_ms: Option<u64>,
 }
 
@@ -494,6 +496,7 @@ mod tests {
                 position: [10.0, 20.0, 30.0],
                 rotation: [0.0, 0.0, 0.0, 1.0],
                 velocity: [1.0, 0.0, 0.0],
+                damage: Some(r#"{"broken":[3]}"#.into()),
                 snapshot_time_ms: Some(1_700_000_000_000),
             }],
         });

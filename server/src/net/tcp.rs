@@ -840,6 +840,7 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
 
                 if world.is_owner(player_id, vehicle_id) {
                     let payload_bytes = data.len();
+                    world.update_damage(player_id, vehicle_id, data.clone());
                     sessions.broadcast(
                         TcpPacket::VehicleDamage {
                             player_id: Some(player_id),
