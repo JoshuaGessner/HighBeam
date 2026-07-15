@@ -1,8 +1,8 @@
 # HighBeam Version Plan
 
-> **Last updated:** 2026-07-11
+> **Last updated:** 2026-07-15
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.2-dev.50 (protocol v2)
+> **Current version:** v0.8.2-dev.51 (protocol v2)
 > **Status:** v0.8.1 released | v0.8.2 in development
 
 ---
@@ -1202,6 +1202,39 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.2-dev.51 - 2026-07-15 (draft)
+- **Correct remote heading instead of spinning/reversing.** Orientation error
+  now uses the world-frame `target * conjugate(current)` quaternion and converts
+  into the same negated convention as BeamNG's angular-velocity getters and the
+  `r × dav` force path. Angular prediction now negates the getter convention and
+  left-multiplies its world-frame delta. Incoming quaternions are normalized,
+  and reset packets use the physics direction-vector orientation rather than a
+  potentially stale scene rotation.
+- **Damage delivery is durable and incremental.** The client retains the newest
+  unsent full snapshot through throttling, missing vehicle mappings, and send
+  failures; polling timers now advance independently of pose-send frames.
+  Receivers apply only newly broken beams and changed rest lengths, ignore
+  transient legacy node positions that fought suspension physics, preserve
+  damage across internal puppet respawns, and clear it on player repair/reset.
+- **Late joiners receive current damage.** The server retains each owner's latest
+  full damage snapshot in `WorldState` and clears it on reset. Snapshot spawning
+  defers that damage until the remote VE has initialized and settled.
+- **Non-blocking TCP partial writes are lossless.** Ordered frames remain in a
+  bounded queue and resume at the exact unsent byte on later ticks instead of
+  losing component packets. Diagnostics report queued bytes.
+- **Correction respects broken structure.** Velocity forces use a structural
+  beam-graph traversal from the reference body, excluding broken/overstretched
+  links and detached nodes from chassis correction. Cluster acceleration is
+  used only while the complete structure remains connected.
+- Fixed asymmetric steering smoothing that snapped all negative steering values,
+  and prevented reconnect `WorldState` snapshots from spawning the local
+  player's own vehicle as a duplicate remote puppet. Removed stale sync config
+  keys whose old correction/keyframe/LOD/input code paths no longer exist.
+- Added standalone Lua regression tests for quaternion correction/prediction,
+  partial TCP sends, and symmetric steering; added server coverage for retained
+  damage and reset clearing. Server and launcher versions bumped to
+  `0.8.2-dev.51`; protocol remains backward-compatible `v2`.
 
 ### v0.8.2-dev.50 - 2026-07-11 (draft)
 - **Keep the remote-vehicle simulation alive.** Remote puppets stopped
