@@ -364,7 +364,10 @@ M.onVehicleResetted = function(gameVehicleId)
   if not veh then return end
 
   local pos = veh:getPosition()
-  local rot = veh:getRotation()
+  -- SceneObject:getRotation() can lag the actual soft-body orientation. Use
+  -- the same physics-facing direction-vector quaternion as the pose stream so
+  -- a repair/reset cannot inject a stale or 180-degree-mismatched heading.
+  local rot = quatFromDir(-veh:getDirectionVector(), veh:getDirectionVectorUp())
   local resetTime = 0
   if state and state.getLocalMotionTime then
     resetTime = state.getLocalMotionTime(gameVehicleId) or 0
@@ -640,4 +643,3 @@ M.connect = function(host, port, username, password)
 end
 
 return M
-

@@ -18,6 +18,15 @@ local DEFORM_POLL_INTERVAL = 0.2
 local DEFORM_POLL_BATCH = 10
 local DEFORM_THRESHOLD = 0.002
 
+local function _clearDamageState(markDirty)
+  brokenBeams = {}
+  brokenGroups = {}
+  damageTimer = 0
+  dirty = markDirty and true or false
+  deformPollCursor = 0
+  deformPollTimer = 0
+end
+
 local function _jsonEncode(v)
   if jsonEncode then
     local ok, out = pcall(jsonEncode, v)
@@ -41,12 +50,7 @@ function M.onInit()
   end
   if initialized then return end
   initialized = true
-  brokenBeams = {}
-  brokenGroups = {}
-  damageTimer = 0
-  dirty = false
-  deformPollCursor = 0
-  deformPollTimer = 0
+  _clearDamageState(false)
 end
 
 function M.setActive(active, remote)
@@ -64,6 +68,13 @@ function M.onBeamBroke(beamId, energy)
     end
   end
   dirty = true
+end
+
+function M.onReset()
+  -- A player reset repairs the structure. Clear the accumulated break/group
+  -- sets; GE sends the authoritative vehicle_reset packet and clears its
+  -- delivered/pending damage bookkeeping for the new damage epoch.
+  _clearDamageState(true)
 end
 
 function M.updateGFX(dt)

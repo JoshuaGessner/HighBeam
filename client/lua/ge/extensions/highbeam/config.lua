@@ -19,37 +19,20 @@ M.defaults = {
   nametagFontScale = 1.0,
   -- P0/P2/P3/P4: Sync optimization defaults
   debugOverlay = false,              -- P0: Show sync debug panel in overlay
-  correctionBlendFactor = 0.10,      -- Fraction of error corrected per frame (smooth anti-jitter)
-  correctionTeleportDist = 10.0,     -- P2.2: Distance (m) threshold for instant teleport
   adaptiveSendRate = true,           -- P3.1: Enable speed-based send rate
   maxAdaptiveSendRate = 50,          -- Cap adaptive update rate near BeamMP's position loop
   inputPollIntervalSec = 0.15,       -- Combined inputs + rotation poll interval
   electricsPollIntervalSec = 0.75,   -- Electrics poll interval
   damageFallbackPollSec = 8.0,       -- Sparse fallback damage scan interval
-  lodDistanceNear = 200,             -- P3.4: Full-rate update distance (m)
-  lodDistanceFar = 500,              -- P3.4: Reduced-rate update distance (m)
-  directSteering = true,             -- P4.1: Use direct electrics instead of input.event
   verboseSyncLogging = false,        -- Enable detailed sync diagnostics in logs
-  persistRemoteDamageOnReset = true, -- Keep remote damage after reset packets
   localResetDebounceSec = 0.75,      -- Debounce local reset packet emission
   remoteResetMinIntervalSec = 0.5,   -- Suppress duplicate inbound reset bursts
-  resetStabilizeSec = 2.0,           -- Temporary soft-correction window after reset bursts
-  resetBurstWindowSec = 2.0,         -- Window for counting reset bursts
-  resetBurstThreshold = 3,           -- Enter stabilization when this many resets happen in window
-  forceKeyframeIntervalSec = 0.45,   -- Force periodic outbound keyframes even when unchanged
-  motionWatchdogSec = 0.7,           -- Force send when moving but no packet sent for this long
-  motionWatchdogMinSpeed = 0.5,      -- m/s threshold used by motion watchdog
   localVehicleReconcileSec = 1.0,    -- Re-check active player vehicle mapping interval
-  veForceController = true,
   -- NOTE: highbeamPositionVE/highbeamVelocityVE correction gains, clamps and
   -- teleport thresholds are compile-time constants in those controllers (they
   -- run in the vehicle Lua VM and cannot read this GE-side config). Do not
   -- re-add vePos*/veRot*/veMax*/veTeleport* keys — they would silently do
   -- nothing.
-  inputSyncRate = 30,
-  inputSmoothing = true,
-  inputSmoothRate = 30,
-  electricsSyncRate = 15,
 }
 
 M.current = {}
@@ -189,22 +172,6 @@ local function _sanitizeNumber(key, value)
     local out = math.max(2.0, math.min(20.0, value))
     return out, out ~= value
   end
-  if key == "correctionBlendFactor" then
-    local out = math.max(0.01, math.min(1.0, value))
-    return out, out ~= value
-  end
-  if key == "correctionTeleportDist" then
-    local out = math.max(1.0, math.min(100.0, value))
-    return out, out ~= value
-  end
-  if key == "lodDistanceNear" then
-    local out = math.max(25, math.min(2000, math.floor(value + 0.5)))
-    return out, out ~= value
-  end
-  if key == "lodDistanceFar" then
-    local out = math.max(50, math.min(5000, math.floor(value + 0.5)))
-    return out, out ~= value
-  end
   if key == "overlayRefreshHz" then
     local out = math.max(1, math.min(60, math.floor(value + 0.5)))
     return out, out ~= value
@@ -217,47 +184,10 @@ local function _sanitizeNumber(key, value)
     local out = math.max(0.0, math.min(3.0, value))
     return out, out ~= value
   end
-  if key == "resetStabilizeSec" then
-    local out = math.max(0.2, math.min(10.0, value))
-    return out, out ~= value
-  end
-  if key == "resetBurstWindowSec" then
-    local out = math.max(0.2, math.min(10.0, value))
-    return out, out ~= value
-  end
-  if key == "resetBurstThreshold" then
-    local out = math.max(2, math.min(10, math.floor(value + 0.5)))
-    return out, out ~= value
-  end
-  if key == "forceKeyframeIntervalSec" then
-    local out = math.max(0.2, math.min(2.0, value))
-    return out, out ~= value
-  end
-  if key == "motionWatchdogSec" then
-    local out = math.max(0.2, math.min(3.0, value))
-    return out, out ~= value
-  end
-  if key == "motionWatchdogMinSpeed" then
-    local out = math.max(0.0, math.min(20.0, value))
-    return out, out ~= value
-  end
   if key == "localVehicleReconcileSec" then
     local out = math.max(0.25, math.min(5.0, value))
     return out, out ~= value
   end
-  if key == "inputSyncRate" then
-    local out = math.max(10, math.min(60, math.floor(value + 0.5)))
-    return out, out ~= value
-  end
-  if key == "inputSmoothRate" then
-    local out = math.max(10, math.min(100, math.floor(value + 0.5)))
-    return out, out ~= value
-  end
-  if key == "electricsSyncRate" then
-    local out = math.max(5, math.min(30, math.floor(value + 0.5)))
-    return out, out ~= value
-  end
-
   return value, false
 end
 
@@ -388,11 +318,6 @@ M.set = function(key, value)
     return true
   end
 
-  if key == "persistRemoteDamageOnReset" then
-    M.current.persistRemoteDamageOnReset = value and true or false
-    return true
-  end
-
   if key == "localResetDebounceSec" then
     local numeric = tonumber(value)
     if not numeric then return false end
@@ -407,78 +332,10 @@ M.set = function(key, value)
     return true
   end
 
-  if key == "resetStabilizeSec" then
-    local numeric = tonumber(value)
-    if not numeric then return false end
-    M.current.resetStabilizeSec = math.max(0.2, math.min(10.0, numeric))
-    return true
-  end
-
-  if key == "resetBurstWindowSec" then
-    local numeric = tonumber(value)
-    if not numeric then return false end
-    M.current.resetBurstWindowSec = math.max(0.2, math.min(10.0, numeric))
-    return true
-  end
-
-  if key == "resetBurstThreshold" then
-    local numeric = tonumber(value)
-    if not numeric then return false end
-    M.current.resetBurstThreshold = math.max(2, math.min(10, math.floor(numeric + 0.5)))
-    return true
-  end
-
-  if key == "forceKeyframeIntervalSec" then
-    local numeric = tonumber(value)
-    if not numeric then return false end
-    M.current.forceKeyframeIntervalSec = math.max(0.2, math.min(2.0, numeric))
-    return true
-  end
-
-  if key == "motionWatchdogSec" then
-    local numeric = tonumber(value)
-    if not numeric then return false end
-    M.current.motionWatchdogSec = math.max(0.2, math.min(3.0, numeric))
-    return true
-  end
-
-  if key == "motionWatchdogMinSpeed" then
-    local numeric = tonumber(value)
-    if not numeric then return false end
-    M.current.motionWatchdogMinSpeed = math.max(0.0, math.min(20.0, numeric))
-    return true
-  end
-
   if key == "localVehicleReconcileSec" then
     local numeric = tonumber(value)
     if not numeric then return false end
     M.current.localVehicleReconcileSec = math.max(0.25, math.min(5.0, numeric))
-    return true
-  end
-
-  if key == "veForceController" or key == "inputSmoothing" then
-    M.current[key] = value and true or false
-    return true
-  end
-
-  if key == "inputSyncRate" then
-    local numeric = tonumber(value)
-    if not numeric then return false end
-    M.current.inputSyncRate = math.max(10, math.min(60, math.floor(numeric + 0.5)))
-    return true
-  end
-
-  if key == "inputSmoothRate" then
-    local numeric = tonumber(value)
-    if not numeric then return false end
-    M.current.inputSmoothRate = math.max(10, math.min(100, math.floor(numeric + 0.5)))
-    return true
-  end
-
-  if key == "electricsSyncRate" then
-    local numeric = tonumber(value)
-    if not numeric then return false end
-    M.current.electricsSyncRate = math.max(5, math.min(30, math.floor(numeric + 0.5)))
     return true
   end
 
@@ -500,4 +357,3 @@ M.getUiSettings = function()
 end
 
 return M
-

@@ -137,6 +137,19 @@ local function _getSteeringLock()
   return 450
 end
 
+local function _shouldSnapInput(key, targetVal, current)
+  local delta = math.abs(targetVal - current)
+  local atLimit
+  if key == "s" then
+    -- Steering spans -1..1. Limit detection must be symmetric around zero.
+    local magnitude = math.abs(targetVal)
+    atLimit = magnitude < LIMIT_SNAP or magnitude > (1 - LIMIT_SNAP)
+  else
+    atLimit = targetVal < LIMIT_SNAP or targetVal > (1 - LIMIT_SNAP)
+  end
+  return delta > SNAP_THRESHOLD or atLimit
+end
+
 function M.onInit()
   if obj and obj.getID then
     gameVehicleId = obj:getID()
@@ -343,8 +356,9 @@ function M.applyInputs(data)
         targetVal = targetVal * 450 / lock
       end
 
-      local delta = math.abs(targetVal - current)
-      if delta > SNAP_THRESHOLD or targetVal < LIMIT_SNAP or targetVal > (1 - LIMIT_SNAP) then
+      -- The old one-sided steering limit test snapped every negative value but
+      -- smoothed positive values, producing asymmetric remote wheel motion.
+      if _shouldSnapInput(key, targetVal, current) then
         smoothing[key] = targetVal
       else
         local alpha = 1 - math.exp(-SMOOTH_RATE * applyDt)
@@ -376,5 +390,9 @@ end
 
 M.init = M.onInit
 M.onExtensionLoaded = M.onInit
+
+if rawget(_G, "HIGHBEAM_TEST") then
+  M._testShouldSnapInput = _shouldSnapInput
+end
 
 return M

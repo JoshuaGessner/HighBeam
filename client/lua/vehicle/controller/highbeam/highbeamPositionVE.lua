@@ -25,6 +25,13 @@ local _diag = {
   targetAgeDrops = 0,
   applyTicks = 0,
   targets = 0,
+  rotSamples = 0,
+  rotErrSum = 0,
+  rotErrMax = 0,
+  avErrMax = 0,
+  davMax = 0,
+  rotClampTicks = 0,
+  oppositeHeadingTicks = 0,
 }
 
 local TELEPORT_BASE_DIST = 5.0
@@ -125,8 +132,30 @@ local function _smooth3(oldValue, newValue, alpha)
   }
 end
 
--- Rotation error between current and target orientation, expressed as a
--- world-frame axis*angle vector (rad) scaled by 1/dt.
+local function _normalizeQuat4(x, y, z, w)
+  x, y, z, w = x or 0, y or 0, z or 0, w or 1
+  local len = math.sqrt(x * x + y * y + z * z + w * w)
+  if len ~= len or len == math.huge or len < 0.0001 then
+    return { 0, 0, 0, 1 }
+  end
+  return { x / len, y / len, z / len, w / len }
+end
+
+-- Angular correction (as a `dav`) that rotates curRot toward tgtRot, returned
+-- in the exact convention the velocity module consumes.
+--
+-- The velocity module applies `r x dav`, which imparts body angular velocity
+-- `-dav` (world frame). To drive the orientation error to zero we must impart
+-- the world angular velocity `w = axis(tgtRot * conj(curRot)) * angle`, so we
+-- return `dav = -w`. This is consistent with the (field-proven, BeamMP) angular
+-- VELOCITY term, which is likewise added straight into `dav`.
+--
+-- IMPORTANT: the error rotation must be `tgtRot * conj(curRot)` — the error in
+-- the WORLD frame. The previous version computed `conj(tgtRot) * curRot`, whose
+-- axis lives in the vehicle's BODY frame; consumed as a world vector it applied
+-- the yaw correction about a heading/tilt-dependent axis, so the puppet spun and
+-- drifted to a ~180-degrees-reversed heading whenever the body was pitched or
+-- rolled (i.e. constantly, while driving). Result (scaled by 1/dt).
 local function _rotationErrorAngVel(curRot, tgtRot, dt)
   if not curRot or not tgtRot or dt <= 0 then return 0, 0, 0 end
   local cx, cy, cz, cw = curRot[1], curRot[2], curRot[3], curRot[4]
@@ -137,10 +166,11 @@ local function _rotationErrorAngVel(curRot, tgtRot, dt)
     tx, ty, tz, tw = -tx, -ty, -tz, -tw
   end
 
-  local ex = tw * cx - tx * cw - ty * cz + tz * cy
-  local ey = tw * cy + tx * cz - ty * cw - tz * cx
-  local ez = tw * cz - tx * cy + ty * cx - tz * cw
-  local ew = tw * cw + tx * cx + ty * cy + tz * cz
+  -- e = tgtRot * conj(curRot)  (world-frame rotation taking curRot -> tgtRot)
+  local ex = -tw * cx + tx * cw - ty * cz + tz * cy
+  local ey = -tw * cy + tx * cz + ty * cw - tz * cx
+  local ez = -tw * cz - tx * cy + ty * cx + tz * cw
+  local ew =  tw * cw + tx * cx + ty * cy + tz * cz
 
   local sinHalf = math.sqrt(ex * ex + ey * ey + ez * ez)
   if sinHalf < 0.0001 then return 0, 0, 0 end
@@ -153,13 +183,22 @@ local function _rotationErrorAngVel(curRot, tgtRot, dt)
   local ay = ey * invSin
   local az = ez * invSin
 
-  local scale = angle / dt
+  -- Negated: `r x dav` imparts angular velocity `-dav`, so returning `-w`
+  -- makes the correction drive the orientation error toward zero.
+  local scale = -angle / dt
   return ax * scale, ay * scale, az * scale
 end
 
+-- Extrapolate a rotation from the transmitted BeamNG angular-velocity getter
+-- convention. Those getter values are the negative of a right-handed physical
+-- world angular velocity (the same reason velocityVE applies `r x dav`).
+-- Quaternion integration needs the physical value, so negate once here and
+-- left-multiply the world-frame delta.
 local function _predictRot(baseRot, angVel, dt)
   if not baseRot or not angVel or dt <= 0 then return baseRot end
-  local wx, wy, wz = angVel[1] or 0, angVel[2] or 0, angVel[3] or 0
+  local wx = -(angVel[1] or 0)
+  local wy = -(angVel[2] or 0)
+  local wz = -(angVel[3] or 0)
   local speed = math.sqrt(wx * wx + wy * wy + wz * wz)
   if speed < 0.0001 then return baseRot end
 
@@ -343,6 +382,7 @@ function M.setTarget(px, py, pz, vx, vy, vz, rx, ry, rz, rw, avx, avy, avz, t, i
   local newPos = { px or 0, py or 0, pz or 0 }
   local newVel = { vx or 0, vy or 0, vz or 0 }
   local newAngVel = { avx or 0, avy or 0, avz or 0 }
+  local newRot = _normalizeQuat4(rx, ry, rz, rw)
   local newTime = t or 0
   _diag.targets = (_diag.targets or 0) + 1
   if (not isReset) and hasTarget and newTime > 0 and targetTime > 0 and newTime < targetTime then
@@ -426,7 +466,7 @@ function M.setTarget(px, py, pz, vx, vy, vz, rx, ry, rz, rw, avx, avy, avz, t, i
   targetPos = newPos
   targetVel = newVel
   targetAcc = newAcc
-  targetRot = { rx or 0, ry or 0, rz or 0, rw or 1 }
+  targetRot = newRot
   targetAngVel = newAngVel
   targetAngAcc = newAngAcc
   targetTime = newTime
@@ -613,14 +653,26 @@ local function _updateRemoteCorrection(frameDt)
     local avErrY = (predAngVel[2] or 0) - (curAngVel and curAngVel[2] or 0)
     local avErrZ = (predAngVel[3] or 0) - (curAngVel and curAngVel[3] or 0)
 
+    local rotErrMag = math.sqrt(rotErrX * rotErrX + rotErrY * rotErrY + rotErrZ * rotErrZ)
+    local avErrMag = math.sqrt(avErrX * avErrX + avErrY * avErrY + avErrZ * avErrZ)
+    _diag.rotSamples = (_diag.rotSamples or 0) + 1
+    _diag.rotErrSum = (_diag.rotErrSum or 0) + rotErrMag
+    _diag.rotErrMax = math.max(_diag.rotErrMax or 0, rotErrMag)
+    _diag.avErrMax = math.max(_diag.avErrMax or 0, avErrMag)
+    if rotErrMag > 2.617994 then
+      _diag.oppositeHeadingTicks = (_diag.oppositeHeadingTicks or 0) + 1
+    end
+
     local davScale = math.min(ROT_FORCE_RATE * frameDt, 1)
     davX = (avErrX + rotErrX * ROT_CORRECT_MUL) * davScale
     davY = (avErrY + rotErrY * ROT_CORRECT_MUL) * davScale
     davZ = (avErrZ + rotErrZ * ROT_CORRECT_MUL) * davScale
 
     davMag = math.sqrt(davX * davX + davY * davY + davZ * davZ)
+    _diag.davMax = math.max(_diag.davMax or 0, davMag)
     local davMax = MAX_ROT_CORR_ACCEL * frameDt
     if davMag > davMax and davMag > 0 then
+      _diag.rotClampTicks = (_diag.rotClampTicks or 0) + 1
       local s = davMax / davMag
       davX, davY, davZ = davX * s, davY * s, davZ * s
       davMag = davMax
@@ -662,10 +714,17 @@ function M.updateGFX(dt)
         .. ',targetAgeDrops=' .. tostring(_diag.targetAgeDrops or 0)
         .. ',applyTicks=' .. tostring(_diag.applyTicks or 0)
         .. ',localTime=' .. string.format('%.6f', localMotionTimer or 0)
-        .. ',targets=' .. tostring(_diag.targets or 0))
+        .. ',targets=' .. tostring(_diag.targets or 0)
+        .. ',rotErrAvg=' .. string.format('%.4f', (_diag.rotSamples or 0) > 0 and ((_diag.rotErrSum or 0) / _diag.rotSamples) or 0)
+        .. ',rotErrMax=' .. string.format('%.4f', _diag.rotErrMax or 0)
+        .. ',avErrMax=' .. string.format('%.4f', _diag.avErrMax or 0)
+        .. ',davMax=' .. string.format('%.4f', _diag.davMax or 0)
+        .. ',rotClampTicks=' .. tostring(_diag.rotClampTicks or 0)
+        .. ',oppositeHeadingTicks=' .. tostring(_diag.oppositeHeadingTicks or 0))
     end
     _diag = { hardInstant = 0, hardDelayed = 0, packetTimeout = 0, targetAgeDrops = 0,
-      applyTicks = 0, targets = 0 }
+      applyTicks = 0, targets = 0, rotSamples = 0, rotErrSum = 0, rotErrMax = 0,
+      avErrMax = 0, davMax = 0, rotClampTicks = 0, oppositeHeadingTicks = 0 }
   end
   heartbeatTimer = heartbeatTimer + (dt or 0)
   if heartbeatTimer >= HEARTBEAT_INTERVAL then
@@ -680,5 +739,13 @@ end
 
 M.init = M.onInit
 M.onExtensionLoaded = M.onInit
+
+-- Pure-math hooks for the standalone Lua regression test. They are never
+-- exposed in BeamNG unless the test harness explicitly sets HIGHBEAM_TEST.
+if rawget(_G, "HIGHBEAM_TEST") then
+  M._testRotationErrorAngVel = _rotationErrorAngVel
+  M._testPredictRot = _predictRot
+  M._testNormalizeQuat4 = _normalizeQuat4
+end
 
 return M
