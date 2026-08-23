@@ -2,6 +2,8 @@ local M = {}
 local logTag = "HighBeam.Vehicles"
 
 M.remoteVehicles = {} -- [playerId_vehicleId] = vehicleData
+M._pendingRemoteState = {} -- state received before a logical remote exists
+M._deletedRemoteKeys = {} -- short-lived tombstones for deferred WorldState races
 M._remoteGameIds = {} -- [gameVehicleId] = true  (quick lookup for isRemote)
 M._spawningRemote = false -- Guard flag: true while core_vehicles.spawnNewVehicle is in-flight
 M._debugStats = {}  -- P0: Exposed debug stats for overlay
@@ -28,6 +30,71 @@ local _componentApplyStats = {}
 local makeKey
 local _spawnGameVehicle
 local _queueRemoteVeBootstrap
+
+local function _cogToOrigin(pos, rot, cogRel)
+  if type(pos) ~= "table" or type(rot) ~= "table" or type(cogRel) ~= "table" then return pos end
+  local ok, origin = pcall(function()
+    local offset = vec3(cogRel[1] or 0, cogRel[2] or 0, cogRel[3] or 0)
+      :rotated(quat(rot[1] or 0, rot[2] or 0, rot[3] or 0, rot[4] or 1))
+    return { (pos[1] or 0) - offset.x, (pos[2] or 0) - offset.y, (pos[3] or 0) - offset.z }
+  end)
+  return ok and origin or pos
+end
+
+local function _isFinite(value, limit)
+  return type(value) == "number" and value == value
+    and value ~= math.huge and value ~= -math.huge
+    and math.abs(value) <= (limit or 1e20)
+end
+
+local INPUT_KEYS = { "s", "t", "b", "p", "c", "g" }
+local INPUT_KEY_SET = { s = true, t = true, b = true, p = true, c = true, g = true }
+
+local function _mergeInputState(state, deltaStr)
+  state = state or {}
+  if type(deltaStr) ~= "string" then return state end
+  for part in string.gmatch(deltaStr, "[^,]+") do
+    local key, raw = string.match(part, "^([%a]+)=([^,]+)$")
+    if key and INPUT_KEY_SET[key] then
+      local numeric = tonumber(raw)
+      if numeric and _isFinite(numeric, 1e4) then
+        state[key] = numeric
+      elseif key == "g" and #raw <= 16 and string.match(raw, "^[%w%+%-%.]+$") then
+        state[key] = raw
+      end
+    end
+  end
+  return state
+end
+
+local function _serializeInputState(state)
+  local parts = {}
+  for _, key in ipairs(INPUT_KEYS) do
+    local value = state and state[key]
+    if value ~= nil then parts[#parts + 1] = key .. "=" .. tostring(value) end
+  end
+  return table.concat(parts, ",")
+end
+
+local function _validMotion(decoded)
+  if type(decoded) ~= "table" or type(decoded.pos) ~= "table"
+    or type(decoded.rot) ~= "table" or type(decoded.vel) ~= "table" then return false end
+  local limits = { 1e7, 4, 1e5 }
+  for i = 1, 3 do
+    if not _isFinite(tonumber(decoded.pos[i]), limits[1])
+      or not _isFinite(tonumber(decoded.vel[i]), limits[3]) then return false end
+  end
+  for i = 1, 4 do
+    if not _isFinite(tonumber(decoded.rot[i]), limits[2]) then return false end
+  end
+  if not _isFinite(tonumber(decoded.time), 1e9) then return false end
+  if decoded.angVel then
+    for i = 1, 3 do
+      if not _isFinite(tonumber(decoded.angVel[i]), 1e4) then return false end
+    end
+  end
+  return true
+end
 
 local function _verboseSyncLoggingEnabled()
   return config and config.get and config.get("verboseSyncLogging") == true
@@ -83,17 +150,31 @@ end
 
 local function _applyDeferredAfterStabilize(rv, key)
   if not rv or _isStabilizing(rv) then return end
+  if rv._pendingResetData and rv.gameVehicle then
+    local pending = rv._pendingResetData
+    M.resetRemote(rv.playerId, rv.vehicleId, pending)
+    if rv._lastResetPayload == pending then rv._pendingResetData = nil end
+    return
+  end
   if rv._pendingPowertrainData then
     local pending = rv._pendingPowertrainData
     rv._pendingPowertrainData = nil
     M.applyPowertrain(rv.playerId, rv.vehicleId, pending)
     _bumpApplyStat("powertrain_replayed_after_reset")
   end
-  if rv._pendingDamageData then
-    local pending = rv._pendingDamageData
-    rv._pendingDamageData = nil
-    M.applyDamage(rv.playerId, rv.vehicleId, pending)
-    _bumpApplyStat("damage_replayed_after_reset")
+  if rv._pendingElectricsData and rv._hasVE then
+    local pending = rv._pendingElectricsData
+    rv._pendingElectricsData = nil
+    M.applyElectrics(rv.playerId, rv.vehicleId, pending)
+  end
+  if rv._pendingInputsData and rv._hasVE then
+    local pending = rv._pendingInputsData
+    rv._pendingInputsData = nil
+    M.applyInputs(rv.playerId, rv.vehicleId, pending)
+  end
+  if rv._pendingDamageData and not _isSettling(rv) then
+    M.applyDamage(rv.playerId, rv.vehicleId, rv._pendingDamageData)
+    _bumpApplyStat("damage_replay_attempt")
   end
 end
 
@@ -114,7 +195,7 @@ local function _respawnRemoteVehicle(rv, key, reason)
 
   local latest = rv.snapshots and rv.snapshots[#rv.snapshots]
   if latest then
-    rv.spawnSpec.pos = latest.pos
+    rv.spawnSpec.pos = _cogToOrigin(latest.pos, latest.rot, rv._cogRel)
     rv.spawnSpec.rot = latest.rot
     rv.spawnSpec.vel = latest.vel
   end
@@ -135,7 +216,12 @@ local function _respawnRemoteVehicle(rv, key, reason)
   -- Internal puppet respawns must preserve the latest authoritative damage.
   -- A player repair reset clears this state separately in resetRemote.
   rv._pendingDamageData = rv._lastDamageData
-  rv._pendingPowertrainData = nil
+  rv._pendingPowertrainData = rv._lastPowertrainData
+  rv._pendingElectricsData = rv._lastElectricsData
+  rv._pendingInputsData = rv._lastInputsData
+  rv._damageInFlight = nil
+  rv._damageApplyErrors = 0
+  rv._damageRetryAt = nil
   rv._appliedBrokenBeams = nil
   rv._appliedBreakGroups = nil
   rv._appliedDeformLengths = nil
@@ -335,6 +421,15 @@ _queueRemoteVeBootstrap = function(rv, key)
       end
       if #_missing > 0 then _ready = false end
       local _missingCsv = table.concat(_missing, ",")
+      local _vel = hbGetController("highbeamVelocityVE")
+      if _vel and _vel.getCogRel then
+        local _okCog, _cog = pcall(_vel.getCogRel)
+        if _okCog and _cog then
+          obj:queueGameEngineLua(
+            "if extensions and extensions.highbeam and extensions.highbeam.onRemoteVECog then extensions.highbeam.onRemoteVECog(" .. tostring(obj:getID()) .. "," .. tostring(_cog.x or 0) .. "," .. tostring(_cog.y or 0) .. "," .. tostring(_cog.z or 0) .. ") end"
+          )
+        end
+      end
       obj:queueGameEngineLua(
         "if extensions and extensions.highbeam and extensions.highbeam.onRemoteVEReady then extensions.highbeam.onRemoteVEReady(" .. tostring(obj:getID()) .. "," .. tostring(_ready) .. "," .. string.format("%q", _missingCsv) .. ") end"
       )
@@ -346,6 +441,15 @@ _queueRemoteVeBootstrap = function(rv, key)
   if _verboseSyncLoggingEnabled() then
     log('D', logTag, 'Queued remote VE bootstrap key=' .. tostring(key)
       .. ' gameVid=' .. tostring(rv.gameVehicleId))
+  end
+end
+
+M.onRemoteVECog = function(gameVehicleId, x, y, z)
+  for _, rv in pairs(M.remoteVehicles) do
+    if rv.gameVehicleId == gameVehicleId then
+      rv._cogRel = { tonumber(x) or 0, tonumber(y) or 0, tonumber(z) or 0 }
+      return
+    end
   end
 end
 
@@ -517,6 +621,14 @@ end
 
 M.spawnRemote = function(playerId, vehicleId, configData, snapshot)
   local key = makeKey(playerId, vehicleId)
+  local deletedAt = M._deletedRemoteKeys[key]
+  if deletedAt and (os.clock() - deletedAt) < 10.0 then
+    M._pendingRemoteState[key] = nil
+    _bumpApplyStat("spawn_drop_delete_tombstone")
+    return
+  end
+  M._deletedRemoteKeys[key] = nil
+  local preSpawnState = M._pendingRemoteState[key]
   log('I', logTag, 'spawnRemote: key=' .. key
     .. ' playerId=' .. tostring(playerId)
     .. ' vehicleId=' .. tostring(vehicleId)
@@ -527,7 +639,24 @@ M.spawnRemote = function(playerId, vehicleId, configData, snapshot)
     return
   end
 
-  local spec = _buildSpawnSpec(configData, snapshot)
+  local effectiveConfigData = configData
+  local preConfig = preSpawnState and preSpawnState.config and _decodeJson(preSpawnState.config) or nil
+  if preConfig then
+    local baseConfig = _decodeJson(configData) or {}
+    for field, value in pairs(preConfig) do baseConfig[field] = value end
+    if jsonEncode then
+      local okEncoded, encoded = pcall(jsonEncode, baseConfig)
+      if okEncoded and encoded then effectiveConfigData = encoded end
+    end
+  end
+  local spec = _buildSpawnSpec(effectiveConfigData, snapshot)
+  local effectiveConfig = _decodeJson(effectiveConfigData) or {}
+  local preReset = preSpawnState and preSpawnState.reset and _decodeJson(preSpawnState.reset) or nil
+  if preReset and type(preReset.pos) == "table" and type(preReset.rot) == "table" then
+    spec.pos = preReset.pos
+    spec.rot = preReset.rot
+    spec.vel = { 0, 0, 0 }
+  end
   local vid, vehObj, spawnErr = _spawnGameVehicle(spec)
 
   if vid then
@@ -546,9 +675,16 @@ M.spawnRemote = function(playerId, vehicleId, configData, snapshot)
     _hasVE = false,
     _componentQueue = {},  -- ring buffer for components arriving before VE ready
     _componentQueueLen = 0,
-    _lastDamageData = snapshot and snapshot.damage or nil,
-    _pendingDamageData = snapshot and snapshot.damage or nil,
+    _lastDamageData = (preSpawnState and preSpawnState.damage) or (snapshot and snapshot.damage) or nil,
+    _pendingDamageData = (preSpawnState and preSpawnState.damage) or (snapshot and snapshot.damage) or nil,
+    _pendingElectricsData = preSpawnState and preSpawnState.electrics or nil,
+    _inputState = preSpawnState and preSpawnState.inputState or nil,
+    _pendingInputsData = preSpawnState and _serializeInputState(preSpawnState.inputState) or nil,
+    _pendingPowertrainData = preSpawnState and preSpawnState.powertrain or nil,
+    _pendingResetData = preSpawnState and preSpawnState.reset or nil,
+    configRevision = math.max(0, math.floor(tonumber(effectiveConfig.configRevision) or 0)),
   }
+  M._pendingRemoteState[key] = nil
 
   if snapshot or spec.snapshotTimeMs then
     table.insert(M.remoteVehicles[key].snapshots, {
@@ -596,6 +732,10 @@ end
 
 local _updateRemoteDropLog = 0
 M.updateRemote = function(decoded)
+  if not _validMotion(decoded) then
+    _bumpApplyStat("pose_drop_nonfinite")
+    return
+  end
   local key = makeKey(decoded.playerId, decoded.vehicleId)
   local rv = M.remoteVehicles[key]
   if not rv then
@@ -607,16 +747,45 @@ M.updateRemote = function(decoded)
     return
   end
 
+  local recvTime = os.clock()
+  local epochRestart = false
+
+  -- Compatibility recovery for senders whose VLua motion timer restarted.
+  -- Keep a short guard against a delayed packet from the previous high-time
+  -- epoch arriving after the first low-time packet from the new epoch.
+  if rv._motionRestartGuardUntil and recvTime < rv._motionRestartGuardUntil
+    and rv._motionRestartPreviousTime and decoded.time > (rv.lastSeqTime + 2.0)
+    and decoded.time >= (rv._motionRestartPreviousTime - 1.0) then
+    _staleDropCount = _staleDropCount + 1
+    return
+  end
+
   -- Out-of-order protection: reject packets older than newest received
   if decoded.time and rv.lastSeqTime and decoded.time < rv.lastSeqTime then
-    _staleDropCount = _staleDropCount + 1
-    return  -- Stale packet, discard
+    local backwardJump = rv.lastSeqTime - decoded.time
+    local receiveGap = rv._lastMotionReceivedAt and (recvTime - rv._lastMotionReceivedAt) or 0
+    if backwardJump > 1.0 and (decoded.time < 3.0 or receiveGap > 0.75) then
+      epochRestart = true
+      rv._motionRestartPreviousTime = rv.lastSeqTime
+      rv._motionRestartGuardUntil = recvTime + 3.0
+      rv.motionEpoch = (rv.motionEpoch or 0) + 1
+      rv.lastSeqTime = -1
+      rv.snapshots = {}
+      _bumpApplyStat("pose_epoch_restart")
+      log('I', logTag, 'Detected remote motion epoch restart key=' .. key
+        .. ' epoch=' .. tostring(rv.motionEpoch)
+        .. ' backward=' .. string.format('%.3f', backwardJump)
+        .. ' receiveGap=' .. string.format('%.3f', receiveGap))
+    else
+      _staleDropCount = _staleDropCount + 1
+      return  -- Stale packet, discard
+    end
   end
   if decoded.time then
     rv.lastSeqTime = decoded.time
   end
+  rv._lastMotionReceivedAt = recvTime
 
-  local recvTime = os.clock()
   if _verboseSyncLoggingEnabled() then
     local prevArrival = _packetInterArrival[key]
     local arrivalDt = prevArrival and (recvTime - prevArrival) or 0
@@ -632,13 +801,14 @@ M.updateRemote = function(decoded)
     local az = decoded.angVel and decoded.angVel[3] or 0
     local diagEnabled = _verboseSyncLoggingEnabled() and "true" or "false"
     local cmd = string.format(
-      "local _hb=controller and controller.getController and controller.getController('highbeamPositionVE') or nil; if _hb and _hb.setDiagnostics then _hb.setDiagnostics(%s) end; if _hb and _hb.setTarget then _hb.setTarget(%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f,%.4f,%.6f,false) end",
+      "local _hb=controller and controller.getController and controller.getController('highbeamPositionVE') or nil; if _hb and _hb.setDiagnostics then _hb.setDiagnostics(%s) end; if _hb and _hb.setTarget then _hb.setTarget(%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f,%.4f,%.6f,%s) end",
       diagEnabled,
       decoded.pos[1], decoded.pos[2], decoded.pos[3],
       decoded.vel[1], decoded.vel[2], decoded.vel[3],
       decoded.rot[1], decoded.rot[2], decoded.rot[3], decoded.rot[4],
       ax, ay, az,
-      decoded.time or 0
+      decoded.time or 0,
+      epochRestart and "true" or "false"
     )
     _queueVeLuaCommand(rv.gameVehicle, cmd, "position")
 
@@ -679,9 +849,7 @@ M.updateRemote = function(decoded)
 end
 
 M.updateRemoteConfig = function(playerId, vehicleId, configData)
-  local veh, rv, key = _withRemoteVehicle(playerId, vehicleId, "config")
-  if not veh then return end
-
+  local key = makeKey(playerId, vehicleId)
   local cfg = _decodeJson(configData)
   if not cfg then
     _bumpApplyStat("config_drop_decode")
@@ -690,53 +858,100 @@ M.updateRemoteConfig = function(playerId, vehicleId, configData)
     end
     return
   end
-
-  local commandsApplied = 0
-
-  -- Apply part config change to existing vehicle
-  if rv.gameVehicleId and cfg.partConfig and cfg.partConfig ~= '' then
-    local ok = pcall(function()
-      veh:setField('partConfig', '0', cfg.partConfig)
-    end)
-    if ok then
-      commandsApplied = commandsApplied + 1
-    else
-      _bumpApplyStat("config_error_part")
-    end
+  local rv = M.remoteVehicles[key]
+  if not rv then
+    M._pendingRemoteState[key] = M._pendingRemoteState[key] or {}
+    M._pendingRemoteState[key].config = configData
+    _bumpApplyStat("config_retained_pre_spawn")
+    return
   end
 
-  -- Apply color change
-  if rv.gameVehicleId and cfg.color then
-    local ok = pcall(function()
-      veh:setField('color', '0', cfg.color)
-    end)
-    if ok then
-      commandsApplied = commandsApplied + 1
-    else
+  local topologyChanged = cfg.model ~= nil or cfg.partConfig ~= nil
+  local incomingRevision = math.max(0, math.floor(tonumber(cfg.configRevision)
+    or ((rv.configRevision or 0) + (topologyChanged and 1 or 0))))
+  if incomingRevision < (rv.configRevision or 0) then
+    _bumpApplyStat("config_drop_stale")
+    return
+  end
+
+  if topologyChanged and incomingRevision == (rv.configRevision or 0) then
+    local sameModel = cfg.model == nil or tostring(cfg.model) == tostring(rv.spawnSpec.model)
+    local sameParts = cfg.partConfig == nil or tostring(cfg.partConfig) == tostring(rv.spawnSpec.partCfg)
+    _bumpApplyStat(sameModel and sameParts and "config_duplicate" or "config_drop_revision_conflict")
+    return
+  end
+
+  local veh = rv.gameVehicle or (rv.gameVehicleId and scenetree.findObjectById(rv.gameVehicleId))
+  if cfg.color and veh then
+    if not pcall(veh.setField, veh, 'color', '0', cfg.color) then
       _bumpApplyStat("config_error_color")
     end
   end
 
-  if commandsApplied == 0 then
-    _bumpApplyStat("config_noop")
-  else
-    _bumpApplyStat("config_applied")
-    if _verboseSyncLoggingEnabled() then
-      log('D', logTag, 'config applied key=' .. key .. ' commands=' .. tostring(commandsApplied))
+  if topologyChanged then
+    if cfg.model ~= nil then rv.spawnSpec.model = tostring(cfg.model) end
+    if cfg.partConfig ~= nil then rv.spawnSpec.partCfg = tostring(cfg.partConfig) end
+    rv.configRevision = incomingRevision
+    if tonumber(cfg.damageEpoch) ~= nil then
+      rv.damageEpoch = math.max(rv.damageEpoch or 0, math.floor(tonumber(cfg.damageEpoch)))
+    else
+      rv.damageEpoch = (rv.damageEpoch or 0) + 1
     end
+    rv._lastDamageRevision = -1
+    rv._appliedDamageRevision = -1
+    rv._lastDamageData = nil
+    rv._pendingDamageData = nil
+    rv._damageInFlight = nil
+    if veh then
+      _respawnRemoteVehicle(rv, key, "config_topology_change")
+    end
+    local futureDamage = rv._futureDamageByConfig and rv._futureDamageByConfig[incomingRevision]
+    if futureDamage then
+      rv._futureDamageByConfig[incomingRevision] = nil
+      M.applyDamage(playerId, vehicleId, futureDamage)
+      _bumpApplyStat("damage_promoted_for_config")
+    end
+    _bumpApplyStat("config_respawned")
+  elseif cfg.color then
+    _bumpApplyStat("config_color_applied")
+  else
+    _bumpApplyStat("config_noop")
   end
 end
 
 M.resetRemote = function(playerId, vehicleId, data)
-  local veh, rv, key = _withRemoteVehicle(playerId, vehicleId, "reset")
-  if not veh then return end
-
-  local now = os.clock()
+  local key = makeKey(playerId, vehicleId)
   local cfg = _decodeJson(data)
   if not cfg then
     _bumpApplyStat("reset_drop_decode")
     return
   end
+  local rv = M.remoteVehicles[key]
+  if not rv then
+    M._pendingRemoteState[key] = M._pendingRemoteState[key] or {}
+    M._pendingRemoteState[key].reset = data
+    M._pendingRemoteState[key].damage = nil
+    _bumpApplyStat("reset_retained_pre_spawn")
+    return
+  end
+  local veh = rv.gameVehicle or (rv.gameVehicleId and scenetree.findObjectById(rv.gameVehicleId))
+  if not veh then
+    rv._pendingResetData = data
+    local suppliedEpoch = tonumber(cfg.damageEpoch)
+    if suppliedEpoch ~= nil then
+      rv.damageEpoch = math.max(rv.damageEpoch or 0, math.floor(suppliedEpoch))
+    elseif rv._pendingResetEpochApplied ~= data then
+      rv.damageEpoch = (rv.damageEpoch or 0) + 1
+    end
+    rv._pendingResetEpochApplied = data
+    rv._lastDamageData = nil
+    rv._pendingDamageData = nil
+    rv._damageInFlight = nil
+    _bumpApplyStat("reset_retained_no_vehicle")
+    return
+  end
+
+  local now = os.clock()
 
   local resetMinInterval = math.max(0.0, math.min(3.0, _getConfigNumber("remoteResetMinIntervalSec", 0.5)))
   local resetUnchanged = (rv._lastResetPayload ~= nil and rv._lastResetPayload == data)
@@ -775,8 +990,10 @@ M.resetRemote = function(playerId, vehicleId, data)
       -- positionVE is a controller, not a vlua extension — extensions.hook()
       -- would never reach it; call it through the controller registry.
       _queueVeLuaCommand(rv.gameVehicle,
-        "local _hb=controller and controller.getController and controller.getController('highbeamPositionVE') or nil; if _hb and _hb.onHighBeamRemoteReset then _hb.onHighBeamRemoteReset() end",
-        "reset_hook")
+        "local _names={'highbeamPositionVE','highbeamInputsVE','highbeamPowertrainVE','highbeamDamageVE','highbeamVelocityVE'} "
+        .. "for _,_n in ipairs(_names) do local _hb=controller and controller.getController and controller.getController(_n) or nil; "
+        .. "if _hb then if _hb.onHighBeamRemoteReset then _hb.onHighBeamRemoteReset() elseif _hb.onReset then _hb.onReset() elseif _hb.reset then _hb.reset() end end end",
+        "reset_hooks")
     end
     local okPos = pcall(function()
       veh:setPositionRotation(
@@ -794,8 +1011,11 @@ M.resetRemote = function(playerId, vehicleId, data)
     if rv._hasVE and rv.gameVehicle then
       local diagEnabled = _verboseSyncLoggingEnabled() and "true" or "false"
       local cmd = string.format(
-        "local _hb=controller and controller.getController and controller.getController('highbeamPositionVE') or nil; if _hb and _hb.setDiagnostics then _hb.setDiagnostics(%s) end; if _hb and _hb.resetTo then _hb.resetTo(%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.6f) end",
+        "local _hb=controller and controller.getController and controller.getController('highbeamPositionVE') or nil; if _hb and _hb.setDiagnostics then _hb.setDiagnostics(%s) end; if _hb and _hb.resetToOrigin then _hb.resetToOrigin(%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.6f) elseif _hb and _hb.resetTo then _hb.resetTo(%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.6f) end",
         diagEnabled,
+        cfg.pos[1], cfg.pos[2], cfg.pos[3],
+        cfg.rot[1], cfg.rot[2], cfg.rot[3], cfg.rot[4],
+        resetTime,
         cfg.pos[1], cfg.pos[2], cfg.pos[3],
         cfg.rot[1], cfg.rot[2], cfg.rot[3], cfg.rot[4],
         resetTime
@@ -817,6 +1037,20 @@ M.resetRemote = function(playerId, vehicleId, data)
   rv._appliedBrokenBeams = nil
   rv._appliedBreakGroups = nil
   rv._appliedDeformLengths = nil
+  local suppliedEpoch = tonumber(cfg.damageEpoch)
+  if suppliedEpoch ~= nil then
+    -- Versioned reset epochs are authoritative and idempotent. A queued or
+    -- duplicated reset must never advance the receiver past the sender.
+    rv.damageEpoch = math.max(rv.damageEpoch or 0, math.floor(suppliedEpoch))
+  elseif rv._pendingResetEpochApplied ~= data then
+    rv.damageEpoch = (rv.damageEpoch or 0) + 1
+  end
+  rv._pendingResetEpochApplied = nil
+  rv._lastDamageRevision = -1
+  rv._appliedDamageRevision = -1
+  rv._damageInFlight = nil
+  rv._damageApplyErrors = 0
+  rv._damageRetryAt = nil
   rv._lastDamageData = nil
   rv._lastDamageAt = nil
   rv._pendingDamageData = nil
@@ -828,266 +1062,280 @@ M.resetRemote = function(playerId, vehicleId, data)
     .. ' stabilizeUntil=' .. string.format('%.2f', rv._stabilizeUntil or 0))
 end
 
--- Remote component payloads are peer-controlled JSON relayed verbatim by the
--- server. Any value interpolated into a queueLuaCommand string MUST be coerced
--- to a validated number first — a raw string field would otherwise execute as
--- Lua in the vehicle context (and vehicle Lua can escalate to GE Lua). These
--- helpers return a safe literal or nil; callers skip the entry on nil.
-local function _safeInt(v)
-  local n = tonumber(v)
-  if not n then return nil end
-  -- Reject NaN/inf and non-integral values (node/beam ids are integers).
-  if n ~= n or n == math.huge or n == -math.huge then return nil end
-  n = math.floor(n + 0.5)
-  return string.format("%d", n)
+local function _encodeJson(value)
+  if jsonEncode then
+    local ok, encoded = pcall(jsonEncode, value)
+    if ok and type(encoded) == "string" then return encoded end
+  end
+  if Engine and Engine.JSONEncode then
+    local ok, encoded = pcall(Engine.JSONEncode, value)
+    if ok and type(encoded) == "string" then return encoded end
+  end
+  return nil
 end
 
-local function _safeNum(v)
-  local n = tonumber(v)
-  if not n then return nil end
-  if n ~= n or n == math.huge or n == -math.huge then return nil end
-  return string.format("%.6g", n)
+local function _validateDamageState(state)
+  if type(state) ~= "table" then return false, "not_table" end
+  local brokenCount, groupCount, deformCount = 0, 0, 0
+  if state.broken ~= nil and type(state.broken) ~= "table" then return false, "broken_not_table" end
+  for _, id in ipairs(state.broken or {}) do
+    local n = tonumber(id)
+    if not _isFinite(n, 1000000) or n ~= math.floor(n) or n < 0 then return false, "invalid_beam_id" end
+    brokenCount = brokenCount + 1
+    if brokenCount > 20000 then return false, "too_many_broken" end
+  end
+  if state.breakGroups ~= nil and type(state.breakGroups) ~= "table" then return false, "groups_not_table" end
+  for _, group in ipairs(state.breakGroups or {}) do
+    if type(group) ~= "string" or #group == 0 or #group > 128 then return false, "invalid_group" end
+    groupCount = groupCount + 1
+    if groupCount > 2048 then return false, "too_many_groups" end
+  end
+  if state.deform ~= nil and type(state.deform) ~= "table" then return false, "deform_not_table" end
+  for rawId, value in pairs(state.deform or {}) do
+    local id = tonumber(rawId)
+    local deformation = type(value) == "table" and tonumber(value[1]) or 0
+    local restLength = type(value) == "table" and tonumber(value[2]) or tonumber(value)
+    if not _isFinite(id, 1000000) or id ~= math.floor(id) or id < 0
+      or not _isFinite(deformation, 1000) or not _isFinite(restLength, 1000)
+      or restLength <= 0.0001 then return false, "invalid_deform" end
+    deformCount = deformCount + 1
+    if deformCount > 20000 then return false, "too_many_deforms" end
+  end
+  return true
 end
 
--- Apply damage data to a remote vehicle
+-- Durable, acknowledged damage path. Full snapshots remain pending until the
+-- vehicle-side controller confirms that the actual beam operations executed.
 M.applyDamage = function(playerId, vehicleId, damageData)
-  local veh, rv, key = _withRemoteVehicle(playerId, vehicleId, "damage")
-  if not veh then return end
-  if rv._veUnhealthy then
-    _bumpApplyStat("damage_drop_unhealthy")
-    return
-  end
-
-  rv._lastDamageData = damageData
-  rv._lastDamageAt = os.clock()
-
-  if _isStabilizing(rv) then
-    rv._pendingDamageData = damageData
-    _bumpApplyStat("damage_deferred_stabilizing")
-    if _verboseSyncLoggingEnabled() then
-      log('D', logTag, 'damage deferred during reset stabilization key=' .. key)
-    end
-    return
-  end
-
-  if _isSettling(rv) then
-    rv._pendingDamageData = damageData
-    _bumpApplyStat("damage_deferred_settling")
-    if _verboseSyncLoggingEnabled() then
-      log('D', logTag, 'damage deferred until puppet settles key=' .. key)
-    end
-    return
-  end
-
-  local dmg = _decodeJson(damageData)
-  if not dmg then
+  local key = makeKey(playerId, vehicleId)
+  local raw = tostring(damageData or "")
+  local decoded = _decodeJson(raw)
+  if not decoded then
     _bumpApplyStat("damage_drop_decode")
     return
   end
 
-  local commandsQueued = 0
-  local newBroken, newGroups, newDeform, ignoredNodes = 0, 0, 0, 0
+  local rv = M.remoteVehicles[key]
+  if not rv then
+    M._pendingRemoteState[key] = M._pendingRemoteState[key] or {}
+    M._pendingRemoteState[key].damage = raw
+    _bumpApplyStat("damage_retained_pre_spawn")
+    return
+  end
 
-  -- Apply beam breaks (sender field name is 'broken').
-  -- The sender transmits its full broken-beam set every packet. Re-issuing a
-  -- breakBeam for beams we already broke re-dumps the entire set (e.g. 861
-  -- beams) each frame — pointless churn that also perturbs the structure. Track
-  -- what we have already applied and only break beams that are newly broken, so
-  -- damage is applied incrementally like BeamMP. The cache is cleared whenever
-  -- the puppet is repaired (reset) or respawned.
-  if dmg.broken then
-    rv._appliedBrokenBeams = rv._appliedBrokenBeams or {}
-    local applied = rv._appliedBrokenBeams
-    local ok = pcall(function()
-      for _, beamId in ipairs(dmg.broken) do
-        local id = _safeInt(beamId)
-        if id and not applied[id] then
-          applied[id] = true
-          veh:queueLuaCommand('obj:breakBeam(' .. id .. ')')
-          commandsQueued = commandsQueued + 1
-          newBroken = newBroken + 1
-        end
-      end
-    end)
-    if not ok then
-      _bumpApplyStat("damage_error_break")
+  local state = type(decoded.state) == "table" and decoded.state or decoded
+  local valid, reason = _validateDamageState(state)
+  if not valid then
+    _bumpApplyStat("damage_drop_invalid_" .. tostring(reason))
+    return
+  end
+
+  local damageConfigRevision = math.max(0, math.floor(tonumber(decoded.configRevision) or 0))
+  if damageConfigRevision ~= (rv.configRevision or 0) then
+    if damageConfigRevision < (rv.configRevision or 0) then
+      _bumpApplyStat("damage_drop_old_config")
+    else
+      rv._futureDamageByConfig = rv._futureDamageByConfig or {}
+      rv._futureDamageByConfig[damageConfigRevision] = raw
+      _bumpApplyStat("damage_retained_future_config")
     end
+    return
   end
 
-  -- Legacy group-only payload support. Current senders include the complete
-  -- individual broken-beam set; applying groups on top of that breaks the same
-  -- beams twice. Only use groups when no individual set was supplied.
-  if dmg.breakGroups and (not dmg.broken or #dmg.broken == 0) then
-    rv._appliedBreakGroups = rv._appliedBreakGroups or {}
-    local appliedGroups = rv._appliedBreakGroups
-    local ok = pcall(function()
-      for _, groupName in ipairs(dmg.breakGroups) do
-        local groupKey = tostring(groupName)
-        if not appliedGroups[groupKey] then
-          appliedGroups[groupKey] = true
-          local g = string.format("%q", groupKey)
-          veh:queueLuaCommand(
-            'local _g=' .. g .. ' '
-            .. 'for _i=0,obj:getBeamCount()-1 do '
-            .. '  local _bg=obj:getBreakGroup(_i) '
-            .. '  if _bg==_g then obj:breakBeam(_i) end '
-            .. 'end'
-          )
-          commandsQueued = commandsQueued + 1
-          newGroups = newGroups + 1
-        end
-      end
-    end)
-    if not ok then
-      _bumpApplyStat("damage_error_break_group")
-    end
-  end
-
-  -- Apply beam deformation (sender field name is 'deform')
-  -- Each entry is {deformVal, restLength} or a plain number (legacy).
-  -- We use obj:setBeamLength to set the physical length directly.
-  if dmg.deform then
-    rv._appliedDeformLengths = rv._appliedDeformLengths or {}
-    local appliedLengths = rv._appliedDeformLengths
-    local ok = pcall(function()
-      for beamIdStr, val in pairs(dmg.deform) do
-        local cid = _safeInt(beamIdStr)
-        if cid and type(val) == 'table' and val[2] then
-          -- New format: {deformation, restLength}
-          local restLen = _safeNum(val[2])
-          if restLen and appliedLengths[cid] ~= restLen then
-            appliedLengths[cid] = restLen
-            veh:queueLuaCommand('obj:setBeamLength(' .. cid .. ', ' .. restLen .. ')')
-            commandsQueued = commandsQueued + 1
-            newDeform = newDeform + 1
-          end
-        end
-      end
-    end)
-    if not ok then
-      _bumpApplyStat("damage_error_deform")
-    end
-  end
-
-  -- Node positions are transient simulation state, not durable damage. The
-  -- fallback sender used to include ordinary suspension/wheel travel and this
-  -- direct write fought the puppet's independent physics. Ignore legacy node
-  -- payloads; broken beams and stable rest-length changes carry structural
-  -- damage without freezing suspension.
-  if dmg.nodes then
-    for _, _ in pairs(dmg.nodes) do ignoredNodes = ignoredNodes + 1 end
-    if ignoredNodes > 0 then _bumpApplyStat("damage_nodes_ignored") end
-  end
-
-  if commandsQueued == 0 then
-    _bumpApplyStat("damage_noop")
+  local epoch = math.max(0, math.floor(tonumber(decoded.epoch) or tonumber(rv.damageEpoch) or 0))
+  local revision
+  if decoded.revision ~= nil then
+    revision = math.max(0, math.floor(tonumber(decoded.revision) or 0))
+  elseif rv._lastDamageData == raw and rv._lastDamageRevision ~= nil then
+    revision = rv._lastDamageRevision
   else
-    _bumpApplyStat("damage_applied")
-    if _verboseSyncLoggingEnabled() then
-      log('D', logTag, 'damage applied key=' .. key
-        .. ' queued=' .. tostring(commandsQueued)
-        .. ' newBroken=' .. tostring(newBroken)
-        .. ' newGroups=' .. tostring(newGroups)
-        .. ' newDeform=' .. tostring(newDeform)
-        .. ' ignoredNodes=' .. tostring(ignoredNodes))
+    revision = math.max(0, (rv._lastDamageRevision or -1) + 1)
+  end
+
+  if epoch < (rv.damageEpoch or 0)
+    or (epoch == (rv.damageEpoch or 0) and revision < (rv._lastDamageRevision or -1)) then
+    _bumpApplyStat("damage_drop_stale")
+    return
+  end
+  if epoch > (rv.damageEpoch or 0) then
+    rv.damageEpoch = epoch
+    rv._appliedDamageRevision = -1
+    rv._damageInFlight = nil
+  end
+
+  rv._lastDamageData = raw
+  rv._lastDamageAt = os.clock()
+  rv._lastDamageRevision = revision
+  rv._pendingDamageData = raw
+
+  local veh = rv.gameVehicle or (rv.gameVehicleId and scenetree.findObjectById(rv.gameVehicleId))
+  if not veh or not rv._hasVE or rv._veUnhealthy or _isStabilizing(rv) or _isSettling(rv) then
+    _bumpApplyStat("damage_retained_not_ready")
+    return
+  end
+
+  local now = os.clock()
+  if rv._damageRetryAt and now < rv._damageRetryAt then return end
+  if rv._damageInFlight and rv._damageInFlight.epoch == epoch
+    and rv._damageInFlight.revision == revision
+    and (now - rv._damageInFlight.sentAt) < 1.0 then
+    return
+  end
+
+  local stateJson = _encodeJson(state)
+  if not stateJson then
+    _bumpApplyStat("damage_error_encode")
+    return
+  end
+  local cmd = "local _hb=controller and controller.getController and controller.getController('highbeamDamageVE') or nil; "
+    .. "if _hb and _hb.applyRemoteDamage then local _hbd=(jsonDecode and jsonDecode(" .. string.format("%q", stateJson)
+    .. ")) or nil; _hb.applyRemoteDamage(_hbd," .. tostring(epoch) .. "," .. tostring(revision) .. ") end"
+  if _queueVeLuaCommand(veh, cmd, "damage_transaction") then
+    rv._damageInFlight = { epoch = epoch, revision = revision, sentAt = now }
+    _bumpApplyStat("damage_transaction_queued")
+  else
+    _bumpApplyStat("damage_transaction_queue_failed")
+  end
+end
+
+M.onRemoteDamageApplied = function(gameVid, epoch, revision, brokenCount, groupCount, deformCount, errorCount)
+  gameVid = tonumber(gameVid)
+  epoch = math.floor(tonumber(epoch) or 0)
+  revision = math.floor(tonumber(revision) or 0)
+  errorCount = math.floor(tonumber(errorCount) or 0)
+  for _, rv in pairs(M.remoteVehicles) do
+    if rv.gameVehicleId == gameVid then
+      local inflight = rv._damageInFlight
+      if not inflight or inflight.epoch ~= epoch or inflight.revision ~= revision then
+        _bumpApplyStat("damage_ack_stale")
+        return
+      end
+      rv._damageInFlight = nil
+      if errorCount == 0 then
+        rv._damageApplyErrors = 0
+        rv._damageRetryAt = nil
+        rv._appliedDamageRevision = revision
+        if rv._lastDamageRevision == revision and (rv.damageEpoch or 0) == epoch then
+          rv._pendingDamageData = nil
+        end
+        _bumpApplyStat("damage_ack_applied")
+      else
+        rv._damageApplyErrors = (rv._damageApplyErrors or 0) + 1
+        rv._damageRetryAt = os.clock() + math.min(4.0, 0.25 * (2 ^ math.min(rv._damageApplyErrors - 1, 4)))
+        if rv._damageApplyErrors == 3 and rv.gameVehicle then
+          _queueRemoteVeBootstrap(rv, makeKey(rv.playerId, rv.vehicleId))
+          _bumpApplyStat("damage_controller_rebootstrap")
+        elseif rv._damageApplyErrors >= 6 then
+          _respawnRemoteVehicle(rv, makeKey(rv.playerId, rv.vehicleId), "damage_apply_errors")
+          rv._damageApplyErrors = 0
+          rv._damageRetryAt = nil
+        end
+        _bumpApplyStat("damage_ack_error")
+      end
+      if _verboseSyncLoggingEnabled() then
+        log('D', logTag, 'damage ack key=' .. makeKey(rv.playerId, rv.vehicleId)
+          .. ' epoch=' .. tostring(epoch) .. ' revision=' .. tostring(revision)
+          .. ' broken=' .. tostring(brokenCount) .. ' groups=' .. tostring(groupCount)
+          .. ' deform=' .. tostring(deformCount) .. ' errors=' .. tostring(errorCount))
+      end
+      return
+    end
+  end
+  _bumpApplyStat("damage_ack_no_remote")
+end
+
+M.onRemoteDamageAudit = function(gameVid, epoch, revision, extraBroken, missingBroken, deformMismatch)
+  gameVid = tonumber(gameVid)
+  epoch = math.floor(tonumber(epoch) or 0)
+  revision = math.floor(tonumber(revision) or 0)
+  local divergence = math.max(0, math.floor(tonumber(extraBroken) or 0))
+    + math.max(0, math.floor(tonumber(missingBroken) or 0))
+    + math.max(0, math.floor(tonumber(deformMismatch) or 0))
+  for key, rv in pairs(M.remoteVehicles) do
+    if rv.gameVehicleId == gameVid and (rv.damageEpoch or 0) == epoch
+      and (rv._appliedDamageRevision or -1) == revision then
+      if divergence == 0 then
+        rv._damageDivergenceCount = 0
+      else
+        rv._damageDivergenceCount = (rv._damageDivergenceCount or 0) + 1
+        _bumpApplyStat("damage_audit_diverged")
+        if rv._damageDivergenceCount >= 3 then
+          rv._damageDivergenceCount = 0
+          _respawnRemoteVehicle(rv, key, "persistent_damage_divergence")
+          _bumpApplyStat("damage_audit_reconciled")
+        end
+      end
+      return
     end
   end
 end
 
 -- Apply electrics state update to a remote vehicle
 M.applyElectrics = function(playerId, vehicleId, electricsData)
-  local veh, rv, key = _withRemoteVehicle(playerId, vehicleId, "electrics")
-  if not veh then return end
+  local key = makeKey(playerId, vehicleId)
+  local rv = M.remoteVehicles[key]
+  if not rv then
+    M._pendingRemoteState[key] = M._pendingRemoteState[key] or {}
+    M._pendingRemoteState[key].electrics = electricsData
+    _bumpApplyStat("electrics_retained_pre_spawn")
+    return
+  end
+  local veh = rv.gameVehicle or (rv.gameVehicleId and scenetree.findObjectById(rv.gameVehicleId))
+  rv._lastElectricsData = electricsData
+  if not veh or not rv._hasVE then
+    rv._pendingElectricsData = electricsData
+    _bumpApplyStat("electrics_retained_not_ready")
+    return
+  end
   if rv and rv._veUnhealthy then
-    _bumpApplyStat("electrics_drop_unhealthy")
+    rv._pendingElectricsData = electricsData
+    _bumpApplyStat("electrics_retained_unhealthy")
     return
   end
 
-  if M.remoteVehicles[key] and M.remoteVehicles[key]._hasVE then
-    local jsonPayload = string.format("%q", tostring(electricsData or "{}"))
-    local cmd = "local _hb=controller and controller.getController and controller.getController('highbeamElectricsVE') or nil; if _hb and _hb.applyElectrics then local _hbj=" .. jsonPayload .. "; local _hbt=(jsonDecode and jsonDecode(_hbj)) or {}; _hb.applyElectrics(_hbt) end"
-    local okForward = _queueVeLuaCommand(veh, cmd, "electrics")
-    if okForward then
-      _bumpApplyStat("electrics_applied")
-      return
-    end
-  end
-
-  local elec = _decodeJson(electricsData)
-  if not elec then
-    _bumpApplyStat("electrics_drop_decode")
-    return
-  end
-
-  -- Apply electrics via vehicle-side Lua
-  -- P4.3: Added gear and parking brake
-  -- SECURITY: every value below is peer-controlled JSON. Coerce each through
-  -- _safeNum so a crafted string field can never be interpolated as Lua into
-  -- the queued vehicle command. gear_A is intentionally omitted (writing raw
-  -- gear values to electrics causes a desiredGearRatio nil crash in
-  -- automaticGearbox); gear flows only through the validated _applyGear path.
-  -- ignitionLevel is handled exclusively by powertrainVE.
-  local ELECTRICS_TARGETS = {
-    { field = "lights", target = "lights_state" },
-    { field = "signal_L", target = "signal_L" },
-    { field = "signal_R", target = "signal_R" },
-    { field = "hazard", target = "hazard_enabled" },
-    { field = "horn", target = "horn" },
-    { field = "headlights", target = "lowbeam" },
-    { field = "highbeams", target = "highbeam" },
-    { field = "parkingbrake", target = "parkingbrake" },
-    { field = "steering", target = "steering_input" },
-    { field = "steering", target = "steering" },
-    { field = "rpm", target = "rpm" },
-    { field = "wheelspeed", target = "wheelspeed" },
-    { field = "clutch", target = "clutch" },
-  }
-  local commandCount = 0
-  local ok = pcall(function()
-    local cmds = {}
-    for _, entry in ipairs(ELECTRICS_TARGETS) do
-      if elec[entry.field] ~= nil then
-        local num = _safeNum(elec[entry.field])
-        if num then
-          table.insert(cmds, 'electrics.values.' .. entry.target .. ' = ' .. num)
-        end
-      end
-    end
-    if #cmds > 0 then
-      commandCount = #cmds
-      veh:queueLuaCommand(table.concat(cmds, ' '))
-    end
-  end)
-  if not ok then
-    _bumpApplyStat("electrics_error_apply")
-    return
-  end
-
-  if commandCount == 0 then
-    _bumpApplyStat("electrics_noop")
-  else
+  local jsonPayload = string.format("%q", tostring(electricsData or "{}"))
+  local cmd = "local _hb=controller and controller.getController and controller.getController('highbeamElectricsVE') or nil; if _hb and _hb.applyElectrics then local _hbj=" .. jsonPayload .. "; local _hbt=(jsonDecode and jsonDecode(_hbj)) or {}; _hb.applyElectrics(_hbt) end"
+  local okForward = _queueVeLuaCommand(veh, cmd, "electrics")
+  if okForward then
     _bumpApplyStat("electrics_applied")
-    if _verboseSyncLoggingEnabled() then
-      log('D', logTag, 'electrics applied key=' .. key .. ' cmds=' .. tostring(commandCount))
-    end
+    return
   end
+  rv._pendingElectricsData = electricsData
+  _bumpApplyStat("electrics_error_apply")
 end
 
 M.applyInputs = function(playerId, vehicleId, deltaStr)
-  local veh, rv, key = _withRemoteVehicle(playerId, vehicleId, "inputs")
-  if not veh then return end
+  local key = makeKey(playerId, vehicleId)
+  local rv = M.remoteVehicles[key]
+  if not rv then
+    M._pendingRemoteState[key] = M._pendingRemoteState[key] or {}
+    local pending = M._pendingRemoteState[key]
+    pending.inputState = _mergeInputState(pending.inputState, tostring(deltaStr or ""))
+    _bumpApplyStat("inputs_retained_pre_spawn")
+    return
+  end
+  local veh = rv.gameVehicle or (rv.gameVehicleId and scenetree.findObjectById(rv.gameVehicleId))
+  rv._inputState = _mergeInputState(rv._inputState, tostring(deltaStr or ""))
+  rv._lastInputsData = _serializeInputState(rv._inputState)
+  if not veh then
+    rv._pendingInputsData = rv._lastInputsData
+    _bumpApplyStat("inputs_retained_no_vehicle")
+    return
+  end
   if rv._veUnhealthy then
-    _bumpApplyStat("inputs_drop_unhealthy")
+    rv._pendingInputsData = rv._lastInputsData
+    _bumpApplyStat("inputs_retained_unhealthy")
     return
   end
   if not rv._hasVE then
-    _enqueueComponent(rv, { kind = "inputs", data = deltaStr })
-    _bumpApplyStat("inputs_queued_no_ve")
+    rv._pendingInputsData = rv._lastInputsData
+    _bumpApplyStat("inputs_retained_no_ve")
     return
   end
 
   if _isStabilizing(rv) then
-    _bumpApplyStat("inputs_skipped_stabilizing")
+    rv._pendingInputsData = rv._lastInputsData
+    _bumpApplyStat("inputs_retained_stabilizing")
     if _verboseSyncLoggingEnabled() then
       log('D', logTag, 'inputs skipped during reset stabilization key=' .. key)
     end
@@ -1098,7 +1346,7 @@ M.applyInputs = function(playerId, vehicleId, deltaStr)
     return string.format("%q", s or "")
   end
 
-  local cmd = "local _hb=controller and controller.getController and controller.getController('highbeamInputsVE') or nil; if _hb and _hb.applyInputs then local d={} for part in string.gmatch(" .. escapeLuaString(deltaStr) .. ",'[^,]+') do local k,v=string.match(part,'^([%a]+)=([^,]+)$'); if k then d[k]=tonumber(v) or 0 end end _hb.applyInputs(d) end"
+  local cmd = "local _hb=controller and controller.getController and controller.getController('highbeamInputsVE') or nil; if _hb and _hb.applyInputs then local d={} for part in string.gmatch(" .. escapeLuaString(deltaStr) .. ",'[^,]+') do local k,v=string.match(part,'^([%a]+)=([^,]+)$'); if k then if k=='g' and tonumber(v)==nil then d[k]=v else d[k]=tonumber(v) or 0 end end end _hb.applyInputs(d) end"
   local ok = _queueVeLuaCommand(veh, cmd, "inputs")
   if ok then
     _bumpApplyStat("inputs_applied")
@@ -1108,10 +1356,24 @@ M.applyInputs = function(playerId, vehicleId, deltaStr)
 end
 
 M.applyPowertrain = function(playerId, vehicleId, powertrainData)
-  local veh, rv, key = _withRemoteVehicle(playerId, vehicleId, "powertrain")
-  if not veh then return end
+  local key = makeKey(playerId, vehicleId)
+  local rv = M.remoteVehicles[key]
+  if not rv then
+    M._pendingRemoteState[key] = M._pendingRemoteState[key] or {}
+    M._pendingRemoteState[key].powertrain = powertrainData
+    _bumpApplyStat("powertrain_retained_pre_spawn")
+    return
+  end
+  local veh = rv.gameVehicle or (rv.gameVehicleId and scenetree.findObjectById(rv.gameVehicleId))
+  rv._lastPowertrainData = powertrainData
+  if not veh then
+    rv._pendingPowertrainData = powertrainData
+    _bumpApplyStat("powertrain_retained_no_vehicle")
+    return
+  end
   if rv._veUnhealthy then
-    _bumpApplyStat("powertrain_drop_unhealthy")
+    rv._pendingPowertrainData = powertrainData
+    _bumpApplyStat("powertrain_retained_unhealthy")
     return
   end
 
@@ -1125,8 +1387,8 @@ M.applyPowertrain = function(playerId, vehicleId, powertrainData)
   end
 
   if not rv._hasVE then
-    _enqueueComponent(rv, { kind = "powertrain", data = powertrainData })
-    _bumpApplyStat("powertrain_queued_no_ve")
+    rv._pendingPowertrainData = powertrainData
+    _bumpApplyStat("powertrain_retained_no_ve")
     return
   end
 
@@ -1237,6 +1499,8 @@ end
 
 M.removeRemote = function(playerId, vehicleId)
   local key = makeKey(playerId, vehicleId)
+  M._deletedRemoteKeys[key] = os.clock()
+  M._pendingRemoteState[key] = nil
   local rv = M.remoteVehicles[key]
   if not rv then
     return
@@ -1251,6 +1515,7 @@ M.removeRemote = function(playerId, vehicleId)
   end
 
   M.remoteVehicles[key] = nil
+  M._pendingRemoteState[key] = nil
   log('I', logTag, 'Removed remote vehicle: ' .. key)
 end
 
@@ -1272,7 +1537,15 @@ M.removeAllForPlayer = function(playerId)
   end
 
   for _, key in ipairs(toRemove) do
+    M._deletedRemoteKeys[key] = os.clock()
     M.remoteVehicles[key] = nil
+    M._pendingRemoteState[key] = nil
+  end
+  for key, _ in pairs(M._pendingRemoteState) do
+    if key:sub(1, #prefix) == prefix then
+      M._deletedRemoteKeys[key] = os.clock()
+      M._pendingRemoteState[key] = nil
+    end
   end
 
   if #toRemove > 0 then
@@ -1287,6 +1560,21 @@ M.tick = function(dt)
   for _, rv in pairs(M.remoteVehicles) do
     local keyForRv = tostring(rv.playerId) .. '_' .. tostring(rv.vehicleId)
     _applyDeferredAfterStabilize(rv, keyForRv)
+
+    if rv._hasVE and rv.gameVehicle and rv._lastDamageData
+      and rv._appliedDamageRevision ~= nil and now >= (rv._damageAuditNextAt or 0) then
+      rv._damageAuditNextAt = now + 5.0
+      local envelope = _decodeJson(rv._lastDamageData)
+      local state = envelope and (type(envelope.state) == "table" and envelope.state or envelope) or nil
+      local stateJson = state and _encodeJson(state) or nil
+      if stateJson then
+        local cmd = "local _hb=controller and controller.getController and controller.getController('highbeamDamageVE') or nil; "
+          .. "if _hb and _hb.auditRemoteDamage then local _hbd=(jsonDecode and jsonDecode(" .. string.format("%q", stateJson)
+          .. ")) or nil; _hb.auditRemoteDamage(_hbd," .. tostring(rv.damageEpoch or 0) .. ","
+          .. tostring(rv._appliedDamageRevision or 0) .. ") end"
+        _queueVeLuaCommand(rv.gameVehicle, cmd, "damage_audit")
+      end
+    end
 
     if rv._veUnhealthy then
       goto continue_vehicle

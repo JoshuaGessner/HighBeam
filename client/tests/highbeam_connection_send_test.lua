@@ -1,4 +1,5 @@
 HIGHBEAM_TEST = true
+log = function() end
 
 jsonEncode = function(packet)
   return '{"type":"' .. tostring(packet.type) .. '"}'
@@ -30,5 +31,15 @@ assert(connection._testFlushTcpSendQueue() == true, "queued suffix flush failed"
 queued, offset, bytes = connection._testTcpSendQueueState()
 assert(queued == 0 and offset == 1 and bytes == 0, "send queue did not fully drain")
 assert(calls[2] and calls[2].offset == 6, "send resumed from the wrong byte")
+
+local closed = false
+local fakeUdp = { close = function() closed = true end }
+connection._testSetUdp(fakeUdp, connection.STATE_CONNECTED)
+connection._testMarkUdpValid("test_ack")
+assert(connection.isUdpHealthy(), "fresh validated UDP path should be healthy")
+connection._testResetUdpSession(true, "inactive")
+assert(closed, "UDP reset did not close the prior socket")
+assert(connection._udpBindConfirmed == false and not connection.isUdpHealthy(),
+  "UDP reset retained stale confirmation/health")
 
 print("highbeam connection send tests passed")

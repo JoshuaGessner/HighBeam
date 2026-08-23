@@ -12,6 +12,9 @@ local HEADER_SIZE = 4  -- 4-byte LE uint32 length prefix
 local MAX_TCP_SEND_QUEUE_BYTES = 4 * 1024 * 1024
 local CONNECT_TIMEOUT = 5  -- 5-second connect timeout (Phase 2.1)
 local PONG_TIMEOUT = 30  -- 30-second pong timeout (Phase 2.2)
+local UDP_HEALTH_TIMEOUT = 3.0
+local UDP_PROBE_INTERVAL_HEALTHY = 2.0
+local UDP_PROBE_INTERVAL_RECOVERY = 0.5
 
 -- Reconnection settings
 local RECONNECT_BASE_DELAY = 2    -- Initial delay in seconds
@@ -67,6 +70,9 @@ M._udpBindConfirmed = false  -- true once we receive the first inbound UDP packe
 M._udpBindRetryTimer = 0     -- timer for UdpBind retry
 M._udpBindRetrySent = 0      -- how many UdpBind retries sent
 M._udpBindAckCount = 0       -- count of bind ACK packets received in current diag interval
+M._udpLastValidAt = nil      -- last validated bind ACK or relayed position packet
+M._udpHealthState = "inactive" -- inactive | probing | active | fallback
+M._udpHealthTransitions = 0
 M._udpPerPlayerRx = {}       -- [playerId] = count of inbound UDP packets
 M._udpUnexpectedLogCount = 0 -- capped detailed logs for unexpected UDP packets
 M._componentRxStats = {}
@@ -84,6 +90,46 @@ local function _bumpCounter(map, key)
   if not map then return end
   local k = tostring(key or "unknown")
   map[k] = (map[k] or 0) + 1
+end
+
+local function _setUdpHealthState(nextState, reason)
+  if M._udpHealthState == nextState then return end
+  local previous = M._udpHealthState
+  M._udpHealthState = nextState
+  M._udpHealthTransitions = M._udpHealthTransitions + 1
+  log('I', logTag, 'UDP health ' .. tostring(previous) .. ' -> ' .. tostring(nextState)
+    .. ' reason=' .. tostring(reason or 'unspecified'))
+end
+
+local function _resetUdpSession(closeSocket, nextState)
+  if closeSocket and udp then
+    pcall(function() udp:close() end)
+    udp = nil
+  end
+  M._udpBindConfirmed = false
+  M._udpBindRetryTimer = 0
+  M._udpBindRetrySent = 0
+  M._udpLastValidAt = nil
+  M._udpRxTimestamps = {}
+  M._udpRxTsIdx = 0
+  M._udpRxRateHz = 0
+  M._udpLastRecvErr = 'none'
+  M._udpFirstSeenVehicles = {}
+  _setUdpHealthState(nextState or "inactive", "session_reset")
+end
+
+local function _markUdpValid(reason)
+  M._udpLastValidAt = os.clock()
+  M._udpBindConfirmed = true
+  _setUdpHealthState("active", reason)
+end
+
+M.isUdpHealthy = function(now)
+  if M.state ~= M.STATE_CONNECTED or not udp or not M._udpBindConfirmed or not M._udpLastValidAt then
+    return false
+  end
+  local age = (now or os.clock()) - M._udpLastValidAt
+  return age >= 0 and age <= UDP_HEALTH_TIMEOUT
 end
 
 local function _clearTcpSendQueue()
@@ -678,17 +724,30 @@ M.tick = function(dt)
       return
     end
     
-    -- Retry UdpBind if not yet confirmed (bind may be lost to NAT/firewall)
-    if udp and M._sessionHash and not M._udpBindConfirmed then
+    -- Keep probing after bind confirmation. A historical ACK cannot prove that
+    -- a NAT mapping or reconnected socket is still usable.
+    if udp and M._sessionHash then
+      local udpHealthy = M.isUdpHealthy(os.clock())
+      if M._udpBindConfirmed and not udpHealthy then
+        M._udpBindConfirmed = false
+        _setUdpHealthState("fallback", "valid_udp_timeout")
+      end
       M._udpBindRetryTimer = M._udpBindRetryTimer + dt
-      if M._udpBindRetryTimer >= 0.5 then
+      local probeInterval = udpHealthy and UDP_PROBE_INTERVAL_HEALTHY or UDP_PROBE_INTERVAL_RECOVERY
+      if M._udpBindRetryTimer >= probeInterval then
         M._udpBindRetryTimer = 0
         M._udpBindRetrySent = M._udpBindRetrySent + 1
-        udp:send(M._sessionHash .. string.char(0x01))
+        local sent, sendErr = udp:send(M._sessionHash .. string.char(0x01))
+        if not sent then
+          M._udpLastRecvErr = tostring(sendErr or "bind_probe_send_failed")
+          _setUdpHealthState("fallback", "bind_probe_send_failed")
+        elseif not udpHealthy then
+          _setUdpHealthState("probing", "bind_probe_sent")
+        end
         local peerIp, peerPort = udp:getpeername()
         local localIp, localPort = udp:getsockname()
-        log('I', logTag, 'UdpBind retry #' .. tostring(M._udpBindRetrySent)
-          .. ' (no inbound UDP yet)'
+        log('I', logTag, 'UdpBind probe #' .. tostring(M._udpBindRetrySent)
+          .. ' healthy=' .. tostring(udpHealthy)
           .. ' local=' .. tostring(localIp) .. ':' .. tostring(localPort)
           .. ' peer=' .. tostring(peerIp) .. ':' .. tostring(peerPort))
       end
@@ -739,6 +798,8 @@ M.tick = function(dt)
         .. ' udpRecvErr=' .. tostring(M._udpLastRecvErr)
         .. ' udpPolls=' .. tostring(M._udpRecvPollCount)
         .. ' udpBound=' .. tostring(M._udpBindConfirmed)
+        .. ' udpHealth=' .. tostring(M._udpHealthState)
+        .. ' udpValidAge=' .. tostring(M._udpLastValidAt and string.format('%.2f', os.clock() - M._udpLastValidAt) or 'nil')
         .. ' udpBindRetries=' .. tostring(M._udpBindRetrySent)
         .. ' deferredWorldVehicles=' .. tostring(deferredCount))
       log('I', logTag, 'Sync diag tcpRxTypes=' .. _formatCounterMap(M._tcpRxTypeCounts)
@@ -932,6 +993,7 @@ M._handlePacket = function(jsonStr)
           M._bindUdp(udpHost, udpPort, M._sessionToken)
         end)
         if not ok then
+          _resetUdpSession(true, "fallback")
           log('W', logTag, 'UDP binding failed: ' .. tostring(err))
           -- Continue without UDP - TCP is functional
         end
@@ -1223,6 +1285,8 @@ end
 M._bindUdp = function(host, port, sessionToken)
   if not socket then return end
 
+  _resetUdpSession(true, "probing")
+
   -- Compute session hash (SHA-256 truncated to 16 bytes)
   M._sessionHash = M._computeSessionHash(sessionToken)
   if not M._sessionHash then
@@ -1235,7 +1299,11 @@ M._bindUdp = function(host, port, sessionToken)
   udp:setpeername(host, port)  -- Connected mode
 
   -- Send UdpBind packet: hash + type 0x01
-  udp:send(M._sessionHash .. string.char(0x01))
+  local sent, sendErr = udp:send(M._sessionHash .. string.char(0x01))
+  if not sent then
+    M._udpLastRecvErr = tostring(sendErr or "initial_bind_send_failed")
+    _setUdpHealthState("fallback", "initial_bind_send_failed")
+  end
   -- Log peer info and hash hex for diagnostics
   local peerIp, peerPort = udp:getpeername()
   local hashHex = ''
@@ -1305,15 +1373,17 @@ M._tickUdp = function()
     -- UdpBindAck format: [16B hash][0x02][1B status]
     if #data >= 18 and packetType == 0x02 then
       M._udpBindAckCount = M._udpBindAckCount + 1
-      if not M._udpBindConfirmed then
-        M._udpBindConfirmed = true
+      local wasConfirmed = M._udpBindConfirmed
+      _markUdpValid("bind_ack")
+      if not wasConfirmed then
         log('I', logTag, 'UDP bind confirmed — bind ACK received'
           .. ' (retries=' .. tostring(M._udpBindRetrySent) .. ')')
       end
     elseif #data >= 65 and (packetType == 0x10 or packetType == 0x11) then
       -- Binary position update (0x10 legacy / 0x11 extended) — decode and dispatch
-      if not M._udpBindConfirmed then
-        M._udpBindConfirmed = true
+      local wasConfirmed = M._udpBindConfirmed
+      _markUdpValid("position_packet")
+      if not wasConfirmed then
         log('I', logTag, 'UDP bind confirmed — first inbound position packet received'
           .. ' (retries=' .. tostring(M._udpBindRetrySent) .. ')')
       end
@@ -1395,10 +1465,7 @@ M._onDisconnect = function(reason)
     pcall(function() tcp:close() end)
     tcp = nil
   end
-  if udp then
-    pcall(function() udp:close() end)
-    udp = nil
-  end
+  _resetUdpSession(true, "inactive")
   recvBuffer = ""
   _clearTcpSendQueue()
   M._sessionHash = nil
@@ -1462,6 +1529,12 @@ if rawget(_G, "HIGHBEAM_TEST") then
   M._testTcpSendQueueState = function()
     return #tcpSendQueue, tcpSendOffset, tcpSendQueuedBytes
   end
+  M._testSetUdp = function(fakeUdp, stateValue)
+    udp = fakeUdp
+    M.state = stateValue or M.STATE_CONNECTED
+  end
+  M._testMarkUdpValid = _markUdpValid
+  M._testResetUdpSession = _resetUdpSession
 end
 
 return M

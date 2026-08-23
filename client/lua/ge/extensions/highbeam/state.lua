@@ -16,9 +16,15 @@ local _damageTimers = {}  -- [gameVehicleId] = last send-attempt time
 local _damageTimer = 0  -- global polling timer for damage
 local _lastDeliveredDamageHashes = {}  -- [gameVehicleId] = last successfully sent damage payload
 local _pendingDamageData = {}  -- [gameVehicleId] = latest unsent/coalesced damage payload
+local _lastObservedDamagePayload = {} -- canonical structural state before envelope metadata
+local _damageEpoch = {} -- [gameVehicleId] = reset lifetime
+local _damageRevision = {} -- [gameVehicleId] = monotonic within epoch
+local _damageEpochChangedAt = {}
 local _lastSuppressedEmptyDamageHashes = {}  -- [gameVehicleId] = last intentionally unsent empty payload
 local _configPollTimer = 0  -- timer for mid-session config change detection
 local _lastConfigs = {}  -- [gameVehicleId] = last known partConfig string
+local _configRevision = {} -- topology revision used to bind damage beam IDs
+local _pendingConfigChanges = {} -- [gameVehicleId] durable edit waiting for TCP enqueue
 local _electricsTimer = 0  -- timer for electrics polling
 local _inputsTimer = 0     -- timer for input polling (decoupled from electrics)
 local _lastElectrics = {}  -- [gameVehicleId] = last sent electrics state string
@@ -82,11 +88,63 @@ local _veFirstDataLogged = {}
 local _playerVehicleReconcileTimer = 0
 local _playerVehicleReconcileCount = 0
 local _playerVehicleReconcileDeleteCount = 0
+local _localVeRecovery = {} -- [gameVehicleId] = { attempts, nextAt }
+local LOCAL_VE_STALE_SEC = 1.0
+local LOCAL_VE_RECOVERY_MAX_DELAY = 8.0
 
 local ABSOLUTE_SEND_RATE_CAP = 60
-local DEFAULT_TCP_POSE_FALLBACK_INTERVAL_SEC = 0.2
+local DEFAULT_TCP_POSE_FALLBACK_INTERVAL_SEC = 0.1
 local DEFAULT_LOCAL_VEHICLE_RECONCILE_SEC = 1.0
 local DAMAGE_SEND_INTERVAL_SEC = 0.2
+
+local function _isFinite(value, limit)
+  return type(value) == "number" and value == value
+    and value ~= math.huge and value ~= -math.huge
+    and math.abs(value) <= (limit or 1e20)
+end
+
+local function _encodeJson(value)
+  if jsonEncode then
+    local ok, encoded = pcall(jsonEncode, value)
+    if ok and type(encoded) == "string" then return encoded end
+  end
+  if Engine and Engine.JSONEncode then
+    local ok, encoded = pcall(Engine.JSONEncode, value)
+    if ok and type(encoded) == "string" then return encoded end
+  end
+  return nil
+end
+
+local function _clearLocalVehicleState(gameVid, keepMapping)
+  if not keepMapping then M.localVehicles[gameVid] = nil end
+  M._inflightByGameVid[gameVid] = nil
+  _damageTimers[gameVid] = nil
+  _lastDeliveredDamageHashes[gameVid] = nil
+  _pendingDamageData[gameVid] = nil
+  _lastObservedDamagePayload[gameVid] = nil
+  _damageEpoch[gameVid] = nil
+  _damageRevision[gameVid] = nil
+  _damageEpochChangedAt[gameVid] = nil
+  _lastSuppressedEmptyDamageHashes[gameVid] = nil
+  _configRevision[gameVid] = nil
+  _pendingConfigChanges[gameVid] = nil
+  _lastConfigs[gameVid] = nil
+  _lastElectrics[gameVid] = nil
+  _vePos[gameVid] = nil
+  _veRot[gameVid] = nil
+  _veVel[gameVid] = nil
+  _veSampleTime[gameVid] = nil
+  _veSampleDelta[gameVid] = nil
+  _veDataReady[gameVid] = nil
+  _veLastDataAt[gameVid] = nil
+  M._cachedInputs[gameVid] = nil
+  M._cachedVluaRot[gameVid] = nil
+  M._cachedVluaRotTime[gameVid] = nil
+  M._cachedAngVel[gameVid] = nil
+  M._damageDirty[gameVid] = nil
+  _lastTcpPoseSentAt[gameVid] = nil
+  _localVeRecovery[gameVid] = nil
+end
 
 local function _countPendingSpawns()
   local count = 0
@@ -235,6 +293,31 @@ local function _reconcileLocalVehicleIfDue(dt)
   end
 end
 
+local function _recoverStaleLocalVE(now)
+  for gameVid, _ in pairs(M.localVehicles) do
+    local lastAt = _veLastDataAt[gameVid]
+    local fresh = _veDataReady[gameVid] and lastAt and (now - lastAt) <= LOCAL_VE_STALE_SEC
+    if fresh then
+      _localVeRecovery[gameVid] = nil
+    else
+      local recovery = _localVeRecovery[gameVid] or { attempts = 0, nextAt = 0 }
+      if now >= recovery.nextAt then
+        recovery.attempts = recovery.attempts + 1
+        local delay = math.min(LOCAL_VE_RECOVERY_MAX_DELAY, 0.5 * (2 ^ math.min(recovery.attempts - 1, 4)))
+        recovery.nextAt = now + delay
+        _localVeRecovery[gameVid] = recovery
+        _veDataReady[gameVid] = false
+        local hb = extensions and extensions.highbeam
+        local ok = hb and hb.ensureLocalVE and hb.ensureLocalVE(gameVid, "stale_watchdog_" .. tostring(recovery.attempts))
+        if not ok then
+          log('W', logTag, 'Local VE recovery request failed gameVid=' .. tostring(gameVid)
+            .. ' attempt=' .. tostring(recovery.attempts))
+        end
+      end
+    end
+  end
+end
+
 local function _computePoseUpdateRate()
   local updateRate = (config and config.get("updateRate")) or 20
   local adaptiveSendRate = config and config.get("adaptiveSendRate")
@@ -266,7 +349,7 @@ local function _computePoseUpdateRate()
 
   -- If TCP is connected but inbound UDP isn't confirmed yet, run in a
   -- conservative mode to reduce encode/send overhead while bind settles.
-  if connection and connection._udpBindConfirmed == false then
+  if connection and connection.isUdpHealthy and not connection.isUdpHealthy() then
     updateRate = math.min(updateRate, 10)
   end
 
@@ -319,7 +402,16 @@ local function _sendLocalVehiclePoses(now)
       -- Capture input state for input-augmented extrapolation
       -- NOTE: electrics are in vlua context, so we read from cached data
       -- populated by _pollInputs via queueLuaCommand callback
-      local inputs = M._cachedInputs and M._cachedInputs[gameVid] or nil
+      local cachedInputs = M._cachedInputs and M._cachedInputs[gameVid] or nil
+      local inputs = cachedInputs and {
+        steer = tonumber(cachedInputs.steer) or 0,
+        throttle = tonumber(cachedInputs.throttle) or 0,
+        brake = tonumber(cachedInputs.brake) or 0,
+        -- Discrete/mode-aware gear state travels on reliable TCP inputs. The
+        -- pose codec is fixed-point numeric and must never receive "D"/"R".
+        gear = tonumber(cachedInputs.gear) or 0,
+        handbrake = tonumber(cachedInputs.handbrake) or 0,
+      } or nil
       local angVel = M._cachedAngVel and M._cachedAngVel[gameVid] or nil
 
       -- Poses are sent unconditionally at the (adaptive) tick rate — no delta
@@ -374,38 +466,28 @@ local function _sendLocalVehiclePoses(now)
         _udpSkipNoSessionHashCount = _udpSkipNoSessionHashCount + 1
       end
 
-      if (not udpAvailable) or (connection and connection._udpBindConfirmed == false) then
-        local fallbackInterval = math.max(0.1, math.min(0.5, _getConfigNumber("tcpPoseFallbackIntervalSec", DEFAULT_TCP_POSE_FALLBACK_INTERVAL_SEC)))
+      local udpHealthy = udpAvailable and connection and connection.isUdpHealthy and connection.isUdpHealthy(now)
+      if not udpHealthy then
+        -- Keep fallback comfortably inside the receiver's packet-loss window.
+        -- A configurable slower rate used to make puppets repeatedly freeze
+        -- under ordinary TCP scheduling jitter.
+        local fallbackInterval = math.max(0.05, math.min(0.15,
+          _getConfigNumber("tcpPoseFallbackIntervalSec", DEFAULT_TCP_POSE_FALLBACK_INTERVAL_SEC)))
         local lastPoseAt = _lastTcpPoseSentAt[gameVid] or 0
         if (now - lastPoseAt) >= fallbackInterval then
           _lastTcpPoseSentAt[gameVid] = now
 
-          local poseData = '{"pos":['
-            .. tostring(posArr[1]) .. ',' .. tostring(posArr[2]) .. ',' .. tostring(posArr[3])
-            .. '],"rot":['
-            .. tostring(rotArr[1]) .. ',' .. tostring(rotArr[2]) .. ',' .. tostring(rotArr[3]) .. ',' .. tostring(rotArr[4])
-            .. '],"vel":['
-            .. tostring(velArr[1]) .. ',' .. tostring(velArr[2]) .. ',' .. tostring(velArr[3])
-            .. '],"time":' .. tostring(sampleTime)
-            .. ',"sampleDelta":' .. tostring(sampleDelta)
-          if inputs then
-            poseData = poseData
-              .. ',"inputs":{"steer":' .. tostring(inputs.steer or 0)
-              .. ',"throttle":' .. tostring(inputs.throttle or 0)
-              .. ',"brake":' .. tostring(inputs.brake or 0)
-              .. ',"gear":' .. tostring(inputs.gear or 0)
-              .. ',"handbrake":' .. tostring(inputs.handbrake or 0)
-              .. '}'
-          end
-          if angVel then
-            poseData = poseData
-              .. ',"angVel":['
-              .. tostring(angVel[1] or 0) .. ',' .. tostring(angVel[2] or 0) .. ',' .. tostring(angVel[3] or 0)
-              .. ']'
-          end
-          poseData = poseData .. '}'
+          local poseData = _encodeJson({
+            pos = posArr,
+            rot = rotArr,
+            vel = velArr,
+            time = sampleTime,
+            sampleDelta = sampleDelta,
+            inputs = inputs,
+            angVel = angVel,
+          })
 
-          local sent = connection._sendPacket({
+          local sent = poseData and connection._sendPacket({
             type = "vehicle_pose",
             vehicle_id = serverVid,
             data = poseData,
@@ -519,13 +601,19 @@ local function _queueDamageSnapshot(gameVid, damageData)
     return false, "empty"
   end
 
-  if _lastDeliveredDamageHashes[gameVid] == payload then
+  if _lastObservedDamagePayload[gameVid] == payload then
     return false, "unchanged"
   end
 
   -- Always retain the newest full snapshot. A throttle, missing mapping, or
   -- transient TCP failure must not make this state disappear.
-  _pendingDamageData[gameVid] = payload
+  _lastObservedDamagePayload[gameVid] = payload
+  _damageEpoch[gameVid] = _damageEpoch[gameVid] or 0
+  _damageRevision[gameVid] = (_damageRevision[gameVid] or 0) + 1
+  _pendingDamageData[gameVid] = '{"schemaVersion":1,"epoch":' .. tostring(_damageEpoch[gameVid])
+    .. ',"revision":' .. tostring(_damageRevision[gameVid])
+    .. ',"configRevision":' .. tostring(_configRevision[gameVid] or 0)
+    .. ',"state":' .. payload .. '}'
   return M.sendDamage(gameVid)
 end
 
@@ -562,7 +650,9 @@ local function _pollLowFrequencyVehicleState(dt)
     _damageFallbackTimer = 0
     local localIds = {}
     for gameVid, _ in pairs(M.localVehicles) do
-      table.insert(localIds, gameVid)
+      local veFresh = _veDataReady[gameVid] and _veLastDataAt[gameVid]
+        and ((os.clock() - _veLastDataAt[gameVid]) <= 2.0)
+      if not veFresh then table.insert(localIds, gameVid) end
     end
     table.sort(localIds)
     if #localIds > 0 then
@@ -613,6 +703,7 @@ M.tick = function(dt)
   local now = os.clock()
   _cleanupStaleSpawnRequests(now)
   _reconcileLocalVehicleIfDue(dt)
+  _recoverStaleLocalVE(now)
 
   local updateRate = _computePoseUpdateRate()
 
@@ -661,23 +752,6 @@ M._pollDamage = function(gameVid)
       .. '    end '
       .. '  end '
       .. 'end '
-      .. 'd.nodes = {} '
-      .. 'local _hasDamage = (#d.broken > 0) '
-      .. 'if not _hasDamage then '
-      .. '  for _,_ in pairs(d.deform) do _hasDamage = true break end '
-      .. 'end '
-      .. 'if _hasDamage and obj.getNodeCount and obj.getNodePosition and obj.getOriginalNodePosition then '
-      .. '  for nid = 0, obj:getNodeCount() - 1 do '
-      .. '    local np = obj:getNodePosition(nid) '
-      .. '    local op = obj:getOriginalNodePosition(nid) '
-      .. '    if np and op then '
-      .. '      local dx2 = (np.x-op.x)*(np.x-op.x)+(np.y-op.y)*(np.y-op.y)+(np.z-op.z)*(np.z-op.z) '
-      .. '      if dx2 > 0.0001 then '
-      .. '        d.nodes[tostring(nid)] = {math.floor(np.x*1000)/1000, math.floor(np.y*1000)/1000, math.floor(np.z*1000)/1000} '
-      .. '      end '
-      .. '    end '
-      .. '  end '
-      .. 'end '
       .. 'obj:queueGameEngineLua("extensions.highbeam.onVehicleDamageReport(' .. gameVid .. ', \'" .. (jsonEncode and jsonEncode(d) or "{}") .. "\')")'
     )
   end)
@@ -705,6 +779,31 @@ M._pollConfigChange = function(gameVid, serverVid)
 
   local combined = currentConfig .. '|' .. currentColor
 
+  local function commitEdit(pending)
+    _lastConfigs[gameVid] = pending.baseline
+    _configRevision[gameVid] = pending.configRevision
+    if pending.damageEpoch then
+      _damageEpoch[gameVid] = pending.damageEpoch
+      _damageRevision[gameVid] = 0
+      M.clearDamageHash(gameVid)
+    end
+    _pendingConfigChanges[gameVid] = nil
+  end
+
+  local pending = _pendingConfigChanges[gameVid]
+  if pending then
+    local sent = connection._sendPacket({
+      type = "vehicle_edit",
+      vehicle_id = serverVid,
+      data = pending.data,
+    })
+    if sent then
+      commitEdit(pending)
+      log('I', logTag, 'Retried and queued VehicleEdit for gameVid=' .. tostring(gameVid))
+    end
+    return
+  end
+
   if _lastConfigs[gameVid] == nil then
     -- First poll: store baseline, don't send
     _lastConfigs[gameVid] = { combined = combined, partConfig = currentConfig, color = currentColor }
@@ -714,23 +813,40 @@ M._pollConfigChange = function(gameVid, serverVid)
   if _lastConfigs[gameVid].combined ~= combined then
     -- Build delta: only include fields that actually changed
     local editParts = {}
-    if _lastConfigs[gameVid].partConfig ~= currentConfig then
+    local topologyChanged = _lastConfigs[gameVid].partConfig ~= currentConfig
+    local nextConfigRevision = _configRevision[gameVid] or 0
+    local nextDamageEpoch = nil
+    if topologyChanged then
+      nextConfigRevision = nextConfigRevision + 1
+      nextDamageEpoch = (_damageEpoch[gameVid] or 0) + 1
       table.insert(editParts, '"partConfig":' .. M._jsonStr(currentConfig))
+      table.insert(editParts, '"configRevision":' .. tostring(nextConfigRevision))
+      table.insert(editParts, '"damageEpoch":' .. tostring(nextDamageEpoch))
     end
     if _lastConfigs[gameVid].color ~= currentColor then
       table.insert(editParts, '"color":' .. M._jsonStr(currentColor))
     end
 
-    _lastConfigs[gameVid] = { combined = combined, partConfig = currentConfig, color = currentColor }
-
     if #editParts > 0 then
       local editData = '{' .. table.concat(editParts, ',') .. '}'
-      connection._sendPacket({
+      local proposed = {
+        data = editData,
+        baseline = { combined = combined, partConfig = currentConfig, color = currentColor },
+        configRevision = nextConfigRevision,
+        damageEpoch = nextDamageEpoch,
+      }
+      local sent = connection._sendPacket({
         type = "vehicle_edit",
         vehicle_id = serverVid,
         data = editData,
       })
-      log('I', logTag, 'Config change detected, sent VehicleEdit delta for gameVid=' .. tostring(gameVid))
+      if sent then
+        commitEdit(proposed)
+        log('I', logTag, 'Config change detected, queued VehicleEdit delta for gameVid=' .. tostring(gameVid))
+      else
+        _pendingConfigChanges[gameVid] = proposed
+        log('W', logTag, 'Config change retained for retry gameVid=' .. tostring(gameVid))
+      end
     end
   end
 end
@@ -814,7 +930,8 @@ M._pollInputsAndRotation = function(gameVid)
   local ok = pcall(function()
     veh:queueLuaCommand(
       'local e = electrics.values '
-      .. 'local st = e.steering_input or e.steering or 0 '
+      .. 'local lock = (v and v.data and v.data.input and tonumber(v.data.input.steeringWheelLock)) or 450 '
+      .. 'local st = (e.steering_input or e.steering or 0) * lock / 450 '
       .. 'local th = e.throttle_input or e.throttle or 0 '
       .. 'local br = e.brake_input or e.brake or 0 '
       .. 'local ga = e.gear_A or 0 '
@@ -883,6 +1000,14 @@ M.onVEData = function(gameVid, px, py, pz, rx, ry, rz, rw, vx, vy, vz, avx, avy,
     steer, throttle, brake, gear, handbrake, sampleTime, sampleDelta)
   local geReceivedAt = os.clock()
   local numericGameVid = tonumber(gameVid) or 0
+  if not (_isFinite(tonumber(px), 1e7) and _isFinite(tonumber(py), 1e7) and _isFinite(tonumber(pz), 1e7)
+    and _isFinite(tonumber(rx), 4) and _isFinite(tonumber(ry), 4) and _isFinite(tonumber(rz), 4) and _isFinite(tonumber(rw), 4)
+    and _isFinite(tonumber(vx), 1e5) and _isFinite(tonumber(vy), 1e5) and _isFinite(tonumber(vz), 1e5)
+    and _isFinite(tonumber(avx), 1e4) and _isFinite(tonumber(avy), 1e4) and _isFinite(tonumber(avz), 1e4)
+    and _isFinite(tonumber(sampleTime), 1e9) and _isFinite(tonumber(sampleDelta), 1)) then
+    _udpEncodeErrorCount = _udpEncodeErrorCount + 1
+    return
+  end
   if numericGameVid == 0 then
     _veZeroGameVidCount = _veZeroGameVidCount + 1
   elseif not M.localVehicles[numericGameVid] then
@@ -926,6 +1051,20 @@ M.onVEData = function(gameVid, px, py, pz, rx, ry, rz, rw, vx, vy, vz, avx, avy,
   }
 end
 
+M.onLocalVEReady = function(gameVid, ready, missingCsv)
+  gameVid = tonumber(gameVid) or gameVid
+  if ready == true or tostring(ready) == "true" then
+    _localVeRecovery[gameVid] = nil
+    return
+  end
+  local recovery = _localVeRecovery[gameVid] or { attempts = 0, nextAt = 0 }
+  recovery.nextAt = os.clock() + math.min(LOCAL_VE_RECOVERY_MAX_DELAY,
+    0.5 * (2 ^ math.min(recovery.attempts, 4)))
+  _localVeRecovery[gameVid] = recovery
+  log('W', logTag, 'Local VE readiness failed gameVid=' .. tostring(gameVid)
+    .. ' missing=' .. tostring(missingCsv or ''))
+end
+
 M.getLocalMotionTime = function(gameVid)
   return _veSampleTime[gameVid] or 0
 end
@@ -938,7 +1077,7 @@ local function _parseInputDeltaStr(deltaStr)
   for part in string.gmatch(deltaStr, "[^,]+") do
     local key, val = string.match(part, "^([%a]+)=([^,]+)$")
     if key and val then
-      out[key] = tonumber(val) or 0
+      out[key] = (key == "g" and tonumber(val) == nil) and val or (tonumber(val) or 0)
     end
   end
   return out
@@ -1029,6 +1168,19 @@ M.clearDamageHash = function(gameVid)
   _pendingDamageData[gameVid] = nil
   _lastSuppressedEmptyDamageHashes[gameVid] = nil
   _damageTimers[gameVid] = nil
+  _lastObservedDamagePayload[gameVid] = nil
+end
+
+M.beginLocalDamageEpoch = function(gameVid, debounceSec)
+  local now = os.clock()
+  local reuseWindow = math.max(0, tonumber(debounceSec) or 0.75)
+  if not _damageEpochChangedAt[gameVid] or (now - _damageEpochChangedAt[gameVid]) >= reuseWindow then
+    _damageEpoch[gameVid] = (_damageEpoch[gameVid] or 0) + 1
+    _damageRevision[gameVid] = 0
+    _damageEpochChangedAt[gameVid] = now
+    M.clearDamageHash(gameVid)
+  end
+  return _damageEpoch[gameVid]
 end
 
 M.onWorldState = function(players)
@@ -1059,6 +1211,7 @@ M.onLocalVehicleSpawned = function(serverVehicleId, configData, spawnRequestId)
         })
       end
     end
+    _clearLocalVehicleState(gameVid, false)
     M.localVehicles[gameVid] = serverVehicleId
     log('I', logTag, 'Local vehicle mapped: game=' .. tostring(gameVid) .. ' server=' .. tostring(serverVehicleId) .. ' reqId=' .. tostring(spawnRequestId))
   else
@@ -1156,21 +1309,14 @@ M.requestSpawn = function(gameVehicleId, configData)
 end
 
 M.requestDelete = function(gameVehicleId)
-  if not connection or connection.getState() ~= connection.STATE_CONNECTED then return end
   local serverVid = M.localVehicles[gameVehicleId]
-  if serverVid then
+  if serverVid and connection and connection.getState() == connection.STATE_CONNECTED then
     connection._sendPacket({
       type = "vehicle_delete",
       vehicle_id = serverVid,
     })
-    M.localVehicles[gameVehicleId] = nil
   end
-  M._inflightByGameVid[gameVehicleId] = nil
-  _lastDeliveredDamageHashes[gameVehicleId] = nil
-  _pendingDamageData[gameVehicleId] = nil
-  _lastSuppressedEmptyDamageHashes[gameVehicleId] = nil
-  _damageTimers[gameVehicleId] = nil
-  M._damageDirty[gameVehicleId] = nil
+  _clearLocalVehicleState(gameVehicleId, false)
 end
 
 -- Send damage state for a local vehicle (called on collision events)
@@ -1249,9 +1395,14 @@ M.onDisconnect = function()
   _damageTimer = 0
   _lastDeliveredDamageHashes = {}
   _pendingDamageData = {}
+  _lastObservedDamagePayload = {}
+  _damageEpoch = {}
+  _damageRevision = {}
+  _damageEpochChangedAt = {}
   _lastSuppressedEmptyDamageHashes = {}
   _configPollTimer = 0
   _lastConfigs = {}
+  _configRevision = {}
   _electricsTimer = 0
   _lastElectrics = {}
   _vePos = {}
@@ -1259,6 +1410,7 @@ M.onDisconnect = function()
   _veVel = {}
   _veDataReady = {}
   _veLastDataAt = {}
+  _localVeRecovery = {}
   M._cachedInputs = {}
   M._cachedVluaRot = {}
   M._cachedVluaRotTime = {}

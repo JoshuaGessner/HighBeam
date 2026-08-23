@@ -21,6 +21,8 @@ local recalcTimer = 0
 local RECALC_DELAY = 0.2
 local MAX_BEAM_LENGTH_RATIO = 2
 local initialized = false
+local lastBeamStateDamage = 0
+local COG_DAMAGE_RECALC_THRESHOLD = 0.02
 
 local function _makeVec(x, y, z)
   if float3 then return float3(x, y, z) end
@@ -149,6 +151,7 @@ function M.onInit()
   end
   _buildConnectivityGraph()
   M.recalcConnectivity()
+  lastBeamStateDamage = (beamstate and tonumber(beamstate.damage)) or 0
 end
 
 function M.onBeamBroke(id, energy)
@@ -162,6 +165,12 @@ function M.updateGFX(dt)
     if recalcTimer >= RECALC_DELAY then
       M.recalcConnectivity()
     end
+  end
+  local currentDamage = beamstate and tonumber(beamstate.damage)
+  if currentDamage and math.abs(currentDamage - lastBeamStateDamage) >= COG_DAMAGE_RECALC_THRESHOLD then
+    lastBeamStateDamage = currentDamage
+    -- Deformation can move the mass center without breaking connectivity.
+    _rebuildNodes()
   end
 end
 
@@ -261,8 +270,15 @@ function M.getConnectedNodeCount()
   return nodeCount
 end
 
+function M.getCogRel()
+  if not initialized then M.onInit() end
+  return cogRel
+end
+
 function M.reset()
+  _buildConnectivityGraph()
   M.recalcConnectivity()
+  lastBeamStateDamage = (beamstate and tonumber(beamstate.damage)) or 0
 end
 
 M.init = M.onInit

@@ -7,6 +7,7 @@ local gameVehicleId = 0
 local initialized = false
 
 local trackedDevices = {}
+local trackedEngines = {}
 local lastIgnitionCoef = -1
 local lastStarterCoef = -1
 local lastIsStalled = -1
@@ -37,6 +38,9 @@ local _diag = {
 local _diagTimer = 0
 local _diagIntervalSec = 5.0
 local _unsupportedLogged = {}
+local desiredRemoteState = {}
+local pendingRemoteState = nil
+local _applyPowertrainNow
 
 local function _verboseSyncLoggingEnabled()
   local okCfg, cfg = pcall(require, "highbeam/config")
@@ -89,16 +93,50 @@ local function _jsonEncode(v)
   return "{}"
 end
 
-local function _findEngine()
+local function _findEngine(name)
+  if name and powertrain and powertrain.getDevice then
+    local okNamed, named = pcall(powertrain.getDevice, name)
+    if okNamed and named and named.type == "combustionEngine" then return named end
+  end
   if not powertrain or not powertrain.getDevices then return nil end
   local ok, devices = pcall(powertrain.getDevices)
   if not ok or not devices then return nil end
-  for _, dev in pairs(devices) do
-    if dev.type == "combustionEngine" then
-      return dev
+  local names = {}
+  for deviceName, dev in pairs(devices) do
+    if dev and dev.type == "combustionEngine" then names[#names + 1] = tostring(deviceName) end
+  end
+  table.sort(names)
+  if #names == 0 then return nil end
+  if powertrain.getDevice then
+    local okFirst, first = pcall(powertrain.getDevice, names[1])
+    if okFirst and first then return first end
+  end
+  return devices[names[1]]
+end
+
+local function _mergeState(dst, src)
+  dst = dst or {}
+  if type(src) ~= "table" then return dst end
+  for key, value in pairs(src) do
+    if key == "engines" and type(value) == "table" then
+      dst.engines = dst.engines or {}
+      for engineName, engineState in pairs(value) do
+        dst.engines[engineName] = dst.engines[engineName] or {}
+        if type(engineState) == "table" then
+          for stateKey, stateValue in pairs(engineState) do
+            dst.engines[engineName][stateKey] = stateValue
+          end
+        end
+      end
+    else
+      dst[key] = value
     end
   end
-  return nil
+  return dst
+end
+
+local function _copyState(src)
+  return _mergeState({}, src)
 end
 
 function M.onInit()
@@ -107,6 +145,9 @@ function M.onInit()
   end
   if initialized then return end
   initialized = true
+  trackedEngines = {}
+  desiredRemoteState = {}
+  pendingRemoteState = nil
 end
 
 function M.setActive(active, remote)
@@ -117,6 +158,7 @@ function M.setActive(active, remote)
     activationTime = os.clock()
     _applyBlockedCount = 0
     _applySuccessCount = 0
+    pendingRemoteState = _copyState(desiredRemoteState)
   end
 end
 
@@ -140,7 +182,16 @@ function M.updateGFX(dt)
     end
   end
 
-  if not isActive or isRemote then return end
+  if not isActive then return end
+
+  if isRemote then
+    if pendingRemoteState and (os.clock() - activationTime) >= READINESS_DELAY_SEC then
+      local pending = pendingRemoteState
+      pendingRemoteState = nil
+      _applyPowertrainNow(pending)
+    end
+    return
+  end
 
   resyncTimer = resyncTimer + (dt or 0)
   local changed = false
@@ -149,6 +200,7 @@ function M.updateGFX(dt)
   if powertrain and powertrain.getDevices then
     local ok, devices = pcall(powertrain.getDevices)
     if ok and devices then
+      local engineStates = {}
       for name, dev in pairs(devices) do
         if dev.mode and trackedDevices[name] ~= dev.mode then
           delta["dev_" .. tostring(name)] = dev.mode
@@ -160,11 +212,33 @@ function M.updateGFX(dt)
           local ignCoef = tonumber(dev.ignitionCoef or 0) or 0
           local starterCoef = tonumber(dev.starterEngagedCoef or 0) or 0
           local stalled = dev.isStalled and 1 or 0
-
-          if ignCoef ~= lastIgnitionCoef then delta.ignCoef = ignCoef; lastIgnitionCoef = ignCoef; changed = true end
-          if starterCoef ~= lastStarterCoef then delta.starterCoef = starterCoef; lastStarterCoef = starterCoef; changed = true end
-          if stalled ~= lastIsStalled then delta.stalled = stalled; lastIsStalled = stalled; changed = true end
+          local engineName = tostring(name)
+          local previous = trackedEngines[engineName] or {}
+          local engineDelta = {}
+          if previous.ignCoef ~= ignCoef then engineDelta.ignCoef = ignCoef end
+          if previous.starterCoef ~= starterCoef then engineDelta.starterCoef = starterCoef end
+          if previous.stalled ~= stalled then engineDelta.stalled = stalled end
+          if next(engineDelta) then
+            delta.engines = delta.engines or {}
+            delta.engines[engineName] = engineDelta
+            changed = true
+          end
+          trackedEngines[engineName] = { ignCoef = ignCoef, starterCoef = starterCoef, stalled = stalled }
+          engineStates[engineName] = trackedEngines[engineName]
         end
+      end
+
+      -- Legacy peers understand only one set of top-level engine fields.
+      -- Mirror the lexicographically first engine while newer peers use the
+      -- lossless per-engine `engines` map above.
+      local engineNames = {}
+      for name, _ in pairs(engineStates) do engineNames[#engineNames + 1] = name end
+      table.sort(engineNames)
+      local legacy = engineStates[engineNames[1]]
+      if legacy then
+        if legacy.ignCoef ~= lastIgnitionCoef then delta.ignCoef = legacy.ignCoef; lastIgnitionCoef = legacy.ignCoef; changed = true end
+        if legacy.starterCoef ~= lastStarterCoef then delta.starterCoef = legacy.starterCoef; lastStarterCoef = legacy.starterCoef; changed = true end
+        if legacy.stalled ~= lastIsStalled then delta.stalled = legacy.stalled; lastIsStalled = legacy.stalled; changed = true end
       end
     end
   end
@@ -185,6 +259,14 @@ function M.updateGFX(dt)
     delta.starterCoef = lastStarterCoef
     delta.stalled = lastIsStalled
     delta.ignLevel = lastIgnitionLevel
+    delta.engines = {}
+    for name, engineState in pairs(trackedEngines) do
+      delta.engines[name] = {
+        ignCoef = engineState.ignCoef,
+        starterCoef = engineState.starterCoef,
+        stalled = engineState.stalled,
+      }
+    end
     changed = true
   end
 
@@ -197,21 +279,48 @@ function M.updateGFX(dt)
   end
 end
 
-function M.applyPowertrain(data)
-  if not isRemote or type(data) ~= "table" then return end
-
-  local now = os.clock()
-  local elapsed = now - activationTime
-
-  -- Brief readiness hold so stock powertrain finishes init after spawn.
-  if elapsed < READINESS_DELAY_SEC then
-    _applyBlockedCount = _applyBlockedCount + 1
-    _bump("blocked")
+local function _applyEngineState(engineName, state)
+  if type(state) ~= "table" then return end
+  local eng = _findEngine(engineName)
+  if not eng then
+    _bump("unsupportedDevice")
+    _logVerboseOnce("missing_engine_" .. tostring(engineName),
+      'powertrain skip missing combustion engine=' .. tostring(engineName))
     return
   end
 
+  if state.ignCoef ~= nil then
+    if eng.setIgnition then
+      pcall(eng.setIgnition, eng, tonumber(state.ignCoef) or 0)
+      _bump("ignition")
+    else
+      _bump("unsafeField")
+    end
+  end
+  if state.starterCoef ~= nil then
+    local starter = tonumber(state.starterCoef) or 0
+    if starter > 0 and eng.activateStarter then
+      pcall(eng.activateStarter, eng)
+      _bump("starter")
+    elseif starter <= 0 and eng.deactivateStarter then
+      pcall(eng.deactivateStarter, eng)
+      _bump("starter")
+    end
+  end
+  if tonumber(state.stalled) == 1 and eng.cutIgnition then
+    pcall(eng.cutIgnition, eng)
+    _bump("stalled")
+  end
+end
+
+_applyPowertrainNow = function(data)
+  local hasPerEngineState = type(data.engines) == "table"
   for key, val in pairs(data) do
-    if key:sub(1, 4) == "dev_" then
+    if key == "engines" and type(val) == "table" then
+      for engineName, engineState in pairs(val) do
+        _applyEngineState(tostring(engineName), engineState)
+      end
+    elseif type(key) == "string" and key:sub(1, 4) == "dev_" then
       local devName = key:sub(5)
       if powertrain and powertrain.getDevice and type(val) == "string" then
         local ok, dev = pcall(powertrain.getDevice, devName)
@@ -250,31 +359,11 @@ function M.applyPowertrain(data)
         _logVerboseOnce("missing_electrics_ignition", 'powertrain skip ignitionLevel no electrics API')
       end
     elseif key == "ignCoef" then
-      local eng = _findEngine()
-      if eng and eng.setIgnition then
-        pcall(eng.setIgnition, eng, tonumber(val) or 0)
-        _bump("ignition")
-      else
-        _bump("unsafeField")
-        _logVerboseOnce("unsafe_ignCoef", 'powertrain skipped unsafe direct ignitionCoef write hasEngine=' .. tostring(eng ~= nil))
-      end
+      if not hasPerEngineState then _applyEngineState(nil, { ignCoef = val }) end
     elseif key == "starterCoef" then
-      local eng = _findEngine()
-      if eng then
-        if val and val > 0 and eng.activateStarter then pcall(eng.activateStarter, eng); _bump("starter") end
-        if (not val or val <= 0) and eng.deactivateStarter then pcall(eng.deactivateStarter, eng); _bump("starter") end
-      else
-        _bump("skipped")
-        _logVerboseOnce("missing_engine_starter", 'powertrain skip starter no combustion engine')
-      end
+      if not hasPerEngineState then _applyEngineState(nil, { starterCoef = val }) end
     elseif key == "stalled" then
-      local eng = _findEngine()
-      if eng and val == 1 and eng.cutIgnition then
-        pcall(eng.cutIgnition, eng)
-        _bump("stalled")
-      else
-        _bump("skipped")
-      end
+      if not hasPerEngineState then _applyEngineState(nil, { stalled = val }) end
     else
       _bump("skipped")
       _logVerboseOnce("unknown_key_" .. tostring(key), 'powertrain skip unknown key=' .. tostring(key))
@@ -282,11 +371,61 @@ function M.applyPowertrain(data)
   end
 end
 
+function M.applyPowertrain(data)
+  if not isRemote or type(data) ~= "table" then return false end
+
+  desiredRemoteState = _mergeState(desiredRemoteState, data)
+  if (os.clock() - activationTime) < READINESS_DELAY_SEC then
+    pendingRemoteState = _mergeState(pendingRemoteState or {}, data)
+    _applyBlockedCount = _applyBlockedCount + 1
+    _bump("blocked")
+    return false
+  end
+
+  if pendingRemoteState then
+    pendingRemoteState = _mergeState(pendingRemoteState, data)
+    local pending = pendingRemoteState
+    pendingRemoteState = nil
+    _applyPowertrainNow(_mergeState(_copyState(desiredRemoteState), pending))
+    if type(data.engines) ~= "table" then _applyPowertrainNow(data) end
+  else
+    -- Apply the complete desired state. In particular, a stalled=0 delta must
+    -- replay the retained ignition coefficient so an engine previously cut by
+    -- stalled=1 can recover even though there is no universal "unstall" API.
+    _applyPowertrainNow(desiredRemoteState)
+    if type(data.engines) ~= "table" then _applyPowertrainNow(data) end
+  end
+  return true
+end
+
 function M.onHighBeamRemoteReset()
   activationTime = os.clock()
+  pendingRemoteState = _copyState(desiredRemoteState)
+end
+
+function M.onReset()
+  if isRemote then
+    M.onHighBeamRemoteReset()
+  else
+    -- Vehicle Lua resets may recreate engine state without changing its values.
+    -- Forget sender-side hashes so the next frame emits a complete snapshot.
+    trackedDevices = {}
+    trackedEngines = {}
+    lastIgnitionCoef = -1
+    lastStarterCoef = -1
+    lastIsStalled = -1
+    lastIgnitionLevel = -1
+    resyncTimer = RESYNC_INTERVAL
+  end
 end
 
 M.init = M.onInit
 M.onExtensionLoaded = M.onInit
+
+if rawget(_G, "HIGHBEAM_TEST") then
+  M._testSetReady = function() activationTime = -1000000 end
+  M._testGetPendingState = function() return pendingRemoteState end
+  M._testGetDesiredState = function() return desiredRemoteState end
+end
 
 return M

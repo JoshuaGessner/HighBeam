@@ -1,8 +1,8 @@
 # HighBeam Network Protocol Specification
 
-> **Last updated:** 2026-05-15
+> **Last updated:** 2026-08-23
 > **Protocol version:** 2
-> **Applies to:** v0.8.2-dev.42
+> **Applies to:** v0.8.2-dev.52
 > **Parent doc:** [OVERVIEW.md](OVERVIEW.md)
 
 ---
@@ -13,7 +13,7 @@ HighBeam uses a dual-channel protocol:
 
 | Channel | Transport | Purpose |
 |---------|-----------|---------|
-| **Reliable** | TCP | Authentication, vehicle spawn/edit/delete, chat, plugin events |
+| **Reliable** | TCP | Authentication, vehicle lifecycle, structural damage, component state, chat, plugin events |
 | **Fast** | UDP | Position/rotation/velocity updates (high frequency) |
 
 Both channels share the same server port (default `18860`).
@@ -139,6 +139,11 @@ Client                                  Server
 | `vehicle_edit` | Remote vehicle edited | `player_id`, `vehicle_id`, `data` (config JSON) |
 | `vehicle_delete` | Remote vehicle deleted | `player_id`, `vehicle_id` |
 | `vehicle_reset` | Remote vehicle reset | `player_id`, `vehicle_id`, `data` (position JSON) |
+| `vehicle_damage` | Authoritative structural damage snapshot | `player_id`, `vehicle_id`, `data` (damage envelope JSON) |
+| `vehicle_inputs` | Input-state delta | `player_id`, `vehicle_id`, `data` (`s/t/b/p/c/g` delta string) |
+| `vehicle_electrics` | Safe visual/control electrics state | `player_id`, `vehicle_id`, `data` (JSON) |
+| `vehicle_powertrain` | Powertrain/device state | `player_id`, `vehicle_id`, `data` (JSON) |
+| `vehicle_coupling` | Coupler attach/detach state | source/target vehicle and node IDs, `coupled` |
 | `chat_broadcast` | Chat message broadcast | `player_id`, `player_name`, `text` |
 | `server_message` | System message | `text` |
 | `trigger_client_event` | Custom plugin event sent to client | `name`, `payload` |
@@ -157,6 +162,11 @@ Client                                  Server
 | `vehicle_delete` | Local vehicle deleted | `vehicle_id` |
 | `vehicle_reset` | Local vehicle reset | `vehicle_id`, `data` (position JSON) |
 | `vehicle_pose` | TCP fallback local pose update | `vehicle_id`, `data` (pose JSON) |
+| `vehicle_damage` | Structural damage snapshot | `vehicle_id`, `data` (damage envelope JSON) |
+| `vehicle_inputs` | Input-state delta | `vehicle_id`, `data` (`s/t/b/p/c/g` delta string) |
+| `vehicle_electrics` | Safe visual/control electrics state | `vehicle_id`, `data` (JSON) |
+| `vehicle_powertrain` | Powertrain/device state | `vehicle_id`, `data` (JSON) |
+| `vehicle_coupling` | Coupler attach/detach state | source/target vehicle and node IDs, `coupled` |
 | `chat_message` | Chat message | `text` |
 | `trigger_server_event` | Custom plugin event sent to server | `name`, `payload` |
 | `ping_pong` | Heartbeat response | `seq` |
@@ -237,6 +247,32 @@ Clients continue to send a reliable `vehicle_pose` packet while the UDP bind is 
 ```
 
 The server validates vehicle ownership exactly as it does for other vehicle packets, then relays the pose to peers over the reliable channel. Once UDP is bound and the session hash is available, UDP remains the preferred high-frequency path.
+
+### Structural Damage and Topology Barriers
+
+Damage is a retained full structural snapshot, not transient node pose data:
+
+```json
+{
+  "schemaVersion": 1,
+  "epoch": 3,
+  "revision": 12,
+  "configRevision": 2,
+  "state": {
+    "broken": [14, 15],
+    "breakGroups": ["bumper_F"],
+    "deform": {"21": [0.034, 0.982]}
+  }
+}
+```
+
+- `epoch` changes on repair/reset and invalidates all older damage.
+- `revision` is monotonic within an epoch; duplicates and older snapshots are ignored.
+- `configRevision` binds beam IDs to a specific vehicle topology. Topology edits are accepted only in exact monotonic order and carry the new `damageEpoch`.
+- `state.broken` and `state.deform` are applied incrementally and acknowledged by vehicle Lua. Transient node coordinates are rejected because replaying suspension/wheel travel would fight the remote vehicle's local physics.
+- Reset payloads include `damageEpoch`; duplicate delivery is idempotent.
+
+Critical lifecycle packets (spawn, edit, delete, reset, damage, coupling, and player membership changes) use bounded reliable fanout. A peer that cannot accept one within the delivery window is disconnected so it cannot continue with permanently divergent world state. High-rate pose, inputs, electrics, and powertrain updates remain best-effort/coalesced state.
 
 ---
 

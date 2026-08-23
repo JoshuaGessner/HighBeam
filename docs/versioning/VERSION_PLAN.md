@@ -1,8 +1,8 @@
 # HighBeam Version Plan
 
-> **Last updated:** 2026-07-15
+> **Last updated:** 2026-08-23
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.2-dev.51 (protocol v2)
+> **Current version:** v0.8.2-dev.52 (protocol v2)
 > **Status:** v0.8.1 released | v0.8.2 in development
 
 ---
@@ -1202,6 +1202,37 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.2-dev.52 - 2026-08-23 (draft)
+- **Reliable lifecycle and damage ordering.** Critical spawn/edit/delete/reset,
+  damage, coupling, and membership fanout now waits for bounded queue capacity;
+  peers that cannot accept authoritative state are disconnected instead of
+  remaining silently divergent. Removed sessions stop their TCP receive loop
+  promptly, preventing zombie updates.
+- **Versioned, acknowledged structural damage.** Damage snapshots carry reset
+  epoch, monotonic revision, and topology revision. Vehicle Lua applies beam
+  breaks/deformation in one idempotent transaction and acknowledges execution;
+  failed transactions use bounded backoff, controller recovery, and controlled
+  respawn escalation. Reset/config barriers are authoritative and duplicate
+  resets no longer advance the receiver beyond the sender.
+- **Remote physics fidelity and recovery.** Motion now uses consistent COG pose
+  and velocity semantics, including angularly correct teleport velocity and
+  origin-aware reset targets. Collision attenuation uses dimensionally
+  consistent velocity deltas, angular hard recovery handles severe divergence,
+  packet timeout tolerates TCP fallback jitter, and a silent physics-step hook
+  automatically falls back/re-arms rather than starving the pose stream.
+- **Component state survives lifecycle churn.** Canonical full input state,
+  automatic gear modes, per-engine powertrain state, and safe allowlisted
+  electrics are retained and replayed after readiness/reset/respawn. Stall clear
+  replays ignition state, and local vehicle-ID reuse now clears all old damage,
+  config, motion, and recovery caches.
+- **Topology and deferred-world hardening.** Config revisions advance exactly
+  once and carry the associated damage epoch; old-topology damage is discarded
+  while future-topology damage waits for its matching edit. Delete tombstones
+  prevent deferred `WorldState` snapshots from spawning ghost vehicles.
+- Added/expanded focused Lua and Rust regression coverage, protocol
+  documentation, and diagnostics. Server and launcher versions bumped to
+  `0.8.2-dev.52`; protocol remains backward-compatible `v2`.
 
 ### v0.8.2-dev.51 - 2026-07-15 (draft)
 - **Correct remote heading instead of spinning/reversing.** Orientation error

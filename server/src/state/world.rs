@@ -32,6 +32,14 @@ impl WorldState {
         let mut max_vehicle_id = 0u16;
         for vehicle in vehicles {
             max_vehicle_id = max_vehicle_id.max(vehicle.vehicle_id);
+            let config_revision = serde_json::from_str::<serde_json::Value>(&vehicle.data)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("configRevision")
+                        .and_then(serde_json::Value::as_u64)
+                })
+                .unwrap_or(0);
             self.vehicles.insert(
                 (vehicle.player_id, vehicle.vehicle_id),
                 Vehicle {
@@ -42,6 +50,9 @@ impl WorldState {
                     rotation: vehicle.rotation,
                     velocity: vehicle.velocity,
                     damage: vehicle.damage.clone(),
+                    damage_epoch: 0,
+                    damage_revision: 0,
+                    config_revision,
                     last_update: Instant::now(),
                 },
             );
@@ -70,6 +81,9 @@ impl WorldState {
             rotation: [0.0, 0.0, 0.0, 1.0],
             velocity: [0.0; 3],
             damage: None,
+            damage_epoch: 0,
+            damage_revision: 0,
+            config_revision: 0,
             last_update: now,
         };
         self.vehicles.insert((owner_id, vid), vehicle);
@@ -141,7 +155,7 @@ impl WorldState {
     }
 
     /// Update a vehicle's config (from VehicleEdit).
-    pub fn update_config(&self, player_id: u32, vehicle_id: u16, config: String) {
+    pub fn update_config(&self, player_id: u32, vehicle_id: u16, config: String) -> bool {
         if let Some(mut entry) = self.vehicles.get_mut(&(player_id, vehicle_id)) {
             // Try to merge delta JSON into existing config (for delta compression).
             // If the incoming config is valid JSON and the stored config is too,
@@ -153,15 +167,42 @@ impl WorldState {
                 if let (Some(stored_obj), Some(delta_obj)) =
                     (stored.as_object_mut(), delta.as_object())
                 {
+                    if delta_obj.contains_key("model") || delta_obj.contains_key("partConfig") {
+                        let incoming_revision = delta_obj
+                            .get("configRevision")
+                            .and_then(serde_json::Value::as_u64)
+                            .unwrap_or_else(|| entry.config_revision.saturating_add(1));
+                        if incoming_revision != entry.config_revision.saturating_add(1) {
+                            tracing::warn!(
+                                player_id,
+                                vehicle_id,
+                                current_revision = entry.config_revision,
+                                incoming_revision,
+                                "Rejected non-monotonic topology revision"
+                            );
+                            return false;
+                        }
+                        entry.config_revision = incoming_revision;
+                        entry.damage = None;
+                        entry.damage_epoch = delta_obj
+                            .get("damageEpoch")
+                            .and_then(serde_json::Value::as_u64)
+                            .map_or_else(
+                                || entry.damage_epoch.saturating_add(1),
+                                |epoch| entry.damage_epoch.max(epoch),
+                            );
+                        entry.damage_revision = 0;
+                    }
                     for (k, v) in delta_obj {
                         stored_obj.insert(k.clone(), v.clone());
                     }
                     entry.config = serde_json::to_string(&stored).unwrap_or(config);
-                    return;
+                    return true;
                 }
             }
-            entry.config = config;
+            return false;
         }
+        false
     }
 
     /// Update a vehicle's position from a VehicleReset event.
@@ -171,8 +212,16 @@ impl WorldState {
             // Reset/repair begins a new pristine damage epoch even if the
             // transform payload is malformed.
             entry.damage = None;
+            entry.damage_revision = 0;
             // Best-effort parse of {"pos":[x,y,z],"rot":[x,y,z,w]}
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(data) {
+                if let Some(epoch) = val.get("damageEpoch").and_then(serde_json::Value::as_u64) {
+                    // Versioned reset epochs come from the authoritative
+                    // owner. Duplicate delivery is therefore idempotent.
+                    entry.damage_epoch = entry.damage_epoch.max(epoch);
+                } else {
+                    entry.damage_epoch = entry.damage_epoch.saturating_add(1);
+                }
                 if let Some(pos) = val.get("pos").and_then(|p| p.as_array()) {
                     if pos.len() >= 3 {
                         if let (Some(x), Some(y), Some(z)) =
@@ -196,16 +245,42 @@ impl WorldState {
                 }
                 entry.velocity = [0.0; 3];
                 entry.last_update = Instant::now();
+            } else {
+                entry.damage_epoch = entry.damage_epoch.saturating_add(1);
             }
         }
     }
 
     /// Retain the owner's latest full damage snapshot for late joiners and
     /// internal puppet respawns. Ownership/size validation happens in TCP.
-    pub fn update_damage(&self, player_id: u32, vehicle_id: u16, data: String) {
+    pub fn update_damage(
+        &self,
+        player_id: u32,
+        vehicle_id: u16,
+        data: String,
+        epoch: Option<u64>,
+        revision: Option<u64>,
+        config_revision: Option<u64>,
+    ) -> bool {
         if let Some(mut entry) = self.vehicles.get_mut(&(player_id, vehicle_id)) {
+            if config_revision.is_some_and(|revision| revision != entry.config_revision) {
+                return false;
+            }
+            if let (Some(epoch), Some(revision)) = (epoch, revision) {
+                if epoch < entry.damage_epoch
+                    || (epoch == entry.damage_epoch && revision <= entry.damage_revision)
+                {
+                    return false;
+                }
+                entry.damage_epoch = epoch;
+                entry.damage_revision = revision;
+            } else {
+                entry.damage_revision = entry.damage_revision.saturating_add(1);
+            }
             entry.damage = Some(data);
+            return true;
         }
+        false
     }
 
     /// Get a snapshot of the entire world for sending to a newly joined player.
@@ -341,7 +416,7 @@ mod tests {
     fn damage_is_retained_for_snapshots_and_cleared_by_reset() {
         let world = WorldState::new();
         let vehicle_id = world.spawn_vehicle(7, "{}".into());
-        world.update_damage(7, vehicle_id, "{\"broken\":[12]}".into());
+        assert!(world.update_damage(7, vehicle_id, "{\"broken\":[12]}".into(), None, None, None,));
 
         let snapshot = world.get_vehicle_snapshot();
         assert_eq!(snapshot.len(), 1);
@@ -351,5 +426,70 @@ mod tests {
         world.update_reset_position(7, vehicle_id, "malformed");
         let snapshot = world.get_vehicle_snapshot();
         assert_eq!(snapshot[0].damage, None);
+    }
+
+    #[test]
+    fn versioned_damage_respects_reset_and_config_barriers() {
+        let world = WorldState::new();
+        let vehicle_id = world.spawn_vehicle(7, "{}".into());
+        assert!(world.update_damage(7, vehicle_id, "first".into(), Some(0), Some(1), Some(0)));
+        assert!(!world.update_damage(7, vehicle_id, "duplicate".into(), Some(0), Some(1), Some(0)));
+
+        world.update_reset_position(7, vehicle_id, "malformed");
+        assert!(!world.update_damage(7, vehicle_id, "pre-reset".into(), Some(0), Some(2), Some(0)));
+        assert!(world.update_damage(
+            7,
+            vehicle_id,
+            "post-reset".into(),
+            Some(1),
+            Some(1),
+            Some(0)
+        ));
+
+        assert!(world.update_config(
+            7,
+            vehicle_id,
+            r#"{"partConfig":"new.pc","configRevision":1}"#.into(),
+        ));
+        assert!(!world.update_config(
+            7,
+            vehicle_id,
+            r#"{"partConfig":"stale.pc","configRevision":1}"#.into(),
+        ));
+        assert!(!world.update_damage(
+            7,
+            vehicle_id,
+            "old-topology".into(),
+            Some(1),
+            Some(2),
+            Some(0)
+        ));
+        assert!(world.update_damage(
+            7,
+            vehicle_id,
+            "new-topology".into(),
+            Some(2),
+            Some(1),
+            Some(1)
+        ));
+    }
+
+    #[test]
+    fn duplicate_versioned_reset_is_epoch_idempotent() {
+        let world = WorldState::new();
+        let vehicle_id = world.spawn_vehicle(9, "{}".into());
+        let reset = r#"{"pos":[0,0,0],"rot":[0,0,0,1],"damageEpoch":1}"#;
+
+        world.update_reset_position(9, vehicle_id, reset);
+        world.update_reset_position(9, vehicle_id, reset);
+
+        assert!(world.update_damage(
+            9,
+            vehicle_id,
+            "after-duplicate-reset".into(),
+            Some(1),
+            Some(1),
+            Some(0)
+        ));
     }
 }

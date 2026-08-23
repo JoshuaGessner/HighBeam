@@ -1,11 +1,13 @@
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::time::Duration;
 
 use dashmap::DashMap;
 use sha2::{Digest, Sha256};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
-use tokio::time::Instant;
+use tokio::task::JoinSet;
+use tokio::time::{timeout, Instant};
 
 use crate::net::packet::{PlayerInfo, PlayerPingInfo, TcpPacket};
 
@@ -43,6 +45,36 @@ pub struct SessionManager {
     /// authentications cannot race past `MaxPlayers` (TOCTOU). Held only for the
     /// brief, non-async admission critical section.
     admit_guard: std::sync::Mutex<()>,
+    reliable_enqueued: AtomicU64,
+    reliable_timed_out: AtomicU64,
+    reliable_closed: AtomicU64,
+    best_effort_enqueued: AtomicU64,
+    best_effort_dropped: AtomicU64,
+}
+
+const RELIABLE_BROADCAST_ENQUEUE_TIMEOUT: Duration = Duration::from_secs(1);
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct BroadcastReport {
+    pub recipients: u64,
+    pub enqueued: u64,
+    pub timed_out: u64,
+    pub closed: u64,
+}
+
+impl BroadcastReport {
+    pub fn all_enqueued(&self) -> bool {
+        self.enqueued == self.recipients
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct OutboundDeliveryStats {
+    pub reliable_enqueued: u64,
+    pub reliable_timed_out: u64,
+    pub reliable_closed: u64,
+    pub best_effort_enqueued: u64,
+    pub best_effort_dropped: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -69,6 +101,11 @@ impl SessionManager {
             session_hashes: DashMap::new(),
             next_id: AtomicU32::new(1),
             admit_guard: std::sync::Mutex::new(()),
+            reliable_enqueued: AtomicU64::new(0),
+            reliable_timed_out: AtomicU64::new(0),
+            reliable_closed: AtomicU64::new(0),
+            best_effort_enqueued: AtomicU64::new(0),
+            best_effort_dropped: AtomicU64::new(0),
         }
     }
 
@@ -257,15 +294,122 @@ impl SessionManager {
     }
 
     /// Send a TCP packet to all connected players, optionally excluding one.
-    pub fn broadcast(&self, packet: TcpPacket, exclude: Option<u32>) {
+    /// Best-effort fanout for replaceable, high-rate state only. Lifecycle and
+    /// durable component packets must use `broadcast_reliable`.
+    pub fn broadcast_best_effort(&self, packet: TcpPacket, exclude: Option<u32>) {
         for entry in self.players.iter() {
             let player = entry.value();
             if Some(player.id) == exclude {
                 continue;
             }
-            if let Err(e) = player.tcp_tx.try_send(packet.clone()) {
-                tracing::warn!(player_id = player.id, "Broadcast send failed: {e}");
+            match player.tcp_tx.try_send(packet.clone()) {
+                Ok(()) => {
+                    self.best_effort_enqueued.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(e) => {
+                    self.best_effort_dropped.fetch_add(1, Ordering::Relaxed);
+                    tracing::debug!(player_id = player.id, "Best-effort broadcast dropped: {e}");
+                }
             }
+        }
+    }
+
+    /// Compatibility wrapper for non-state-critical callers. New code should
+    /// choose `broadcast_reliable` or `broadcast_best_effort` explicitly.
+    pub fn broadcast(&self, packet: TcpPacket, exclude: Option<u32>) {
+        self.broadcast_best_effort(packet, exclude);
+    }
+
+    /// Enqueue a durable packet for every target, waiting concurrently for
+    /// bounded channel capacity. A timeout/closed channel is surfaced in the
+    /// report and diagnostics instead of being silently discarded.
+    pub async fn broadcast_reliable(
+        &self,
+        packet: TcpPacket,
+        exclude: Option<u32>,
+    ) -> BroadcastReport {
+        self.broadcast_reliable_with_timeout(packet, exclude, RELIABLE_BROADCAST_ENQUEUE_TIMEOUT)
+            .await
+    }
+
+    async fn broadcast_reliable_with_timeout(
+        &self,
+        packet: TcpPacket,
+        exclude: Option<u32>,
+        enqueue_timeout: Duration,
+    ) -> BroadcastReport {
+        let recipients: Vec<(u32, mpsc::Sender<TcpPacket>)> = self
+            .players
+            .iter()
+            .filter_map(|entry| {
+                let player = entry.value();
+                (Some(player.id) != exclude).then(|| (player.id, player.tcp_tx.clone()))
+            })
+            .collect();
+
+        let mut report = BroadcastReport {
+            recipients: recipients.len() as u64,
+            ..BroadcastReport::default()
+        };
+        let mut pending = JoinSet::new();
+        let mut failed_players = Vec::new();
+
+        for (player_id, tx) in recipients {
+            let packet = packet.clone();
+            pending.spawn(async move {
+                let outcome = timeout(enqueue_timeout, tx.send(packet)).await;
+                (player_id, outcome)
+            });
+        }
+
+        while let Some(joined) = pending.join_next().await {
+            match joined {
+                Ok((_player_id, Ok(Ok(())))) => {
+                    report.enqueued += 1;
+                    self.reliable_enqueued.fetch_add(1, Ordering::Relaxed);
+                }
+                Ok((player_id, Ok(Err(_)))) => {
+                    report.closed += 1;
+                    self.reliable_closed.fetch_add(1, Ordering::Relaxed);
+                    tracing::warn!(player_id, "Reliable broadcast channel closed");
+                    failed_players.push(player_id);
+                }
+                Ok((player_id, Err(_))) => {
+                    report.timed_out += 1;
+                    self.reliable_timed_out.fetch_add(1, Ordering::Relaxed);
+                    tracing::warn!(
+                        player_id,
+                        ?enqueue_timeout,
+                        "Reliable broadcast enqueue timed out"
+                    );
+                    failed_players.push(player_id);
+                }
+                Err(e) => {
+                    report.closed += 1;
+                    self.reliable_closed.fetch_add(1, Ordering::Relaxed);
+                    tracing::error!(error = %e, "Reliable broadcast enqueue task failed");
+                }
+            }
+        }
+
+        for player_id in failed_players {
+            // A peer that cannot accept a lifecycle packet within the bounded
+            // window cannot remain state-consistent. Removing its session is
+            // safer than leaving a connected client that permanently missed a
+            // reset, spawn, or damage revision.
+            self.remove_player(player_id);
+        }
+
+        report
+    }
+
+    pub fn outbound_delivery_stats(&self) -> OutboundDeliveryStats {
+        OutboundDeliveryStats {
+            reliable_enqueued: self.reliable_enqueued.load(Ordering::Relaxed),
+            reliable_timed_out: self.reliable_timed_out.load(Ordering::Relaxed),
+            reliable_closed: self.reliable_closed.load(Ordering::Relaxed),
+            best_effort_enqueued: self.best_effort_enqueued.load(Ordering::Relaxed),
+            best_effort_dropped: self.best_effort_dropped.load(Ordering::Relaxed),
         }
     }
 
@@ -419,5 +563,124 @@ mod tests {
             "exceeding MaxPlayers should return Full"
         );
         assert_eq!(manager.player_count(), 3);
+    }
+
+    #[tokio::test]
+    async fn reliable_broadcast_waits_for_saturated_channel_capacity() {
+        let manager = std::sync::Arc::new(SessionManager::new());
+        let addr: SocketAddr = "127.0.0.1:18861".parse().expect("valid socket addr");
+        let (tx, mut rx) = mpsc::channel(1);
+        manager
+            .add_player("slow_peer".into(), addr, tx.clone(), 4)
+            .expect("player added");
+
+        tx.send(TcpPacket::ServerMessage {
+            text: "occupy queue".into(),
+        })
+        .await
+        .expect("prefill outbound queue");
+
+        let broadcast_manager = manager.clone();
+        let broadcast = tokio::spawn(async move {
+            broadcast_manager
+                .broadcast_reliable(
+                    TcpPacket::VehicleDamage {
+                        player_id: Some(7),
+                        vehicle_id: 2,
+                        data: r#"{"broken":[3]}"#.into(),
+                    },
+                    None,
+                )
+                .await
+        });
+
+        tokio::task::yield_now().await;
+        assert!(
+            !broadcast.is_finished(),
+            "reliable fanout must wait instead of dropping on a full channel"
+        );
+
+        let first = rx.recv().await.expect("prefilled packet");
+        assert!(matches!(first, TcpPacket::ServerMessage { .. }));
+
+        let report = timeout(Duration::from_millis(250), broadcast)
+            .await
+            .expect("broadcast completed after capacity became available")
+            .expect("broadcast task did not panic");
+        assert_eq!(
+            report,
+            BroadcastReport {
+                recipients: 1,
+                enqueued: 1,
+                timed_out: 0,
+                closed: 0,
+            }
+        );
+        assert!(matches!(
+            rx.recv().await.expect("reliable packet"),
+            TcpPacket::VehicleDamage { .. }
+        ));
+        assert_eq!(manager.outbound_delivery_stats().reliable_enqueued, 1);
+    }
+
+    #[tokio::test]
+    async fn reliable_broadcast_reports_saturation_timeout() {
+        let manager = SessionManager::new();
+        let addr: SocketAddr = "127.0.0.1:18862".parse().expect("valid socket addr");
+        let (tx, _rx) = mpsc::channel(1);
+        manager
+            .add_player("blocked_peer".into(), addr, tx.clone(), 4)
+            .expect("player added");
+        tx.send(TcpPacket::ServerMessage {
+            text: "occupy queue".into(),
+        })
+        .await
+        .expect("prefill outbound queue");
+
+        let report = manager
+            .broadcast_reliable_with_timeout(
+                TcpPacket::VehicleReset {
+                    player_id: Some(7),
+                    vehicle_id: 2,
+                    data: "{}".into(),
+                },
+                None,
+                Duration::from_millis(10),
+            )
+            .await;
+
+        assert_eq!(report.recipients, 1);
+        assert_eq!(report.enqueued, 0);
+        assert_eq!(report.timed_out, 1);
+        assert_eq!(report.closed, 0);
+        assert_eq!(manager.outbound_delivery_stats().reliable_timed_out, 1);
+        assert_eq!(manager.player_count(), 0, "timed-out peer is quarantined");
+    }
+
+    #[test]
+    fn best_effort_broadcast_counts_saturation_drop() {
+        let manager = SessionManager::new();
+        let addr: SocketAddr = "127.0.0.1:18863".parse().expect("valid socket addr");
+        let (tx, _rx) = mpsc::channel(1);
+        manager
+            .add_player("telemetry_peer".into(), addr, tx.clone(), 4)
+            .expect("player added");
+        tx.try_send(TcpPacket::ServerMessage {
+            text: "occupy queue".into(),
+        })
+        .expect("prefill outbound queue");
+
+        manager.broadcast_best_effort(
+            TcpPacket::VehicleInputs {
+                player_id: Some(7),
+                vehicle_id: 2,
+                data: "{}".into(),
+            },
+            None,
+        );
+
+        let stats = manager.outbound_delivery_stats();
+        assert_eq!(stats.best_effort_enqueued, 0);
+        assert_eq!(stats.best_effort_dropped, 1);
     }
 }

@@ -92,7 +92,13 @@ pub async fn start_listener(
                     player_id: Some(*owner_id),
                     vehicle_id: *vehicle_id,
                 };
-                reap_sessions.broadcast(delete_packet, None);
+                let delivery = reap_sessions.broadcast_reliable(delete_packet, None).await;
+                if !delivery.all_enqueued() {
+                    tracing::warn!(
+                        ?delivery,
+                        "Stale VehicleDelete was not enqueued for every peer"
+                    );
+                }
                 tracing::info!(
                     owner_id,
                     vehicle_id,
@@ -436,13 +442,18 @@ where
     write_packet_generic(&mut stream, &world_snapshot).await?;
 
     // 10. Broadcast PlayerJoin to all other connected players
-    sessions.broadcast(
-        TcpPacket::PlayerJoin {
-            player_id,
-            name: username.clone(),
-        },
-        Some(player_id),
-    );
+    let delivery = sessions
+        .broadcast_reliable(
+            TcpPacket::PlayerJoin {
+                player_id,
+                name: username.clone(),
+            },
+            Some(player_id),
+        )
+        .await;
+    if !delivery.all_enqueued() {
+        tracing::warn!(?delivery, "PlayerJoin was not enqueued for every peer");
+    }
 
     // Split stream for concurrent read/write
     let (read_half, write_half) = tokio::io::split(stream);
@@ -525,16 +536,30 @@ where
     // Remove all vehicles for this player and notify others
     let removed_vehicles = world.remove_all_for_player(player_id);
     for vid in &removed_vehicles {
-        sessions.broadcast(
-            TcpPacket::VehicleDelete {
-                player_id: Some(player_id),
-                vehicle_id: *vid,
-            },
-            Some(player_id),
-        );
+        let delivery = sessions
+            .broadcast_reliable(
+                TcpPacket::VehicleDelete {
+                    player_id: Some(player_id),
+                    vehicle_id: *vid,
+                },
+                Some(player_id),
+            )
+            .await;
+        if !delivery.all_enqueued() {
+            tracing::warn!(
+                vehicle_id = *vid,
+                ?delivery,
+                "VehicleDelete was not enqueued for every peer"
+            );
+        }
     }
 
-    sessions.broadcast(TcpPacket::PlayerLeave { player_id }, Some(player_id));
+    let delivery = sessions
+        .broadcast_reliable(TcpPacket::PlayerLeave { player_id }, Some(player_id))
+        .await;
+    if !delivery.all_enqueued() {
+        tracing::warn!(?delivery, "PlayerLeave was not enqueued for every peer");
+    }
     sessions.remove_player(player_id);
     tracing::info!(player_id, name = %username, vehicles_removed = removed_vehicles.len(), "Player disconnected");
 
@@ -574,6 +599,12 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
     let mut diag_coupling_rx: u64 = 0;
 
     loop {
+        // Reliable fanout removes peers that cannot accept lifecycle state.
+        // Poll session membership alongside the socket so the reader cannot
+        // continue mutating world state as a zombie connection.
+        if sessions.get_player(player_id).is_none() {
+            anyhow::bail!("Session removed while connection was active");
+        }
         if component_diag_last.elapsed() >= component_diag_interval {
             tracing::info!(
                 player_id,
@@ -610,7 +641,7 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
         }
 
         // Use timeout on read to allow periodic idle checks
-        let read_timeout = Duration::from_secs(15);
+        let read_timeout = Duration::from_secs(1);
         let packet = match timeout(read_timeout, read_packet_from(reader)).await {
             Ok(Ok(p)) => p,
             Ok(Err(e)) => return Err(e),
@@ -702,15 +733,17 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                     },
                 );
                 // Step 2: Broadcast to all other players.
-                sessions.broadcast(
-                    TcpPacket::VehicleSpawn {
-                        player_id: Some(player_id),
-                        vehicle_id: vid,
-                        data,
-                        spawn_request_id,
-                    },
-                    Some(player_id),
-                );
+                let _ = sessions
+                    .broadcast_reliable(
+                        TcpPacket::VehicleSpawn {
+                            player_id: Some(player_id),
+                            vehicle_id: vid,
+                            data,
+                            spawn_request_id,
+                        },
+                        Some(player_id),
+                    )
+                    .await;
             }
             TcpPacket::VehicleEdit {
                 vehicle_id, data, ..
@@ -736,17 +769,32 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
 
                 if world.is_owner(player_id, vehicle_id) {
                     let payload_bytes = data.len();
-                    world.update_config(player_id, vehicle_id, data.clone());
-                    sessions.broadcast(
-                        TcpPacket::VehicleEdit {
-                            player_id: Some(player_id),
+                    if world.update_config(player_id, vehicle_id, data.clone()) {
+                        let _ = sessions
+                            .broadcast_reliable(
+                                TcpPacket::VehicleEdit {
+                                    player_id: Some(player_id),
+                                    vehicle_id,
+                                    data,
+                                },
+                                Some(player_id),
+                            )
+                            .await;
+                        diag_component_relay += 1;
+                        tracing::debug!(
+                            player_id,
                             vehicle_id,
-                            data,
-                        },
-                        Some(player_id),
-                    );
-                    diag_component_relay += 1;
-                    tracing::debug!(player_id, vehicle_id, payload_bytes, "Relayed VehicleEdit");
+                            payload_bytes,
+                            "Relayed VehicleEdit"
+                        );
+                    } else {
+                        diag_component_reject_validation += 1;
+                        tracing::warn!(
+                            player_id,
+                            vehicle_id,
+                            "VehicleEdit rejected by revision/JSON validation"
+                        );
+                    }
                 } else {
                     diag_component_reject_owner += 1;
                     tracing::warn!(
@@ -766,13 +814,15 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
 
                 if world.is_owner(player_id, vehicle_id) {
                     world.remove_vehicle(player_id, vehicle_id);
-                    sessions.broadcast(
-                        TcpPacket::VehicleDelete {
-                            player_id: Some(player_id),
-                            vehicle_id,
-                        },
-                        None,
-                    );
+                    let _ = sessions
+                        .broadcast_reliable(
+                            TcpPacket::VehicleDelete {
+                                player_id: Some(player_id),
+                                vehicle_id,
+                            },
+                            None,
+                        )
+                        .await;
                 } else {
                     tracing::warn!(player_id, vehicle_id, "VehicleDelete for unowned vehicle");
                 }
@@ -801,14 +851,16 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                 if world.is_owner(player_id, vehicle_id) {
                     let payload_bytes = data.len();
                     world.update_reset_position(player_id, vehicle_id, &data);
-                    sessions.broadcast(
-                        TcpPacket::VehicleReset {
-                            player_id: Some(player_id),
-                            vehicle_id,
-                            data,
-                        },
-                        Some(player_id),
-                    );
+                    let _ = sessions
+                        .broadcast_reliable(
+                            TcpPacket::VehicleReset {
+                                player_id: Some(player_id),
+                                vehicle_id,
+                                data,
+                            },
+                            Some(player_id),
+                        )
+                        .await;
                     diag_component_relay += 1;
                     tracing::debug!(player_id, vehicle_id, payload_bytes, "Relayed VehicleReset");
                 } else {
@@ -827,28 +879,51 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
             } => {
                 diag_component_rx += 1;
                 diag_damage_rx += 1;
+                if !rate_limiters.check_vehicle_op_limit(player_id).await {
+                    tracing::warn!(player_id, "VehicleDamage rate limit exceeded; dropping");
+                    continue;
+                }
                 if let Err(e) = crate::validation::validate_vehicle_id(vehicle_id) {
                     diag_component_reject_validation += 1;
                     tracing::warn!(player_id, vehicle_id, error = %e, "VehicleDamage: invalid vehicle ID");
                     continue;
                 }
-                if let Err(e) = crate::validation::validate_vehicle_config_size(&data) {
-                    diag_component_reject_validation += 1;
-                    tracing::warn!(player_id, error = %e, "VehicleDamage: invalid payload");
-                    continue;
-                }
+                let damage_meta = match crate::validation::validate_vehicle_damage(&data) {
+                    Ok(meta) => meta,
+                    Err(e) => {
+                        diag_component_reject_validation += 1;
+                        tracing::warn!(player_id, error = %e, "VehicleDamage: invalid payload");
+                        continue;
+                    }
+                };
 
                 if world.is_owner(player_id, vehicle_id) {
                     let payload_bytes = data.len();
-                    world.update_damage(player_id, vehicle_id, data.clone());
-                    sessions.broadcast(
-                        TcpPacket::VehicleDamage {
-                            player_id: Some(player_id),
+                    if !world.update_damage(
+                        player_id,
+                        vehicle_id,
+                        data.clone(),
+                        damage_meta.epoch,
+                        damage_meta.revision,
+                        damage_meta.config_revision,
+                    ) {
+                        tracing::debug!(
+                            player_id,
                             vehicle_id,
-                            data,
-                        },
-                        Some(player_id),
-                    );
+                            "Ignored stale VehicleDamage revision"
+                        );
+                        continue;
+                    }
+                    let _ = sessions
+                        .broadcast_reliable(
+                            TcpPacket::VehicleDamage {
+                                player_id: Some(player_id),
+                                vehicle_id,
+                                data,
+                            },
+                            Some(player_id),
+                        )
+                        .await;
                     diag_component_relay += 1;
                     tracing::debug!(
                         player_id,
@@ -885,7 +960,7 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
 
                 if world.is_owner(player_id, vehicle_id) {
                     let payload_bytes = data.len();
-                    sessions.broadcast(
+                    sessions.broadcast_best_effort(
                         TcpPacket::VehicleElectrics {
                             player_id: Some(player_id),
                             vehicle_id,
@@ -927,7 +1002,7 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                 }
 
                 if world.is_owner(player_id, vehicle_id) {
-                    sessions.broadcast(
+                    sessions.broadcast_best_effort(
                         TcpPacket::VehicleInputs {
                             player_id: Some(player_id),
                             vehicle_id,
@@ -963,7 +1038,7 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                 }
 
                 if world.is_owner(player_id, vehicle_id) {
-                    sessions.broadcast(
+                    sessions.broadcast_best_effort(
                         TcpPacket::VehiclePowertrain {
                             player_id: Some(player_id),
                             vehicle_id,
@@ -1041,7 +1116,7 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                         }
                     }
 
-                    sessions.broadcast(
+                    sessions.broadcast_best_effort(
                         TcpPacket::VehiclePose {
                             player_id: Some(player_id),
                             vehicle_id,
@@ -1083,17 +1158,19 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                 }
 
                 if world.is_owner(player_id, vehicle_id) {
-                    sessions.broadcast(
-                        TcpPacket::VehicleCoupling {
-                            player_id: Some(player_id),
-                            vehicle_id,
-                            target_vehicle_id,
-                            coupled,
-                            node_id,
-                            target_node_id,
-                        },
-                        Some(player_id),
-                    );
+                    let _ = sessions
+                        .broadcast_reliable(
+                            TcpPacket::VehicleCoupling {
+                                player_id: Some(player_id),
+                                vehicle_id,
+                                target_vehicle_id,
+                                coupled,
+                                node_id,
+                                target_node_id,
+                            },
+                            Some(player_id),
+                        )
+                        .await;
                     diag_component_relay += 1;
                 } else {
                     diag_component_reject_owner += 1;
@@ -1140,7 +1217,7 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                                 player_name: player.name.clone(),
                                 text: validated_text,
                             };
-                            sessions.broadcast(broadcast_packet, None);
+                            let _ = sessions.broadcast_reliable(broadcast_packet, None).await;
                         } else {
                             tracing::warn!(player_id, "ChatMessage from unknown player");
                         }

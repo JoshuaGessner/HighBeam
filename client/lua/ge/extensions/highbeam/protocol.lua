@@ -13,6 +13,32 @@ M.VERSION = 2
 
 local ffi = require("ffi")
 
+local function is_finite(value, limit)
+  return type(value) == "number" and value == value
+    and value ~= math.huge and value ~= -math.huge
+    and math.abs(value) <= (limit or 1e20)
+end
+
+local function valid_array(values, count, limit)
+  if type(values) ~= "table" then return false end
+  for i = 1, count do
+    if not is_finite(tonumber(values[i]), limit) then return false end
+  end
+  return true
+end
+
+local function valid_motion(pos, rot, vel, simTime, angVel)
+  if not valid_array(pos, 3, 1e7)
+    or not valid_array(rot, 4, 4)
+    or not valid_array(vel, 3, 1e5)
+    or not is_finite(tonumber(simTime), 1e9) then
+    return false
+  end
+  local qLenSq = rot[1]*rot[1] + rot[2]*rot[2] + rot[3]*rot[3] + rot[4]*rot[4]
+  if qLenSq < 1e-8 then return false end
+  return angVel == nil or valid_array(angVel, 3, 1e4)
+end
+
 -- Position update: type 0x10 (legacy) / 0x11 (extended with inputs)
 -- Legacy layout: [vid:u16] [pos:3xf32] [rot:4xf32] [vel:3xf32] [time:f32]
 -- Extended layout: [vid:u16] [pos:3xf32] [rot:4xf32] [vel:3xf32] [time:f32]
@@ -24,7 +50,9 @@ local ffi = require("ffi")
 -- float16 encode/decode helpers (IEEE 754 half-precision)
 local function f32_to_f16(val)
   -- Clamp to [-1, 1] for input values, allow full range for steering
-  local f = math.max(-2, math.min(2, val or 0))
+  local numeric = tonumber(val) or 0
+  if numeric ~= numeric or numeric == math.huge or numeric == -math.huge then numeric = 0 end
+  local f = math.max(-2, math.min(2, numeric))
   -- Simple conversion: store as fixed-point i16 scaled by 16384
   local i = math.floor(f * 16384 + 0.5)
   if i < -32768 then i = -32768 end
@@ -74,6 +102,10 @@ end
 M.encodePositionUpdate = function(sessionHash, vehicleId, pos, rot, vel, simTime, inputs, angVel)
   if type(sessionHash) ~= "string" or #sessionHash ~= 16 then
     log('E', logTag, 'encodePositionUpdate: invalid session hash (expected 16 bytes)')
+    return nil
+  end
+  if not valid_motion(pos, rot, vel, simTime, angVel) then
+    log('W', logTag, 'encodePositionUpdate: rejected non-finite or out-of-range motion sample')
     return nil
   end
 
@@ -166,6 +198,10 @@ M.decodePositionUpdate = function(data)
   local v3 = read_f32_le(data, o); o = o + 4
   local simTime = read_f32_le(data, o); o = o + 4
 
+  if not valid_motion({ p1, p2, p3 }, { r1, r2, r3, r4 }, { v1, v2, v3 }, simTime, nil) then
+    return nil
+  end
+
   local result = {
     playerId  = pid,
     vehicleId = vid,
@@ -187,6 +223,7 @@ M.decodePositionUpdate = function(data)
     local avx = read_f32_le(data, o); o = o + 4
     local avy = read_f32_le(data, o); o = o + 4
     local avz = read_f32_le(data, o); o = o + 4
+    if not valid_array({ avx, avy, avz }, 3, 1e4) then return nil end
     result.angVel = { avx, avy, avz }
   end
 
@@ -209,10 +246,16 @@ M.decodePositionUpdate = function(data)
       handbrake = f16_to_f32(iHandbrake),
     }
 
+    if not valid_array({ result.inputs.steer, result.inputs.throttle, result.inputs.brake,
+        result.inputs.gear, result.inputs.handbrake }, 5, 4) then
+      return nil
+    end
+
     if #data >= (o + 12) then
       local avx = read_f32_le(data, o); o = o + 4
       local avy = read_f32_le(data, o); o = o + 4
       local avz = read_f32_le(data, o); o = o + 4
+      if not valid_array({ avx, avy, avz }, 3, 1e4) then return nil end
       result.angVel = { avx, avy, avz }
     end
   end

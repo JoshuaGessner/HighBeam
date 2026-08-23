@@ -18,17 +18,20 @@ local activationTime = 0
 local READINESS_DELAY_SEC = 0.5
 
 local smoothing = { s = 0, t = 0, b = 0, p = 0, c = 0 }
+local desiredInputs = { s = 0, t = 0, b = 0, p = 0, c = 0 }
+local desiredGear = nil
+local gearPending = false
+local gearRetryTimer = 0
 local SMOOTH_RATE = 30
 local SNAP_THRESHOLD = 0.2
 local LIMIT_SNAP = 0.05
--- applyInputs runs per received input packet (remote updateGFX early-returns),
--- so the smoothing timestep is the real wall-clock gap between packets rather
--- than a fixed frame time. Clamp it to stay stable across jitter and long gaps.
-local _lastApplyAt = nil
 local APPLY_DT_MIN = 0.005
 local APPLY_DT_MAX = 0.1
 
 local INPUT_NAMES = { "steering", "throttle", "brake", "parkingbrake", "clutch" }
+local INPUT_KEYS = { "s", "t", "b", "p", "c" }
+local INPUT_NAME_BY_KEY = { s = "steering", t = "throttle", b = "brake", p = "parkingbrake", c = "clutch" }
+local INPUT_SOURCE = "HighBeam"
 local _diag = {
   gearAttempts = 0,
   gearApplied = 0,
@@ -150,6 +153,46 @@ local function _shouldSnapInput(key, targetVal, current)
   return delta > SNAP_THRESHOLD or atLimit
 end
 
+local function _setInputSourceLifecycle(remoteEnabled)
+  if not input or not input.setAllowedInputSource then return end
+  local names = {}
+  for _, name in ipairs(INPUT_NAMES) do names[name] = true end
+  if type(input.state) == "table" then
+    for name, _ in pairs(input.state) do names[name] = true end
+  end
+  for name, _ in pairs(names) do
+    -- Remote puppets must accept only HighBeam's synthetic input while local
+    -- vehicles must retain their normal local controls. Make both halves
+    -- explicit so controller reloads and reconnects cannot leave a stale deny.
+    pcall(input.setAllowedInputSource, name, INPUT_SOURCE, remoteEnabled and true or false)
+    pcall(input.setAllowedInputSource, name, "local", not remoteEnabled)
+  end
+end
+
+local function _emitContinuousInputs(dt)
+  if not input or not input.event then return end
+  local step = math.max(APPLY_DT_MIN, math.min(APPLY_DT_MAX, tonumber(dt) or (1 / 60)))
+  for _, key in ipairs(INPUT_KEYS) do
+    local targetVal = tonumber(desiredInputs[key]) or 0
+    if key == "s" then
+      targetVal = targetVal * 450 / math.max(_getSteeringLock(), 1)
+      targetVal = math.max(-1, math.min(1, targetVal))
+    else
+      targetVal = math.max(0, math.min(1, targetVal))
+    end
+
+    local current = smoothing[key] or 0
+    if _shouldSnapInput(key, targetVal, current) then
+      smoothing[key] = targetVal
+    else
+      local alpha = 1 - math.exp(-SMOOTH_RATE * step)
+      smoothing[key] = current + (targetVal - current) * alpha
+    end
+    pcall(input.event, INPUT_NAME_BY_KEY[key], smoothing[key], 1, nil, nil, nil, INPUT_SOURCE)
+    _bump("inputsApplied")
+  end
+end
+
 function M.onInit()
   if obj and obj.getID then
     gameVehicleId = obj:getID()
@@ -158,20 +201,23 @@ function M.onInit()
   initialized = true
   lastSent = { s = 0, t = 0, b = 0, p = 0, c = 0, g = 0 }
   smoothing = { s = 0, t = 0, b = 0, p = 0, c = 0 }
+  desiredInputs = { s = 0, t = 0, b = 0, p = 0, c = 0 }
 end
 
 function M.setActive(active, remote)
   M.onInit()
+  local wasRemoteActive = isActive and isRemote
   isActive = active and true or false
   isRemote = remote and true or false
   if isActive and isRemote then
     activationTime = os.clock()
+    gearRetryTimer = 0
   end
-  if isRemote and input and input.setAllowedInputSource then
-    for _, name in ipairs(INPUT_NAMES) do
-      pcall(input.setAllowedInputSource, name, "local", false)
-    end
+  if wasRemoteActive and not (isActive and isRemote) then
+    desiredInputs = { s = 0, t = 0, b = 0, p = 0, c = 0 }
+    _emitContinuousInputs(1 / 60)
   end
+  _setInputSourceLifecycle(isActive and isRemote)
 end
 
 function M.updateGFX(dt)
@@ -191,7 +237,18 @@ function M.updateGFX(dt)
     end
   end
 
-  if not isActive or isRemote then return end
+  if not isActive then return end
+
+  if isRemote then
+    _emitContinuousInputs(dt)
+    gearRetryTimer = gearRetryTimer + (dt or 0)
+    if gearPending and (os.clock() - activationTime) >= READINESS_DELAY_SEC and gearRetryTimer >= 0.05 then
+      gearRetryTimer = 0
+      local applied, retryable = M._applyGear(desiredGear)
+      if applied or not retryable then gearPending = false end
+    end
+    return
+  end
 
   local e = electrics and electrics.values or {}
   local lock = _getSteeringLock()
@@ -200,7 +257,10 @@ function M.updateGFX(dt)
   local b = _round4(e.brake_input or 0)
   local p = _round4(e.parkingbrake_input or 0)
   local c = _round4(e.clutch_input or 0)
-  local g = tonumber(e.gear_A or 0) or 0
+  -- `gear` carries automatic modes (P/R/N/D/S/M2); `gear_A` is the legacy
+  -- numeric fallback used by manuals and older vehicles.
+  local g = e.gear
+  if g == nil or g == "" then g = tonumber(e.gear_A or 0) or 0 end
 
   local changed = false
   local delta = {}
@@ -244,7 +304,7 @@ function M._applyGear(gearValue)
   if not dev then
     _bump("unsupportedGearbox")
     _logVerbose("missing_gearbox", 'gear skip no supported gearbox device value=' .. tostring(gearValue))
-    return
+    return false, true
   end
 
   local handler = GEARBOX_HANDLER[dev.type]
@@ -253,7 +313,7 @@ function M._applyGear(gearValue)
     _logVerbose("unsupported_" .. tostring(dev.type), 'gear skip unsupported gearbox type=' .. tostring(dev.type)
       .. ' device=' .. tostring(devName)
       .. ' value=' .. tostring(gearValue))
-    return
+    return false, false
   end
 
   local numericGear = tonumber(gearValue)
@@ -262,7 +322,7 @@ function M._applyGear(gearValue)
       _bump("gearSkipped")
       _logVerbose("invalid_numeric_" .. tostring(gearValue), 'gear skip nonnumeric value=' .. tostring(gearValue)
         .. ' type=' .. tostring(dev.type))
-      return
+      return false, false
     end
     local minGear = tonumber(dev.minGearIndex) or -1
     local maxGear = tonumber(dev.maxGearIndex) or 6
@@ -274,19 +334,19 @@ function M._applyGear(gearValue)
         .. ' type=' .. tostring(dev.type)
         .. ' min=' .. tostring(minGear)
         .. ' max=' .. tostring(maxGear))
-      return
+      return false, false
     end
     if dev.setGearIndex then
       local ok = pcall(dev.setGearIndex, dev, clamped)
       if ok then _bump("gearApplied") else _bump("gearSkipped") end
-      return
+      return ok, not ok
     end
   end
 
   if handler == "controller" then
     if electrics and electrics.values and electrics.values.isShifting then
       _bump("gearSkipped")
-      return
+      return false, true
     end
     local main = controller and controller.mainController or nil
     local gearString = tostring(gearValue or "")
@@ -300,27 +360,27 @@ function M._applyGear(gearValue)
         _logVerbose("ratio_controller_" .. tostring(clamped), 'gear skip missing controller ratio value=' .. tostring(gearValue)
           .. ' clamped=' .. tostring(clamped)
           .. ' type=' .. tostring(dev.type))
-        return
+        return false, false
       end
       local ok = pcall(dev.setGearIndex, dev, clamped)
       if ok then _bump("gearApplied") else _bump("gearSkipped") end
-      return
+      return ok, not ok
     elseif main and mode and mode == "M" and remoteIndex and electrics and electrics.values and electrics.values.gearIndex then
       if electrics.values.gearIndex < remoteIndex and main.shiftUpOnDown then
         pcall(main.shiftUpOnDown)
         _bump("gearApplied")
-        return
+        return true, false
       elseif electrics.values.gearIndex > remoteIndex and main.shiftDownOnDown then
         pcall(main.shiftDownOnDown)
         _bump("gearApplied")
-        return
+        return true, false
       end
       _bump("gearSkipped")
-      return
+      return true, false
     elseif main and mode and GEAR_MODE_INDEX[mode] and main.shiftToGearIndex then
-      pcall(main.shiftToGearIndex, GEAR_MODE_INDEX[mode])
-      _bump("gearApplied")
-      return
+      local ok = pcall(main.shiftToGearIndex, GEAR_MODE_INDEX[mode])
+      if ok then _bump("gearApplied") else _bump("gearSkipped") end
+      return ok, not ok
     end
   end
 
@@ -330,49 +390,23 @@ function M._applyGear(gearValue)
     .. ' device=' .. tostring(devName))
   -- Do NOT write gear_A directly to electrics — the gearbox reads it on
   -- the next updateGFX and if the value is invalid, desiredGearRatio is nil.
+  return false, false
 end
 
 function M.applyInputs(data)
   if not isRemote or type(data) ~= "table" then return end
 
-  -- Readiness guard: skip gear changes until gearbox has initialized
-  local now = os.clock()
-  local ready = (now - activationTime) >= READINESS_DELAY_SEC
-
-  -- Real elapsed time since the last applied input packet, used as the
-  -- smoothing timestep so the animation rate is independent of packet cadence
-  -- and framerate. Clamped to stay stable across jitter and long gaps.
-  local applyDt = _lastApplyAt and math.max(APPLY_DT_MIN, math.min(APPLY_DT_MAX, now - _lastApplyAt)) or (1 / 60)
-  _lastApplyAt = now
-
   for key, target in pairs(data) do
     if key == "s" or key == "t" or key == "b" or key == "p" or key == "c" then
-      local inputName = ({ s = "steering", t = "throttle", b = "brake", p = "parkingbrake", c = "clutch" })[key]
-      local current = smoothing[key] or 0
-      local targetVal = tonumber(target) or 0
-
-      if key == "s" then
-        local lock = _getSteeringLock()
-        targetVal = targetVal * 450 / lock
-      end
-
-      -- The old one-sided steering limit test snapped every negative value but
-      -- smoothed positive values, producing asymmetric remote wheel motion.
-      if _shouldSnapInput(key, targetVal, current) then
-        smoothing[key] = targetVal
-      else
-        local alpha = 1 - math.exp(-SMOOTH_RATE * applyDt)
-        smoothing[key] = current + (targetVal - current) * alpha
-      end
-
-      if input and input.event then
-        pcall(input.event, inputName, smoothing[key], 1, nil, nil, nil, "HighBeam")
-        _bump("inputsApplied")
-      end
-    elseif key == "g" and ready then
-      M._applyGear(tonumber(target) or 0)
+      -- Network packets may be deltas. Merge them into a complete desired
+      -- state; updateGFX owns smoothing and event delivery every frame.
+      desiredInputs[key] = tonumber(target) or 0
     elseif key == "g" then
-      _bump("gearSkipped")
+      -- Preserve strings such as D, R, S, and M2 for automatic gearboxes;
+      -- legacy numeric gear indices remain accepted by _applyGear.
+      desiredGear = target
+      gearPending = true
+      gearRetryTimer = 0.05
     end
   end
 end
@@ -385,7 +419,22 @@ function M.getInputActivity()
 end
 
 function M.onHighBeamRemoteReset()
+  desiredInputs = { s = 0, t = 0, b = 0, p = 0, c = 0 }
   smoothing = { s = 0, t = 0, b = 0, p = 0, c = 0 }
+  activationTime = os.clock()
+  gearPending = desiredGear ~= nil
+  gearRetryTimer = 0
+  if isActive and isRemote then _emitContinuousInputs(1 / 60) end
+end
+
+function M.onReset()
+  if isRemote then
+    M.onHighBeamRemoteReset()
+  else
+    -- Force a complete post-reset delta, including an unchanged gear mode.
+    lastSent = {}
+    gearResyncTimer = GEAR_RESYNC_INTERVAL
+  end
 end
 
 M.init = M.onInit
@@ -393,6 +442,10 @@ M.onExtensionLoaded = M.onInit
 
 if rawget(_G, "HIGHBEAM_TEST") then
   M._testShouldSnapInput = _shouldSnapInput
+  M._testSetReady = function() activationTime = -1000000; gearRetryTimer = 1 end
+  M._testGetState = function()
+    return desiredInputs, smoothing, desiredGear, gearPending
+  end
 end
 
 return M
