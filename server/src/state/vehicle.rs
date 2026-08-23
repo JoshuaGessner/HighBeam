@@ -12,5 +12,8 @@ pub struct Vehicle {
     pub velocity: [f32; 3],
     /// Latest authoritative full damage snapshot from the owner.
     pub damage: Option<String>,
+    pub damage_epoch: u64,
+    pub damage_revision: u64,
+    pub config_revision: u64,
     pub last_update: Instant,
 }

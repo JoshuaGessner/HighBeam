@@ -5,11 +5,27 @@ local isRemote = false
 local isActive = false
 local gameVehicleId = 0
 local initialized = false
+local physicsHookActive = false
+local lastPhysicsStepAt = nil
+local PHYSICS_HOOK_STALE_SEC = 0.25
 
 local sendTimer = 0
 local motionTimer = 0
 local lastSampleTime = 0
 local SEND_INTERVAL = 1 / 60
+
+local function _isFinite(value, limit)
+  return type(value) == "number" and value == value
+    and value ~= math.huge and value ~= -math.huge
+    and math.abs(value) <= (limit or 1e20)
+end
+
+local function _getSteeringLock()
+  if v and v.data and v.data.input and v.data.input.steeringWheelLock then
+    return tonumber(v.data.input.steeringWheelLock) or 450
+  end
+  return 450
+end
 
 local function _getController(name)
   if controller and controller.getController then
@@ -38,12 +54,16 @@ function M.onInit()
     return
   end
   initialized = true
+  if enablePhysicsStepHook then
+    local okHook = pcall(enablePhysicsStepHook)
+    physicsHookActive = okHook and true or false
+  end
   if obj and obj.queueGameEngineLua then
     obj:queueGameEngineLua(string.format(
       "extensions.highbeam.onVEControllerInit(%d,%q,%s)",
       gameVehicleId,
       "highbeamVE",
-      "false"
+      tostring(physicsHookActive)
     ))
   end
 end
@@ -96,6 +116,21 @@ function M.setActive(active, remote)
   end
 end
 
+-- Re-arm sampling without reloading every controller. This is intentionally
+-- idempotent: the GE watchdog can call it whenever vehicle-side samples go
+-- stale, including the case where enablePhysicsStepHook succeeded but the hook
+-- subsequently stopped firing.
+function M.restartSampling()
+  sendTimer = 0
+  lastPhysicsStepAt = nil
+  if enablePhysicsStepHook then
+    local okHook = pcall(enablePhysicsStepHook)
+    physicsHookActive = okHook and true or false
+  else
+    physicsHookActive = false
+  end
+end
+
 function M.onBeamBroke(beamId, energy)
   local damageVE = _getController("highbeamDamageVE")
   if damageVE and damageVE.onBeamBroke then
@@ -112,7 +147,7 @@ function M.onBeamBroke(beamId, energy)
   end
 end
 
-function M.updateGFX(dt)
+local function _sampleAndSend(dt)
   if not isActive or isRemote then return end
 
   local frameDt = dt or 0
@@ -131,9 +166,9 @@ function M.updateGFX(dt)
 
   if not obj then return end
 
-  local pos = obj:getPosition()
-  local vel = obj:getVelocity()
-  if not pos or not vel then return end
+  local originPos = obj:getPosition()
+  local originVel = obj:getVelocity()
+  if not originPos or not originVel then return end
 
   local dir = obj:getDirectionVector()
   local up = obj:getDirectionVectorUp()
@@ -141,8 +176,16 @@ function M.updateGFX(dt)
 
   local rot = quatFromDir(-vec3(dir), vec3(up))
 
+  if not (_isFinite(originPos.x, 1e7) and _isFinite(originPos.y, 1e7) and _isFinite(originPos.z, 1e7)
+    and _isFinite(originVel.x, 1e5) and _isFinite(originVel.y, 1e5) and _isFinite(originVel.z, 1e5)
+    and _isFinite(rot.x, 4) and _isFinite(rot.y, 4) and _isFinite(rot.z, 4) and _isFinite(rot.w, 4)) then
+    return
+  end
+
   local e = electrics and electrics.values or {}
-  local steer = e.steering_input or e.steering or 0
+  -- Match highbeamInputsVE's wire convention on both UDP and TCP: steering is
+  -- normalized to BeamNG's 450-degree reference and inverted on receive.
+  local steer = (e.steering_input or e.steering or 0) * _getSteeringLock() / 450
   local throttle = e.throttle_input or e.throttle or 0
   local brake = e.brake_input or e.brake or 0
   local gear = e.gear_A or 0
@@ -162,6 +205,30 @@ function M.updateGFX(dt)
     end
   end
 
+  if not (_isFinite(avx, 1e4) and _isFinite(avy, 1e4) and _isFinite(avz, 1e4)
+    and _isFinite(sampleTime, 1e9) and _isFinite(sampleDelta, 1)) then
+    return
+  end
+
+  -- Synchronize the center of gravity consistently with the receiver. The
+  -- origin velocity alone includes rotation/translation coupling for vehicles
+  -- whose COG is offset from the reference node.
+  local pos = vec3(originPos)
+  local vel = vec3(originVel)
+  local velVE = _getController("highbeamVelocityVE")
+  if velVE and velVE.getCogRel then
+    local okCog, cogRel = pcall(velVE.getCogRel)
+    if okCog and cogRel then
+      local cog = vec3(cogRel):rotated(rot)
+      pos = pos + cog
+      vel = vel + cog:cross(vec3(avx, avy, avz))
+    end
+  end
+  if not (_isFinite(pos.x, 1e7) and _isFinite(pos.y, 1e7) and _isFinite(pos.z, 1e7)
+    and _isFinite(vel.x, 1e5) and _isFinite(vel.y, 1e5) and _isFinite(vel.z, 1e5)) then
+    return
+  end
+
   if obj.queueGameEngineLua then
     obj:queueGameEngineLua(string.format(
       "extensions.highbeam.onVEData(%d,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.5f,%.5f,%.5f,%.0f,%.5f,%.6f,%.6f)",
@@ -174,6 +241,18 @@ function M.updateGFX(dt)
       sampleTime, sampleDelta
     ))
   end
+end
+
+
+function M.onPhysicsStep(dt)
+  lastPhysicsStepAt = os.clock()
+  if physicsHookActive then _sampleAndSend(dt) end
+end
+
+function M.updateGFX(dt)
+  local hookSilent = not lastPhysicsStepAt
+    or (os.clock() - lastPhysicsStepAt) > PHYSICS_HOOK_STALE_SEC
+  if not physicsHookActive or hookSilent then _sampleAndSend(dt) end
 end
 
 M.init = M.onInit

@@ -229,15 +229,17 @@ M.onUpdate = function(dtReal, dtSim, dtRaw)
     for gameVid, pending in pairs(_pendingResetData) do
       local lastSent = _lastLocalResetSentAt[gameVid] or 0
       if (now - lastSent) >= debounceSec then
-        _lastLocalResetSentAt[gameVid] = now
-        _pendingResetData[gameVid] = nil
-        connection._sendPacket({
+        local sent = connection._sendPacket({
           type = "vehicle_reset",
           vehicle_id = pending.serverVid,
           data = pending.data,
         })
-        if state and state.clearDamageHash then
-          state.clearDamageHash(gameVid)
+        if sent then
+          _lastLocalResetSentAt[gameVid] = now
+          _pendingResetData[gameVid] = nil
+          if state and state.clearDamageHash then
+            state.clearDamageHash(gameVid)
+          end
         end
       end
     end
@@ -259,6 +261,68 @@ M.onPreRender = function(dtReal, dtSim, dtRaw)
 end
 
 -- ──────────────────── BeamNG vehicle lifecycle hooks ─────────────────────────
+
+M.ensureLocalVE = function(gameVehicleId, reason)
+  local veh = be and be:getObjectByID(gameVehicleId)
+  if not veh then return false end
+  log('I', logTag, 'Ensuring local VE controllers gameVid=' .. tostring(gameVehicleId)
+    .. ' reason=' .. tostring(reason or 'lifecycle'))
+  local ok = pcall(function()
+    veh:queueLuaCommand([[
+      local function hbGetController(name)
+        if not controller or not controller.getController then return nil end
+        local okGet, mod = pcall(controller.getController, name)
+        if okGet then return mod end
+        return nil
+      end
+      local function hbLoadController(name)
+        local mod = hbGetController(name)
+        if mod then return mod end
+        if not controller or not controller.loadControllerExternal then
+          return nil, "controller.loadControllerExternal unavailable"
+        end
+        local okLoad, err = pcall(controller.loadControllerExternal, "highbeam/" .. name, name)
+        if not okLoad then return nil, tostring(err) end
+        mod = hbGetController(name)
+        if not mod then return nil, "controller.getController returned nil after load" end
+        return mod
+      end
+      local function hbRequireController(name, missing)
+        local mod, err = hbLoadController(name)
+        if not mod then table.insert(missing, name .. ":" .. tostring(err or "missing")) end
+        return mod
+      end
+      local missing = {}
+      hbRequireController("highbeamVelocityVE", missing)
+      hbRequireController("highbeamPositionVE", missing)
+      hbRequireController("highbeamInputsVE", missing)
+      hbRequireController("highbeamElectricsVE", missing)
+      hbRequireController("highbeamPowertrainVE", missing)
+      hbRequireController("highbeamDamageVE", missing)
+      local mainVE = hbRequireController("highbeamVE", missing)
+      if mainVE and mainVE.setActive then
+        local okActive, err = pcall(mainVE.setActive, true, false)
+        if not okActive then table.insert(missing, "highbeamVE.setActive:" .. tostring(err)) end
+        if mainVE.restartSampling then
+          local okRestart, restartErr = pcall(mainVE.restartSampling)
+          if not okRestart then table.insert(missing, "highbeamVE.restartSampling:" .. tostring(restartErr)) end
+        end
+      elseif mainVE then
+        table.insert(missing, "highbeamVE.setActive:missing")
+      end
+      if #missing > 0 then
+        obj:queueGameEngineLua(
+          "if extensions and extensions.highbeam and extensions.highbeam.onLocalVEReady then extensions.highbeam.onLocalVEReady(" .. tostring(obj:getID()) .. ",false," .. string.format("%q", table.concat(missing, ",")) .. ") end"
+        )
+      else
+        obj:queueGameEngineLua(
+          "if extensions and extensions.highbeam and extensions.highbeam.onLocalVEReady then extensions.highbeam.onLocalVEReady(" .. tostring(obj:getID()) .. ",true,\"\") end"
+        )
+      end
+    ]])
+  end)
+  return ok
+end
 
 M.onVehicleSpawned = function(gameVehicleId)
   if not state or not connection then return end
@@ -285,56 +349,7 @@ M.onVehicleSpawned = function(gameVehicleId)
   state.requestSpawn(gameVehicleId, configData)
 
   -- Activate per-vehicle VE sync modules for local vehicle data collection.
-  pcall(function()
-    veh:queueLuaCommand([[
-      local function hbGetController(name)
-        if not controller or not controller.getController then return nil end
-        local ok, mod = pcall(controller.getController, name)
-        if ok then return mod end
-        return nil
-      end
-      local function hbLoadController(name)
-        local mod = hbGetController(name)
-        if mod then return mod end
-        if not controller or not controller.loadControllerExternal then
-          return nil, "controller.loadControllerExternal unavailable"
-        end
-        local ok, err = pcall(controller.loadControllerExternal, "highbeam/" .. name, name)
-        if not ok then return nil, tostring(err) end
-        mod = hbGetController(name)
-        if not mod then return nil, "controller.getController returned nil after load" end
-        return mod
-      end
-      local function hbRequireController(name, missing)
-        local mod, err = hbLoadController(name)
-        if not mod then table.insert(missing, name .. ":" .. tostring(err or "missing")) end
-        return mod
-      end
-      local missing = {}
-      hbRequireController("highbeamVelocityVE", missing)
-      hbRequireController("highbeamPositionVE", missing)
-      hbRequireController("highbeamInputsVE", missing)
-      hbRequireController("highbeamElectricsVE", missing)
-      hbRequireController("highbeamPowertrainVE", missing)
-      hbRequireController("highbeamDamageVE", missing)
-      local mainVE = hbRequireController("highbeamVE", missing)
-      if mainVE and mainVE.setActive then
-        local ok, err = pcall(mainVE.setActive, true, false)
-        if not ok then table.insert(missing, "highbeamVE.setActive:" .. tostring(err)) end
-      elseif mainVE then
-        table.insert(missing, "highbeamVE.setActive:missing")
-      end
-      if #missing > 0 then
-        obj:queueGameEngineLua(
-          "if extensions and extensions.highbeam and extensions.highbeam.onLocalVEReady then extensions.highbeam.onLocalVEReady(" .. tostring(obj:getID()) .. ",false," .. string.format("%q", table.concat(missing, ",")) .. ") end"
-        )
-      else
-        obj:queueGameEngineLua(
-          "if extensions and extensions.highbeam and extensions.highbeam.onLocalVEReady then extensions.highbeam.onLocalVEReady(" .. tostring(obj:getID()) .. ",true,\"\") end"
-        )
-      end
-    ]])
-  end)
+  M.ensureLocalVE(gameVehicleId, "vehicle_spawned")
 end
 
 M.onVehicleDestroyed = function(gameVehicleId)
@@ -372,7 +387,12 @@ M.onVehicleResetted = function(gameVehicleId)
   if state and state.getLocalMotionTime then
     resetTime = state.getLocalMotionTime(gameVehicleId) or 0
   end
-  local resetData = '{"pos":[' .. pos.x .. ',' .. pos.y .. ',' .. pos.z .. '],"rot":[' .. rot.x .. ',' .. rot.y .. ',' .. rot.z .. ',' .. rot.w .. '],"time":' .. tostring(resetTime) .. '}'
+  local damageEpoch = 0
+  if state and state.beginLocalDamageEpoch then
+    damageEpoch = state.beginLocalDamageEpoch(gameVehicleId, debounceSec) or 0
+  end
+  local resetData = '{"pos":[' .. pos.x .. ',' .. pos.y .. ',' .. pos.z .. '],"rot":[' .. rot.x .. ',' .. rot.y .. ',' .. rot.z .. ',' .. rot.w .. '],"time":' .. tostring(resetTime)
+    .. ',"damageEpoch":' .. tostring(damageEpoch) .. '}'
 
   local lastSent = _lastLocalResetSentAt[gameVehicleId]
   if lastSent and (now - lastSent) < debounceSec then
@@ -385,18 +405,22 @@ M.onVehicleResetted = function(gameVehicleId)
     end
     return
   end
-  _lastLocalResetSentAt[gameVehicleId] = now
-  _pendingResetData[gameVehicleId] = nil
-
-  connection._sendPacket({
+  local sent = connection._sendPacket({
     type = "vehicle_reset",
     vehicle_id = serverVid,
     data = resetData,
   })
 
-  -- Bug #3a: Clear damage hash after sending reset so fresh damage is detected
-  if state and state.clearDamageHash then
-    state.clearDamageHash(gameVehicleId)
+  if sent then
+    _lastLocalResetSentAt[gameVehicleId] = now
+    _pendingResetData[gameVehicleId] = nil
+    -- Clear damage hash only after the reset enters the reliable TCP queue.
+    if state and state.clearDamageHash then
+      state.clearDamageHash(gameVehicleId)
+    end
+  else
+    _pendingResetData[gameVehicleId] = { data = resetData, queuedAt = now, serverVid = serverVid }
+    log('W', logTag, 'Reset retained for retry gameVid=' .. tostring(gameVehicleId))
   end
 end
 
@@ -447,6 +471,9 @@ M.onVEData = function(gameVid, px, py, pz, rx, ry, rz, rw, vx, vy, vz, avx, avy,
 end
 
 M.onLocalVEReady = function(gameVid, ready, missingCsv)
+  if state and state.onLocalVEReady then
+    state.onLocalVEReady(gameVid, ready, missingCsv)
+  end
   if ready == true or tostring(ready) == "true" then
     log('I', logTag, 'Local VE confirmed gameVid=' .. tostring(gameVid))
     return
@@ -467,6 +494,12 @@ M.onVEControllerActive = function(gameVid, active, remote)
   log('I', logTag, 'VE controller active gameVid=' .. tostring(gameVid)
     .. ' active=' .. tostring(active)
     .. ' remote=' .. tostring(remote))
+end
+
+M.onRemoteVECog = function(gameVid, x, y, z)
+  if vehicles and vehicles.onRemoteVECog then
+    vehicles.onRemoteVECog(tonumber(gameVid), x, y, z)
+  end
 end
 
 -- Teleport request coming from VE PD controller when error is too large.
@@ -540,6 +573,18 @@ end
 M.onVEDamageDirty = function(gameVid)
   if state and state.markDamageDirty then
     state.markDamageDirty(gameVid)
+  end
+end
+
+M.onRemoteDamageApplied = function(gameVid, epoch, revision, brokenCount, groupCount, deformCount, errorCount)
+  if vehicles and vehicles.onRemoteDamageApplied then
+    vehicles.onRemoteDamageApplied(gameVid, epoch, revision, brokenCount, groupCount, deformCount, errorCount)
+  end
+end
+
+M.onRemoteDamageAudit = function(gameVid, epoch, revision, extraBroken, missingBroken, deformMismatch)
+  if vehicles and vehicles.onRemoteDamageAudit then
+    vehicles.onRemoteDamageAudit(gameVid, epoch, revision, extraBroken, missingBroken, deformMismatch)
   end
 end
 

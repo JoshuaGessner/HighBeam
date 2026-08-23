@@ -38,6 +38,8 @@ local TELEPORT_BASE_DIST = 5.0
 local TELEPORT_SPEED_SCALE = 0.5
 local TELEPORT_DELAY_SEC = 0.45
 local TELEPORT_INSTANT_DIST = 12.0
+local TELEPORT_ROT_DELAY_RAD = 1.570796
+local TELEPORT_ROT_INSTANT_RAD = 2.792527
 
 -- Correction model (BeamMP-proven constants): each render frame we compute a
 -- velocity delta that closes a fraction of the position/velocity error, and
@@ -68,7 +70,15 @@ local targetBuffer = {}
 local TARGET_BUFFER_MAX = 8
 local INTERP_BACK_TIME = 0.10
 local MAX_EXTRAPOLATION_SEC = 0.15
-local PACKET_TIMEOUT_SEC = 0.25
+-- Covers several 10 Hz TCP fallback intervals plus ordinary scheduling jitter.
+-- Prediction itself remains capped by MAX_EXTRAPOLATION_SEC.
+local PACKET_TIMEOUT_SEC = 0.60
+
+local function _isFinite(value, limit)
+  return type(value) == "number" and value == value
+    and value ~= math.huge and value ~= -math.huge
+    and math.abs(value) <= (limit or 1e20)
+end
 
 -- Smooth blend-on-arrival: when a new target arrives, we compute the
 -- correction delta between where we predicted the car to be (from old target)
@@ -82,6 +92,15 @@ local prevTargetPos = nil
 local prevTargetVel = nil
 local prevTargetAngVel = nil
 local prevTargetTime = nil
+local previousLocalVel = nil
+local smoothedLocalAcc = { 0, 0, 0 }
+local previousRequestedDv = { 0, 0, 0 }
+
+local function _resetCollisionHistory()
+  previousLocalVel = nil
+  smoothedLocalAcc = { 0, 0, 0 }
+  previousRequestedDv = { 0, 0, 0 }
+end
 
 local function _resetSmoothers()
   teleportTimer = 0
@@ -96,6 +115,7 @@ local function _resetSmoothers()
   prevTargetVel = nil
   prevTargetAngVel = nil
   prevTargetTime = nil
+  _resetCollisionHistory()
 end
 
 local function _getVelocityModule()
@@ -130,6 +150,16 @@ local function _smooth3(oldValue, newValue, alpha)
     _lerpValue(oldValue[2] or 0, newValue[2] or 0, alpha),
     _lerpValue(oldValue[3] or 0, newValue[3] or 0, alpha),
   }
+end
+
+local function _clampMagnitude3(value, maxMagnitude)
+  local x, y, z = value[1] or 0, value[2] or 0, value[3] or 0
+  local magnitude = math.sqrt(x*x + y*y + z*z)
+  if magnitude > maxMagnitude and magnitude > 0 then
+    local scale = maxMagnitude / magnitude
+    return { x * scale, y * scale, z * scale }
+  end
+  return { x, y, z }
 end
 
 local function _normalizeQuat4(x, y, z, w)
@@ -175,7 +205,16 @@ local function _rotationErrorAngVel(curRot, tgtRot, dt)
   local sinHalf = math.sqrt(ex * ex + ey * ey + ez * ez)
   if sinHalf < 0.0001 then return 0, 0, 0 end
 
-  local angle = 2 * math.atan2(sinHalf, math.abs(ew))
+  local absW = math.abs(ew)
+  local halfAngle
+  if math.atan2 then
+    halfAngle = math.atan2(sinHalf, absW)
+  elseif absW < 1e-12 then
+    halfAngle = math.pi * 0.5
+  else
+    halfAngle = math.atan(sinHalf / absW)
+  end
+  local angle = 2 * halfAngle
   if ew < 0 then angle = -angle end
 
   local invSin = 1 / sinHalf
@@ -379,6 +418,14 @@ function M.updateTimeOffset(remoteTime, localTime)
 end
 
 function M.setTarget(px, py, pz, vx, vy, vz, rx, ry, rz, rw, avx, avy, avz, t, isReset)
+  if not (_isFinite(px, 1e7) and _isFinite(py, 1e7) and _isFinite(pz, 1e7)
+    and _isFinite(vx, 1e5) and _isFinite(vy, 1e5) and _isFinite(vz, 1e5)
+    and _isFinite(rx, 4) and _isFinite(ry, 4) and _isFinite(rz, 4) and _isFinite(rw, 4)
+    and _isFinite(avx, 1e4) and _isFinite(avy, 1e4) and _isFinite(avz, 1e4)
+    and _isFinite(t, 1e9)) then
+    _diag.targetInvalidDrops = (_diag.targetInvalidDrops or 0) + 1
+    return
+  end
   local newPos = { px or 0, py or 0, pz or 0 }
   local newVel = { vx or 0, vy or 0, vz or 0 }
   local newAngVel = { avx or 0, avy or 0, avz or 0 }
@@ -413,6 +460,8 @@ function M.setTarget(px, py, pz, vx, vy, vz, rx, ry, rz, rw, avx, avy, avz, t, i
     }
     if targetAcc then newAcc = _smooth3(targetAcc, newAcc, 0.35) end
     if targetAngAcc then newAngAcc = _smooth3(targetAngAcc, newAngAcc, 0.35) end
+    newAcc = _clampMagnitude3(newAcc, 250.0)
+    newAngAcc = _clampMagnitude3(newAngAcc, 100.0)
     if targetVel then newVel = _smooth3(targetVel, newVel, 0.55) end
     if targetAngVel then newAngVel = _smooth3(targetAngVel, newAngVel, 0.55) end
   end
@@ -489,6 +538,22 @@ function M.resetTo(px, py, pz, rx, ry, rz, rw, t)
   M.setTarget(px, py, pz, 0, 0, 0, rx, ry, rz, rw, 0, 0, 0, t or 0, true)
 end
 
+-- Reset packets use BeamNG's SceneObject/reference-node position, unlike the
+-- continuous motion stream which uses COG coordinates.
+function M.resetToOrigin(px, py, pz, rx, ry, rz, rw, t)
+  local cogX, cogY, cogZ = 0, 0, 0
+  local velMod = _getVelocityModule()
+  if velMod and velMod.getCogRel then
+    local okCog, cogRel = pcall(velMod.getCogRel)
+    if okCog and cogRel then
+      local offset = vec3(cogRel):rotated(quat(rx, ry, rz, rw))
+      cogX, cogY, cogZ = offset.x, offset.y, offset.z
+    end
+  end
+  M.setTarget((px or 0) + cogX, (py or 0) + cogY, (pz or 0) + cogZ,
+    0, 0, 0, rx, ry, rz, rw, 0, 0, 0, t or 0, true)
+end
+
 function M.onHighBeamRemoteReset()
   _resetSmoothers()
 end
@@ -497,11 +562,29 @@ local function _requestTeleport(predX, predY, predZ, predRot, predVel, predAngVe
   -- The GE side performs the actual move (setClusterPosRelRot) and restores
   -- linear velocity (applyClusterVelocityScaleAdd); it then queues the angular
   -- velocity back into highbeamVelocityVE. Nothing to apply from vlua here.
+  local teleportX, teleportY, teleportZ = predX, predY, predZ
+  local teleportVx, teleportVy, teleportVz = predVel[1] or 0, predVel[2] or 0, predVel[3] or 0
+  local velMod = _getVelocityModule()
+  if velMod and velMod.getCogRel then
+    local okCog, cogRel = pcall(velMod.getCogRel)
+    if okCog and cogRel then
+      local offset = vec3(cogRel):rotated(quat(predRot[1], predRot[2], predRot[3], predRot[4]))
+      teleportX, teleportY, teleportZ = predX - offset.x, predY - offset.y, predZ - offset.z
+      -- The wire velocity is measured at the COG, while GE's cluster setter
+      -- restores reference/origin velocity. Remove the rotational COG term
+      -- before handing the value across the GE boundary.
+      local rotationalCogVel = offset:cross(vec3(
+        predAngVel[1] or 0, predAngVel[2] or 0, predAngVel[3] or 0))
+      teleportVx = teleportVx - rotationalCogVel.x
+      teleportVy = teleportVy - rotationalCogVel.y
+      teleportVz = teleportVz - rotationalCogVel.z
+    end
+  end
   if obj.queueGameEngineLua then
     obj:queueGameEngineLua(string.format(
       "extensions.highbeam.onVETeleportRequest(%d,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f)",
-      obj:getID(), predX, predY, predZ, predRot[1], predRot[2], predRot[3], predRot[4],
-      predVel[1] or 0, predVel[2] or 0, predVel[3] or 0,
+      obj:getID(), teleportX, teleportY, teleportZ, predRot[1], predRot[2], predRot[3], predRot[4],
+      teleportVx, teleportVy, teleportVz,
       predAngVel[1] or 0, predAngVel[2] or 0, predAngVel[3] or 0,
       errDist
     ))
@@ -511,6 +594,7 @@ local function _requestTeleport(predX, predY, predZ, predRot, predVel, predAngVe
   blendRemaining = 0
   blendCorrX, blendCorrY, blendCorrZ = 0, 0, 0
   prevTargetPos, prevTargetVel, prevTargetAngVel, prevTargetTime = nil, nil, nil, nil
+  _resetCollisionHistory()
 end
 
 -- Runs once per render frame: resolves the interpolation buffer, runs
@@ -526,9 +610,24 @@ local function _updateRemoteCorrection(frameDt)
   if not isRemote or not hasTarget then return end
   if not obj or not frameDt or frameDt <= 0 then return end
 
-  local curPos = obj:getPosition()
-  local curVel = obj:getVelocity()
-  if not curPos or not curVel then return end
+  local originPos = obj:getPosition()
+  local originVel = obj:getVelocity()
+  if not originPos or not originVel then return end
+  local curRotForRecovery = _currentRotation()
+  if not curRotForRecovery then return end
+  local curPos = vec3(originPos)
+  local curVel = vec3(originVel)
+  if velMod and velMod.getCogRel then
+    local okCog, cogRel = pcall(velMod.getCogRel)
+    if okCog and cogRel then
+      local cog = vec3(cogRel):rotated(quat(curRotForRecovery[1], curRotForRecovery[2], curRotForRecovery[3], curRotForRecovery[4]))
+      curPos = curPos + cog
+      local currentAngVel = _currentAngularVelocity()
+      if currentAngVel then
+        curVel = curVel + cog:cross(vec3(currentAngVel[1], currentAngVel[2], currentAngVel[3]))
+      end
+    end
+  end
 
   local now = _now()
 
@@ -544,6 +643,7 @@ local function _updateRemoteCorrection(frameDt)
       log('D', 'HighBeam.PositionVE', 'packet timeout age=' .. string.format('%.3f', now - (newest.received or now))
         .. ' timeout=' .. string.format('%.3f', PACKET_TIMEOUT_SEC))
     end
+    _resetCollisionHistory()
     return
   end
 
@@ -577,8 +677,10 @@ local function _updateRemoteCorrection(frameDt)
 
   local teleportDist = TELEPORT_BASE_DIST + TELEPORT_SPEED_SCALE * speed
   local instantTeleportDist = TELEPORT_INSTANT_DIST + TELEPORT_SPEED_SCALE * speed
+  local recoveryRotX, recoveryRotY, recoveryRotZ = _rotationErrorAngVel(curRotForRecovery, predRot, 1.0)
+  local recoveryRotError = math.sqrt(recoveryRotX*recoveryRotX + recoveryRotY*recoveryRotY + recoveryRotZ*recoveryRotZ)
 
-  if errDist > instantTeleportDist then
+  if errDist > instantTeleportDist or recoveryRotError > TELEPORT_ROT_INSTANT_RAD then
     _diag.hardInstant = (_diag.hardInstant or 0) + 1
     if diagnosticsEnabled and diagnosticsTimer <= 0 then
       diagnosticsTimer = 0.25
@@ -593,7 +695,7 @@ local function _updateRemoteCorrection(frameDt)
     return
   end
 
-  if errDist > teleportDist then
+  if errDist > teleportDist or recoveryRotError > TELEPORT_ROT_DELAY_RAD then
     teleportTimer = teleportTimer + frameDt
     local delayNeeded = TELEPORT_DELAY_SEC + 0.1 * speed
     if teleportTimer > delayNeeded then
@@ -641,6 +743,28 @@ local function _updateRemoteCorrection(frameDt)
     dvX, dvY, dvZ = dvX * s, dvY * s, dvZ * s
     dvMag = dvMax
   end
+
+  -- Collision-aware correction: compare like-for-like per-frame velocity
+  -- deltas. The previous implementation mixed acceleration with delta-v,
+  -- making collision response depend strongly on render frame rate.
+  if previousLocalVel and frameDt > 0 then
+    local measuredDv = {
+      (curVel.x or 0) - previousLocalVel[1],
+      (curVel.y or 0) - previousLocalVel[2],
+      (curVel.z or 0) - previousLocalVel[3],
+    }
+    smoothedLocalAcc = _smooth3(smoothedLocalAcc, measuredDv, math.min(frameDt * 12, 1))
+    local externalDvX = smoothedLocalAcc[1] - previousRequestedDv[1]
+    local externalDvY = smoothedLocalAcc[2] - previousRequestedDv[2]
+    local externalDvZ = smoothedLocalAcc[3] - previousRequestedDv[3]
+    local opposed = -(dvX * externalDvX + dvY * externalDvY + dvZ * externalDvZ)
+    local denom = dvMag * dvMag + 0.05 * 0.05
+    local attenuation = 1 - math.max(0, math.min(1, opposed / math.max(denom, 0.001)))
+    dvX, dvY, dvZ = dvX * attenuation, dvY * attenuation, dvZ * attenuation
+    dvMag = math.sqrt(dvX*dvX + dvY*dvY + dvZ*dvZ)
+  end
+  previousLocalVel = { curVel.x or 0, curVel.y or 0, curVel.z or 0 }
+  previousRequestedDv = { dvX, dvY, dvZ }
 
   -- Angular correction: angular velocity delta for this frame (rad/s).
   local davX, davY, davZ = 0, 0, 0

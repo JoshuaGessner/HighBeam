@@ -7,6 +7,16 @@ const MIN_USERNAME_LEN: usize = 1;
 const MAX_PASSWORD_LEN: usize = 256;
 const MAX_CHAT_MESSAGE_LEN: usize = 200;
 const MAX_VEHICLE_CONFIG_LEN: usize = 1_000_000; // 1MB
+const MAX_DAMAGE_PAYLOAD_LEN: usize = 512 * 1024;
+const MAX_DAMAGE_ITEMS: usize = 20_000;
+const MAX_DAMAGE_GROUPS: usize = 2_048;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DamageMetadata {
+    pub epoch: Option<u64>,
+    pub revision: Option<u64>,
+    pub config_revision: Option<u64>,
+}
 
 /// Validate and normalize a username.
 pub fn validate_username(username: &str) -> Result<String> {
@@ -98,6 +108,163 @@ pub fn validate_vehicle_config_size(config: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+/// Validate a cumulative vehicle-damage snapshot before retaining or relaying it.
+/// Versioned envelopes use `{schemaVersion,epoch,revision,state}`; legacy root
+/// snapshots remain accepted during the protocol-v2 migration.
+pub fn validate_vehicle_damage(data: &str) -> Result<DamageMetadata> {
+    if data.len() > MAX_DAMAGE_PAYLOAD_LEN {
+        return Err(anyhow!("Damage payload is too large"));
+    }
+    let root: serde_json::Value =
+        serde_json::from_str(data).map_err(|e| anyhow!("Damage payload is not valid JSON: {e}"))?;
+    let root_obj = root
+        .as_object()
+        .ok_or_else(|| anyhow!("Damage payload must be an object"))?;
+
+    let versioned = root_obj.contains_key("state");
+    let (state, epoch, revision, config_revision) = if versioned {
+        let version = root_obj
+            .get("schemaVersion")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| anyhow!("Damage envelope is missing schemaVersion"))?;
+        if version != 1 {
+            return Err(anyhow!("Unsupported damage schema version"));
+        }
+        let epoch = root_obj
+            .get("epoch")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| anyhow!("Damage envelope is missing epoch"))?;
+        let revision = root_obj
+            .get("revision")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| anyhow!("Damage envelope is missing revision"))?;
+        let config_revision = root_obj
+            .get("configRevision")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let state = root_obj
+            .get("state")
+            .and_then(serde_json::Value::as_object)
+            .ok_or_else(|| anyhow!("Damage envelope state must be an object"))?;
+        (state, Some(epoch), Some(revision), Some(config_revision))
+    } else {
+        (root_obj, None, None, None)
+    };
+
+    if state.contains_key("nodes") {
+        return Err(anyhow!(
+            "Transient node positions are not valid damage state"
+        ));
+    }
+
+    if let Some(broken) = state.get("broken") {
+        let items = broken
+            .as_array()
+            .ok_or_else(|| anyhow!("broken must be an array"))?;
+        if items.len() > MAX_DAMAGE_ITEMS {
+            return Err(anyhow!("Too many broken beams"));
+        }
+        for id in items {
+            let id = id
+                .as_u64()
+                .ok_or_else(|| anyhow!("Broken beam IDs must be non-negative integers"))?;
+            if id > 1_000_000 {
+                return Err(anyhow!("Broken beam ID is out of range"));
+            }
+        }
+    }
+
+    if let Some(groups) = state.get("breakGroups") {
+        let items = groups
+            .as_array()
+            .ok_or_else(|| anyhow!("breakGroups must be an array"))?;
+        if items.len() > MAX_DAMAGE_GROUPS {
+            return Err(anyhow!("Too many break groups"));
+        }
+        for group in items {
+            let group = group
+                .as_str()
+                .ok_or_else(|| anyhow!("Break groups must be strings"))?;
+            if group.is_empty() || group.len() > 128 || group.chars().any(char::is_control) {
+                return Err(anyhow!("Invalid break group"));
+            }
+        }
+    }
+
+    if let Some(deform) = state.get("deform") {
+        let entries = deform
+            .as_object()
+            .ok_or_else(|| anyhow!("deform must be an object"))?;
+        if entries.len() > MAX_DAMAGE_ITEMS {
+            return Err(anyhow!("Too many deformed beams"));
+        }
+        for (raw_id, value) in entries {
+            let id: u64 = raw_id
+                .parse()
+                .map_err(|_| anyhow!("Deformed beam ID must be an integer"))?;
+            if id > 1_000_000 {
+                return Err(anyhow!("Deformed beam ID is out of range"));
+            }
+            let (deformation, rest_length) = match value.as_array() {
+                Some(values) if values.len() >= 2 => (
+                    values[0]
+                        .as_f64()
+                        .ok_or_else(|| anyhow!("Invalid deformation value"))?,
+                    values[1]
+                        .as_f64()
+                        .ok_or_else(|| anyhow!("Invalid beam rest length"))?,
+                ),
+                _ => (
+                    0.0,
+                    value
+                        .as_f64()
+                        .ok_or_else(|| anyhow!("Invalid legacy beam rest length"))?,
+                ),
+            };
+            if !deformation.is_finite()
+                || !rest_length.is_finite()
+                || deformation.abs() > 1_000.0
+                || !(0.0001..=1_000.0).contains(&rest_length)
+            {
+                return Err(anyhow!("Deformation values are out of range"));
+            }
+        }
+    }
+
+    Ok(DamageMetadata {
+        epoch,
+        revision,
+        config_revision,
+    })
+}
+
+#[cfg(test)]
+mod damage_validation_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_versioned_damage_and_reports_ordering_metadata() {
+        let data = r#"{"schemaVersion":1,"epoch":2,"revision":7,"configRevision":3,"state":{"broken":[1,9],"breakGroups":["door"],"deform":{"4":[0.25,1.5]}}}"#;
+        let meta = validate_vehicle_damage(data).expect("valid damage envelope");
+        assert_eq!(meta.epoch, Some(2));
+        assert_eq!(meta.revision, Some(7));
+        assert_eq!(meta.config_revision, Some(3));
+    }
+
+    #[test]
+    fn rejects_transient_nodes_and_invalid_deformation() {
+        assert!(validate_vehicle_damage(r#"{"broken":[],"nodes":{"1":[0,0,0]}}"#).is_err());
+        assert!(validate_vehicle_damage(r#"{"broken":[],"deform":{"1":[0.2,-1]}}"#).is_err());
+    }
+
+    #[test]
+    fn accepts_legacy_structural_snapshot_during_migration() {
+        let meta = validate_vehicle_damage(r#"{"broken":[3],"deform":{}}"#)
+            .expect("legacy structural snapshot");
+        assert_eq!(meta.epoch, None);
+    }
 }
 
 /// Validate configuration parameters.

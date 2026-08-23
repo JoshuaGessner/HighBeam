@@ -10,6 +10,8 @@ local lastSentValues = {}
 local ROUND_FACTOR = 10000
 local sendTimer = 0
 local SEND_INTERVAL = 1 / 15
+local fullResyncTimer = 0
+local FULL_RESYNC_INTERVAL = 3.0
 
 -- Keys that must NEVER be written onto a remote (puppet) vehicle.
 --
@@ -81,6 +83,17 @@ local DENY_LIST = {
   dseColor = true, lowpressure = true,
 }
 
+-- Only user-facing control/visual state is replicated. Unknown mod-defined
+-- electrics are simulation outputs until explicitly reviewed; a deny-list
+-- cannot stay complete as vehicles add new powertrain and controller fields.
+local SAFE_KEYS = {
+  lights_state = true, lowbeam = true, highbeam = true,
+  fog = true, foglights = true,
+  signal_L = true, signal_R = true, hazard_enabled = true,
+  horn = true, beacon = true, siren = true,
+  lightbar = true, lightbar_signal = true, lightbarMode = true,
+}
+
 local function _jsonEncode(v)
   if jsonEncode then
     local ok, out = pcall(jsonEncode, v)
@@ -115,6 +128,11 @@ end
 
 function M.updateGFX(dt)
   if not isActive or isRemote or not electrics or not electrics.values then return end
+  fullResyncTimer = fullResyncTimer + (dt or 0)
+  if fullResyncTimer >= FULL_RESYNC_INTERVAL then
+    fullResyncTimer = 0
+    lastSentValues = {}
+  end
   sendTimer = sendTimer + (dt or 0)
   if sendTimer < SEND_INTERVAL then return end
   sendTimer = 0
@@ -123,7 +141,7 @@ function M.updateGFX(dt)
   local changed = false
 
   for key, val in pairs(electrics.values) do
-    if not DENY_LIST[key] then
+    if SAFE_KEYS[key] and not DENY_LIST[key] then
       local rounded = val
       if type(val) == "number" then
         rounded = math.floor(val * ROUND_FACTOR + 0.5) / ROUND_FACTOR
@@ -133,14 +151,6 @@ function M.updateGFX(dt)
         lastSentValues[key] = rounded
         changed = true
       end
-    end
-  end
-
-  for key, _ in pairs(lastSentValues) do
-    if electrics.values[key] == nil and not DENY_LIST[key] then
-      delta[key] = "isnil"
-      lastSentValues[key] = nil
-      changed = true
     end
   end
 
@@ -159,11 +169,8 @@ function M.applyElectrics(data)
   local appliedCount = 0
   local deniedCount = 0
   for key, val in pairs(data) do
-    if DENY_LIST[key] then
+    if DENY_LIST[key] or not SAFE_KEYS[key] then
       deniedCount = deniedCount + 1
-    elseif val == "isnil" then
-      electrics.values[key] = nil
-      appliedCount = appliedCount + 1
     else
       electrics.values[key] = val
       appliedCount = appliedCount + 1
