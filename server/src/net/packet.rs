@@ -448,6 +448,15 @@ mod tests {
     }
 
     #[test]
+    fn test_vehicle_powertrain_hydraulics_round_trip() {
+        round_trip(&TcpPacket::VehiclePowertrain {
+            player_id: Some(1),
+            vehicle_id: 2,
+            data: r#"{"hydraulics":{"arm":1.25}}"#.into(),
+        });
+    }
+
+    #[test]
     fn test_vehicle_coupling_round_trip() {
         round_trip(&TcpPacket::VehicleCoupling {
             player_id: Some(1),

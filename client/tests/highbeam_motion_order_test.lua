@@ -24,4 +24,22 @@ rv.motionSequence = 99
 ok, restarted = accept(rv, { motionEpoch = 1, motionSequence = 0 })
 assert(ok and restarted, "u32 epoch wrap must be treated as a newer lifetime")
 
+local remote = {
+  gameVehicleId = 55,
+  gameVehicle = {},
+  _hasVE = true,
+  _lastDamageData = "damage",
+  _lastElectricsData = "electrics",
+  _lastPowertrainData = "powertrain",
+  _lastInputsData = "inputs",
+}
+vehicles.remoteVehicles["9_3"] = remote
+vehicles._remoteGameIds[55] = true
+assert(vehicles.onRemoteObjectDestroyed(55) == true)
+assert(remote.gameVehicleId == nil and remote.gameVehicle == nil and remote._hasVE == false)
+assert(remote._pendingDamageData == "damage" and remote._pendingElectricsData == "electrics")
+assert(remote._pendingPowertrainData == "powertrain" and remote._pendingInputsData == "inputs")
+assert(remote.spawnRetry and remote.spawnRetry.attempts == 0,
+  "unexpected BeamNG deletion must enter bounded puppet recovery")
+
 print("highbeam motion ordering tests passed")

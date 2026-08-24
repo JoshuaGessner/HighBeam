@@ -3,7 +3,7 @@
 
 local M = {}
 local logTag = "HighBeam"
-local CLIENT_BUILD_MARKER = "hb-client-2026-04-04-proto-safe-v1"
+local CLIENT_BUILD_MARKER = "hb-client-0.8.2-dev.54-beamng-039"
 
 -- Expose marker globally so subsystem modules can include it in diagnostics.
 rawset(_G, "HIGHBEAM_CLIENT_MARKER", CLIENT_BUILD_MARKER)
@@ -85,8 +85,10 @@ local function _installSessionCompatibility()
       local oldUnicycle, oldUnicycleId = _currentUnicycle()
       local results = nil
       if _walkVehicleSwitchedOriginal then results = { pcall(_walkVehicleSwitchedOriginal, ...) } end
+      local oldVehicleId = _objectId(args[1])
       local newVehicleId = _objectId(args[2])
       if (playerIndex == nil or playerIndex == 0) and oldUnicycleId
+        and oldVehicleId == oldUnicycleId
         and newVehicleId ~= oldUnicycleId
         and not (vehicles and vehicles.isRemote(oldUnicycleId)) then
         local abandoned = oldUnicycle or (be and be:getObjectByID(oldUnicycleId))
@@ -303,6 +305,11 @@ M.onClientEndMission = function()
 end
 
 M.onUpdate = function(dtReal, dtSim, dtRaw)
+  if connection and connection.getState() == connection.STATE_CONNECTED then
+    -- gameplay_walk can load after authentication/world changes; this is
+    -- idempotent and only installs missing session-scoped adapters.
+    _installSessionCompatibility()
+  end
   -- Network tick: process incoming, send outgoing
   if connection then
     connection.tick(dtReal)
@@ -686,6 +693,14 @@ end
 M.onVEDamageDirty = function(gameVid)
   if state and state.markDamageDirty then
     state.markDamageDirty(gameVid)
+  end
+end
+
+M.onVEDeformGroupAudit = function(gameVid, groupCount, signature)
+  if config and config.get and config.get("verboseSyncLogging") == true then
+    log('D', logTag, 'Local deform-group audit gameVid=' .. tostring(gameVid)
+      .. ' groups=' .. tostring(groupCount)
+      .. ' state=' .. tostring(signature or 'unavailable'))
   end
 end
 

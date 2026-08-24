@@ -16,6 +16,8 @@ local trackedHydroLengths = {}
 local dirtyHydros = {}
 local remoteHydroTargets = {}
 local remoteHydroElapsed = {}
+local hydroCaptureTimer = 0
+local HYDRO_CAPTURE_INTERVAL = 1 / 15
 local lastIgnitionCoef = -1
 local lastStarterCoef = -1
 local lastIsStalled = -1
@@ -258,6 +260,7 @@ function M.onInit()
   dirtyHydros = {}
   remoteHydroTargets = {}
   remoteHydroElapsed = {}
+  hydroCaptureTimer = HYDRO_CAPTURE_INTERVAL
   _discoverHydraulics()
   desiredRemoteState = {}
   pendingRemoteState = nil
@@ -279,6 +282,7 @@ function M.setActive(active, remote)
     trackedHydroLengths = {}
     dirtyHydros = {}
     _discoverHydraulics()
+    hydroCaptureTimer = HYDRO_CAPTURE_INTERVAL
     lastIgnitionCoef = -1
     lastStarterCoef = -1
     lastIsStalled = -1
@@ -323,7 +327,11 @@ function M.updateGFX(dt)
   resyncTimer = resyncTimer + (dt or 0)
   local changed = false
   local delta = {}
-  if next(hydroBeams) and _captureHydraulics() then changed = true end
+  hydroCaptureTimer = hydroCaptureTimer + (dt or 0)
+  if next(hydroBeams) and hydroCaptureTimer >= HYDRO_CAPTURE_INTERVAL then
+    hydroCaptureTimer = 0
+    if _captureHydraulics() then changed = true end
+  end
 
   if powertrain and powertrain.getDevices then
     local ok, devices = pcall(powertrain.getDevices)
@@ -584,6 +592,7 @@ function M.onReset()
     trackedHydroLengths = {}
     dirtyHydros = {}
     _discoverHydraulics()
+    hydroCaptureTimer = HYDRO_CAPTURE_INTERVAL
     lastIgnitionCoef = -1
     lastStarterCoef = -1
     lastIsStalled = -1

@@ -141,6 +141,9 @@ pub fn run_ipc_loop(
         .context("Failed to set IPC listener to non-blocking")?;
 
     tracing::info!("IPC server ready — listening for in-game join requests");
+    let readiness_deadline = Instant::now() + Duration::from_secs(90);
+    let mut client_ready = false;
+    let mut readiness_warning_emitted = false;
 
     loop {
         // ── Check whether the game has exited ────────────────────────────────
@@ -167,7 +170,9 @@ pub fn run_ipc_loop(
         match listener.accept() {
             Ok((stream, addr)) => {
                 tracing::info!(%addr, "Accepted launcher IPC connection");
-                if let Err(e) = handle_ipc_connection(stream, cfg, cache_dir, active_proxy) {
+                if let Err(e) =
+                    handle_ipc_connection(stream, cfg, cache_dir, active_proxy, &mut client_ready)
+                {
                     tracing::warn!(error = %e, "IPC connection error");
                 }
             }
@@ -178,6 +183,13 @@ pub fn run_ipc_loop(
                 tracing::warn!(error = %e, "IPC accept error; retrying");
                 std::thread::sleep(Duration::from_millis(POLL_SLEEP_MS));
             }
+        }
+
+        if !client_ready && !readiness_warning_emitted && Instant::now() >= readiness_deadline {
+            readiness_warning_emitted = true;
+            tracing::warn!(
+                "The in-game HighBeam client did not report ready within 90 seconds; BeamNG may have disabled the mod after its update"
+            );
         }
     }
 
@@ -191,6 +203,7 @@ fn handle_ipc_connection(
     cfg: &LauncherConfig,
     cache_dir: &Path,
     active_proxy: &mut Option<proxy::ProxyHandle>,
+    client_ready: &mut bool,
 ) -> Result<()> {
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
@@ -213,8 +226,12 @@ fn handle_ipc_connection(
 
     let req_type = value["type"].as_str().unwrap_or("");
     match req_type {
-        "join_request" => handle_join_request(&mut stream, &value, cfg, cache_dir, active_proxy),
+        "join_request" => {
+            *client_ready = true;
+            handle_join_request(&mut stream, &value, cfg, cache_dir, active_proxy)
+        }
         "client_ready" => {
+            *client_ready = true;
             let client_marker = value["client_marker"].as_str().unwrap_or("unknown");
             let beamng_version = value["beamng_version"].as_str().unwrap_or("unknown");
             tracing::info!(

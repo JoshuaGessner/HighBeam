@@ -515,6 +515,24 @@ mod tests {
     }
 
     #[test]
+    fn replaceable_components_are_retained_for_late_joiners() {
+        let world = WorldState::new();
+        let vehicle_id = world.spawn_vehicle(7, "{}".into());
+        assert!(world.update_electrics(7, vehicle_id, r#"{"transbrake":0}"#.into()));
+        assert!(world.update_powertrain(7, vehicle_id, r#"{"hydraulics":{"arm":1.25}}"#.into()));
+
+        let snapshot = world.get_vehicle_snapshot();
+        assert_eq!(
+            snapshot[0].electrics.as_deref(),
+            Some(r#"{"transbrake":0}"#)
+        );
+        assert_eq!(
+            snapshot[0].powertrain.as_deref(),
+            Some(r#"{"hydraulics":{"arm":1.25}}"#)
+        );
+    }
+
+    #[test]
     fn versioned_damage_respects_reset_and_config_barriers() {
         let world = WorldState::new();
         let vehicle_id = world.spawn_vehicle(7, "{}".into());

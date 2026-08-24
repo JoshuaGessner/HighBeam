@@ -23,6 +23,28 @@ local DEFORM_POLL_INTERVAL = 0.2
 local DEFORM_FULL_SCAN_TARGET_SEC = 1.0
 local DEFORM_THRESHOLD = 0.002
 local lastDeformQuantized = {}
+local deformGroupAuditTimer = 0
+local lastDeformGroupSignature = nil
+local DEFORM_GROUP_AUDIT_INTERVAL = 5.0
+
+local function _deformGroupSignature()
+  if not beamstate then return "unavailable", 0 end
+  local groups = beamstate.deformGroupDamage
+  if type(groups) ~= "table" then groups = beamstate.deformGroups end
+  if type(groups) == "table" then
+    local keys = {}
+    for name, value in pairs(groups) do
+      if type(value) == "number" or type(value) == "boolean" then
+        keys[#keys + 1] = tostring(name) .. "=" .. tostring(value)
+      elseif type(value) == "table" then
+        keys[#keys + 1] = tostring(name) .. "=table"
+      end
+    end
+    table.sort(keys)
+    return table.concat(keys, ","), #keys
+  end
+  return "unavailable", 0
+end
 
 local function _isFinite(value, limit)
   return type(value) == "number" and value == value
@@ -47,6 +69,8 @@ local function _clearDamageState(markDirty)
   deformPollCursor = 0
   deformPollTimer = 0
   lastDeformQuantized = {}
+  deformGroupAuditTimer = 0
+  lastDeformGroupSignature = nil
   appliedEpoch = -1
   appliedRevision = -1
   appliedBroken = {}
@@ -243,6 +267,21 @@ end
 
 function M.updateGFX(dt)
   if not isActive or isRemote then return end
+
+  deformGroupAuditTimer = deformGroupAuditTimer + (dt or 0)
+  if deformGroupAuditTimer >= DEFORM_GROUP_AUDIT_INTERVAL then
+    deformGroupAuditTimer = 0
+    local signature, count = _deformGroupSignature()
+    if signature ~= lastDeformGroupSignature then
+      lastDeformGroupSignature = signature
+      if obj and obj.queueGameEngineLua then
+        obj:queueGameEngineLua(string.format(
+          "extensions.highbeam.onVEDeformGroupAudit(%d,%d,%q)",
+          gameVehicleId, count, signature:sub(1, 512)
+        ))
+      end
+    end
+  end
 
   deformPollTimer = deformPollTimer + (dt or 0)
   if not dirty and deformPollTimer >= DEFORM_POLL_INTERVAL then

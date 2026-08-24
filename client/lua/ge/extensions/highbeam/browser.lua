@@ -222,12 +222,19 @@ local function _notifyLauncherClientReady()
     beamng_version = tostring(rawget(_G, "beamng_version") or rawget(_G, "beamng_versionb") or "unknown"),
   })
   local sent, sendErr = tcp:send(request .. "\n")
-  tcp:close()
   if not sent then
+    tcp:close()
     log('W', logTag, 'Launcher readiness notification failed: ' .. tostring(sendErr))
     return false
   end
-  log('I', logTag, 'Launcher readiness notification sent')
+  local responseLine, responseErr = tcp:receive("*l")
+  tcp:close()
+  local response = responseLine and _jsonDecode(responseLine) or nil
+  if not response or response.type ~= "client_ready_ack" then
+    log('W', logTag, 'Launcher readiness acknowledgement failed: ' .. tostring(responseErr or responseLine))
+    return false
+  end
+  log('I', logTag, 'Launcher readiness confirmed version=' .. tostring(response.launcher_version))
   return true
 end
 
