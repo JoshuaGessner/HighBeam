@@ -119,36 +119,6 @@ where
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_args_does_not_enable_relay_browse_by_default() {
-        let parsed = parse_args_from(vec![]);
-        assert!(parsed.browse_relay.is_none());
-    }
-
-    #[test]
-    fn parse_args_sets_browse_relay_only_when_flag_present() {
-        let parsed = parse_args_from(vec![
-            "--browse-relay".to_string(),
-            "https://relay.example/servers".to_string(),
-        ]);
-        assert_eq!(
-            parsed.browse_relay.as_deref(),
-            Some("https://relay.example/servers")
-        );
-    }
-
-    #[test]
-    fn parse_args_allows_server_without_browse_relay() {
-        let parsed = parse_args_from(vec!["--server".to_string(), "127.0.0.1:18860".to_string()]);
-        assert_eq!(parsed.server.as_deref(), Some("127.0.0.1:18860"));
-        assert!(parsed.browse_relay.is_none());
-    }
-}
-
 fn expand_tilde(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {
         if let Some(home) = std::env::var_os("HOME") {
@@ -658,4 +628,34 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_args_does_not_enable_relay_browse_by_default() {
+        let parsed = parse_args_from(vec![]);
+        assert!(parsed.browse_relay.is_none());
+    }
+
+    #[test]
+    fn parse_args_sets_browse_relay_only_when_flag_present() {
+        let parsed = parse_args_from(vec![
+            "--browse-relay".to_string(),
+            "https://relay.example/servers".to_string(),
+        ]);
+        assert_eq!(
+            parsed.browse_relay.as_deref(),
+            Some("https://relay.example/servers")
+        );
+    }
+
+    #[test]
+    fn parse_args_allows_server_without_browse_relay() {
+        let parsed = parse_args_from(vec!["--server".to_string(), "127.0.0.1:18860".to_string()]);
+        assert_eq!(parsed.server.as_deref(), Some("127.0.0.1:18860"));
+        assert!(parsed.browse_relay.is_none());
+    }
 }

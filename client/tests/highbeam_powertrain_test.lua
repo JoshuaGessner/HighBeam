@@ -5,6 +5,9 @@ local calls = {
   engineB = {},
 }
 local queued = nil
+local actuations = {}
+local beamRestLengths = { [5] = 1.0 }
+local beamLengths = { [5] = 1.0 }
 
 local function makeEngine(name, ignition, starter, stalled)
   return {
@@ -29,16 +32,30 @@ powertrain = {
   getDevice = function(name) return devices[name] end,
 }
 electrics = {
-  values = { ignitionLevel = 0 },
+  values = { ignitionLevel = 0, armDirection = 0 },
   setIgnitionLevel = function(level) electrics.values.ignitionLevel = level end,
 }
 obj = {
   getID = function() return 77 end,
   queueGameEngineLua = function(_, command) queued = command end,
+  getBeamRestLength = function(_, beamId) return beamRestLengths[beamId] end,
+  getBeamLength = function(_, beamId) return beamLengths[beamId] end,
+  actuateBeam = function(_, beamId, force, speed)
+    actuations[#actuations + 1] = { beamId = beamId, force = force, speed = speed }
+  end,
+}
+v = {
+  data = {
+    powertrainHydros = {
+      { beamTags = { "arm" }, directionElectricsName = "armDirection", minimumDragCoef = 150,
+        maxSpeed = 2, minExtend = 0.5, maxExtend = 2, virtualMass = 10 },
+    },
+    beams = { { cid = 5, tag = "arm" } },
+  },
 }
 jsonEncode = function(value)
-  if type(value) == "table" and type(value.engines) == "table" then
-    return '{"engines":{"engineA":{},"engineB":{}}}'
+  if type(value) == "table" and type(value.engines) == "table" and type(value.hydraulics) == "table" then
+    return '{"engines":{"engineA":{},"engineB":{}},"hydraulics":{"arm":1}}'
   end
   return "{}"
 end
@@ -69,6 +86,11 @@ assert(calls.engineB.stalled == true)
 assert(electrics.values.ignitionLevel == 2)
 assert(powertrainVE._testGetPendingState() == nil)
 
+powertrainVE.applyPowertrain({ hydraulics = { arm = 1.5 } })
+powertrainVE.updateGFX(0.1)
+assert(#actuations > 0 and actuations[#actuations].beamId == 5,
+  "remote hydraulic targets must use obj:actuateBeam")
+
 -- Legacy single-engine fields remain supported and deterministically target
 -- the first named combustion engine.
 powertrainVE.applyPowertrain({ ignCoef = 0.4, starterCoef = 0 })
@@ -97,5 +119,7 @@ powertrainVE.setActive(true, false)
 powertrainVE.updateGFX(0.1)
 assert(queued and string.find(queued, 'engines', 1, true),
   "sender powertrain payload must include the per-engine state map")
+assert(string.find(queued, 'hydraulics', 1, true),
+  "sender powertrain payload must include hydraulic rest lengths")
 
 print("highbeam powertrain tests passed")

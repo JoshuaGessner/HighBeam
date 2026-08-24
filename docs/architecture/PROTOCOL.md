@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-08-24
 > **Protocol version:** 3
-> **Applies to:** v0.8.2-dev.53
+> **Applies to:** v0.8.2-dev.54
 > **Parent doc:** [OVERVIEW.md](OVERVIEW.md)
 
 ---
@@ -300,6 +300,30 @@ Damage is a retained full structural snapshot, not transient node pose data:
   idempotent and delayed poses/damage from the prior lifetimes are rejected.
 
 Critical lifecycle packets (spawn, edit, delete, reset, damage, coupling, and player membership changes) use bounded reliable fanout. A peer that cannot accept one within the delivery window is disconnected so it cannot continue with permanently divergent world state. High-rate pose, inputs, electrics, and powertrain updates remain best-effort/coalesced state.
+
+### Replaceable Component Snapshots
+
+Electrics and powertrain packets carry complete desired state and may replace an
+older queued value for the same vehicle. The server retains the newest validated
+snapshot in `VehicleInfo.electrics` and `VehicleInfo.powertrain`, so late joiners
+and rebuilt puppets start from the same state as existing peers.
+
+Hydraulic-cylinder targets are a backward-compatible nested powertrain field:
+
+```json
+{
+  "ignLevel": 2,
+  "hydraulics": {
+    "arm_left": 1.245,
+    "bucket_tilt": 0.812
+  }
+}
+```
+
+Keys identify JBeam beam tags discovered from `v.data.powertrainHydros`; values
+are finite target rest lengths. Receivers apply them with bounded
+`obj:actuateBeam` calls. Transbrake is carried as an electrics scalar and is
+applied through the vehicle's `transbrake` controller, including explicit zero.
 
 ---
 

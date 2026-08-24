@@ -252,6 +252,10 @@ pub struct VehicleInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub damage: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub electrics: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub powertrain: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot_time_ms: Option<u64>,
 }
 
@@ -444,6 +448,15 @@ mod tests {
     }
 
     #[test]
+    fn test_vehicle_powertrain_hydraulics_round_trip() {
+        round_trip(&TcpPacket::VehiclePowertrain {
+            player_id: Some(1),
+            vehicle_id: 2,
+            data: r#"{"hydraulics":{"arm":1.25}}"#.into(),
+        });
+    }
+
+    #[test]
     fn test_vehicle_coupling_round_trip() {
         round_trip(&TcpPacket::VehicleCoupling {
             player_id: Some(1),
@@ -497,6 +510,8 @@ mod tests {
                 rotation: [0.0, 0.0, 0.0, 1.0],
                 velocity: [1.0, 0.0, 0.0],
                 damage: Some(r#"{"broken":[3]}"#.into()),
+                electrics: Some(r#"{"lights_state":1}"#.into()),
+                powertrain: Some(r#"{"ignLevel":2}"#.into()),
                 snapshot_time_ms: Some(1_700_000_000_000),
             }],
         });

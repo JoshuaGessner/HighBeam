@@ -3,7 +3,7 @@
 
 local M = {}
 local logTag = "HighBeam"
-local CLIENT_BUILD_MARKER = "hb-client-2026-04-04-proto-safe-v1"
+local CLIENT_BUILD_MARKER = "hb-client-0.8.2-dev.54-beamng-039"
 
 -- Expose marker globally so subsystem modules can include it in diagnostics.
 rawset(_G, "HIGHBEAM_CLIENT_MARKER", CLIENT_BUILD_MARKER)
@@ -24,6 +24,86 @@ local OVERLAY_MENU_ENTRY_ID = "highbeam.overlay"
 local _menuRegistered = false
 local _lastLocalResetSentAt = {} -- [gameVehicleId] = os.clock()
 local _pendingResetData = {}    -- Secondary #3: [gameVehicleId] = {data=string, queuedAt=number}
+local _sessionInstabilityOriginal = nil
+local _sessionInstabilityWrapper = nil
+local _walkModule = nil
+local _walkVehicleSwitchedOriginal = nil
+local _walkVehicleSwitchedWrapper = nil
+
+local function _objectId(value)
+  if type(value) == "number" then return value end
+  if value and value.getID then
+    local ok, id = pcall(value.getID, value)
+    if ok then return tonumber(id) end
+  end
+  return nil
+end
+
+local function _currentUnicycle()
+  local walk = (extensions and extensions.gameplay_walk) or rawget(_G, "gameplay_walk")
+  if not walk then return nil, nil end
+  local getter = walk.getCurrentUnicycle or walk.getPlayerUnicycle
+  if not getter then return nil, nil end
+  local ok, unicycle = pcall(getter)
+  if not ok then ok, unicycle = pcall(getter, walk) end
+  if not ok then return nil, nil end
+  return unicycle, _objectId(unicycle)
+end
+
+local function _restoreSessionCompatibility()
+  if _sessionInstabilityWrapper and rawget(_G, "onInstabilityDetected") == _sessionInstabilityWrapper then
+    rawset(_G, "onInstabilityDetected", _sessionInstabilityOriginal)
+  end
+  _sessionInstabilityOriginal = nil
+  _sessionInstabilityWrapper = nil
+  if _walkModule and _walkVehicleSwitchedWrapper
+    and _walkModule.onVehicleSwitched == _walkVehicleSwitchedWrapper then
+    _walkModule.onVehicleSwitched = _walkVehicleSwitchedOriginal
+  end
+  _walkModule = nil
+  _walkVehicleSwitchedOriginal = nil
+  _walkVehicleSwitchedWrapper = nil
+end
+
+local function _installSessionCompatibility()
+  if not _sessionInstabilityWrapper then
+    _sessionInstabilityOriginal = rawget(_G, "onInstabilityDetected")
+    _sessionInstabilityWrapper = function(...)
+      local args = { ... }
+      log('W', logTag, 'Suppressed BeamNG instability auto-removal during multiplayer session vehicle=' .. tostring(args[1]))
+    end
+    rawset(_G, "onInstabilityDetected", _sessionInstabilityWrapper)
+  end
+
+  local walk = (extensions and extensions.gameplay_walk) or rawget(_G, "gameplay_walk")
+  if walk and not _walkVehicleSwitchedWrapper then
+    _walkModule = walk
+    _walkVehicleSwitchedOriginal = walk.onVehicleSwitched
+    _walkVehicleSwitchedWrapper = function(...)
+      local args = { ... }
+      local playerIndex = tonumber(args[3])
+      local oldUnicycle, oldUnicycleId = _currentUnicycle()
+      local results = nil
+      if _walkVehicleSwitchedOriginal then results = { pcall(_walkVehicleSwitchedOriginal, ...) } end
+      local oldVehicleId = _objectId(args[1])
+      local newVehicleId = _objectId(args[2])
+      if (playerIndex == nil or playerIndex == 0) and oldUnicycleId
+        and oldVehicleId == oldUnicycleId
+        and newVehicleId ~= oldUnicycleId
+        and not (vehicles and vehicles.isRemote(oldUnicycleId)) then
+        local abandoned = oldUnicycle or (be and be:getObjectByID(oldUnicycleId))
+        if abandoned and abandoned.delete then
+          pcall(abandoned.delete, abandoned)
+          log('D', logTag, 'Removed abandoned local walking unicycle gameVid=' .. tostring(oldUnicycleId))
+        end
+      end
+      if results and not results[1] then
+        log('W', logTag, 'gameplay_walk.onVehicleSwitched failed: ' .. tostring(results[2]))
+      end
+    end
+    walk.onVehicleSwitched = _walkVehicleSwitchedWrapper
+  end
+end
 
 local function _safeRequire(moduleName)
   local ok, mod = pcall(require, moduleName)
@@ -162,6 +242,11 @@ M.onExtensionLoaded = function()
     if status == "connected" and browser then
       browser.onConnected()
     end
+    if status == "connected" then
+      _installSessionCompatibility()
+    elseif status == "disconnected" or status == "connect_failed" or status == "reconnect_failed" then
+      _restoreSessionCompatibility()
+    end
   end)
 
   -- Wire subsystem cross-references
@@ -189,6 +274,7 @@ M.onExtensionUnloaded = function()
   log('I', logTag, 'HighBeam extension unloaded')
 
   _unregisterMenuEntry()
+  _restoreSessionCompatibility()
 
   if connection then
     connection.disconnect()
@@ -202,7 +288,28 @@ M.onClientPostStartMission = function()
   end
 end
 
+M.onWorldReadyState = function(readyState)
+  if tonumber(readyState) == 2 and not _menuRegistered then
+    _registerMenuEntry()
+  end
+end
+
+M.onClientEndMission = function()
+  if not connection or connection.getState() == connection.STATE_DISCONNECTED then return end
+  if connection.isWorldTransitionPending and connection.isWorldTransitionPending() then
+    log('D', logTag, 'Mission ended for server-driven world transition; keeping session active')
+    return
+  end
+  log('I', logTag, 'Mission ended outside a server world transition; disconnecting multiplayer session')
+  connection.disconnect()
+end
+
 M.onUpdate = function(dtReal, dtSim, dtRaw)
+  if connection and connection.getState() == connection.STATE_CONNECTED then
+    -- gameplay_walk can load after authentication/world changes; this is
+    -- idempotent and only installs missing session-scoped adapters.
+    _installSessionCompatibility()
+  end
   -- Network tick: process incoming, send outgoing
   if connection then
     connection.tick(dtReal)
@@ -355,8 +462,10 @@ end
 M.onVehicleDestroyed = function(gameVehicleId)
   if not state or not connection then return end
   if connection.getState() ~= connection.STATE_CONNECTED then return end
-  -- Ignore remote vehicles
-  if vehicles and vehicles.isRemote(gameVehicleId) then return end
+  if vehicles and vehicles.isRemote(gameVehicleId) then
+    if vehicles.onRemoteObjectDestroyed then vehicles.onRemoteObjectDestroyed(gameVehicleId) end
+    return
+  end
 
   state.requestDelete(gameVehicleId)
 end
@@ -584,6 +693,14 @@ end
 M.onVEDamageDirty = function(gameVid)
   if state and state.markDamageDirty then
     state.markDamageDirty(gameVid)
+  end
+end
+
+M.onVEDeformGroupAudit = function(gameVid, groupCount, signature)
+  if config and config.get and config.get("verboseSyncLogging") == true then
+    log('D', logTag, 'Local deform-group audit gameVid=' .. tostring(gameVid)
+      .. ' groups=' .. tostring(groupCount)
+      .. ' state=' .. tostring(signature or 'unavailable'))
   end
 end
 

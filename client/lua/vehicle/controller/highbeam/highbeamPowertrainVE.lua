@@ -8,6 +8,16 @@ local initialized = false
 
 local trackedDevices = {}
 local trackedEngines = {}
+local hydroBeams = {}
+local hydroBeamData = {}
+local hydroElectricsNames = {}
+local lastHydroElectricsValues = {}
+local trackedHydroLengths = {}
+local dirtyHydros = {}
+local remoteHydroTargets = {}
+local remoteHydroElapsed = {}
+local hydroCaptureTimer = 0
+local HYDRO_CAPTURE_INTERVAL = 1 / 15
 local lastIgnitionCoef = -1
 local lastStarterCoef = -1
 local lastIsStalled = -1
@@ -41,13 +51,110 @@ local _unsupportedLogged = {}
 local desiredRemoteState = {}
 local pendingRemoteState = nil
 local _applyPowertrainNow
+local _bump
+
+local function _finite(value, limit)
+  return type(value) == "number" and value == value
+    and value ~= math.huge and value ~= -math.huge
+    and math.abs(value) <= (limit or 1e20)
+end
+
+local function _discoverHydraulics()
+  hydroBeams = {}
+  hydroBeamData = {}
+  hydroElectricsNames = {}
+  lastHydroElectricsValues = {}
+  if not v or not v.data or type(v.data.powertrainHydros) ~= "table"
+    or type(v.data.beams) ~= "table" then return end
+  for _, hydro in pairs(v.data.powertrainHydros) do
+    if type(hydro) == "table" and type(hydro.beamTags) == "table" then
+      for _, rawTag in pairs(hydro.beamTags) do
+        local tagName = tostring(rawTag or "")
+        if #tagName > 0 and #tagName <= 64 then
+          for _, beam in pairs(v.data.beams) do
+            if beam and beam.tag == rawTag and tonumber(beam.cid) then
+              hydroBeams[tagName] = tonumber(beam.cid)
+              hydroBeamData[tagName] = hydro
+              local electricsName = tostring(hydro.directionElectricsName or "")
+              if #electricsName > 0 then
+                hydroElectricsNames[tagName] = electricsName
+                lastHydroElectricsValues[electricsName] = 0
+              end
+              dirtyHydros[tagName] = true
+              break
+            end
+          end
+        end
+      end
+    end
+  end
+end
+
+local function _captureHydraulics()
+  local changed = false
+  for tagName, electricsName in pairs(hydroElectricsNames) do
+    local value = electrics and electrics.values and electrics.values[electricsName]
+    if value ~= lastHydroElectricsValues[electricsName] then dirtyHydros[tagName] = true end
+  end
+  for tagName, _ in pairs(dirtyHydros) do
+    local beamId = hydroBeams[tagName]
+    local ok, length = pcall(obj.getBeamRestLength, obj, beamId)
+    length = ok and tonumber(length) or nil
+    if _finite(length, 1000) and length > 0.0001 then
+      length = math.floor(length * 10000 + 0.5) / 10000
+      if trackedHydroLengths[tagName] ~= length then
+        trackedHydroLengths[tagName] = length
+        changed = true
+      else
+        dirtyHydros[tagName] = nil
+      end
+    end
+  end
+  for _, electricsName in pairs(hydroElectricsNames) do
+    lastHydroElectricsValues[electricsName] = electrics and electrics.values
+      and electrics.values[electricsName] or nil
+  end
+  return changed
+end
+
+local function _updateRemoteHydraulics(dt)
+  for tagName, target in pairs(remoteHydroTargets) do
+    local beamId = hydroBeams[tagName]
+    local device = hydroBeamData[tagName]
+    if beamId and device then
+      local okLength, current = pcall(obj.getBeamLength, obj, beamId)
+      current = okLength and tonumber(current) or nil
+      local elapsed = remoteHydroElapsed[tagName] or 0
+      if _finite(current, 1000) then
+        local diff = target - current
+        if math.abs(diff) > 0.001 or elapsed < 2 then
+          remoteHydroElapsed[tagName] = elapsed + (dt or 0)
+          local drag = math.max(0, tonumber(device.minimumDragCoef) or 0)
+          local maxForce = drag / 15
+          local force = math.max(-maxForce, math.min(maxForce, (drag / 20) * (dt or 0) * 2000 * diff))
+          local speed = math.max(0, math.min(10000, (tonumber(device.maxSpeed) or 0) * (dt or 0) * 2000))
+          local okActuate = pcall(obj.actuateBeam, obj, beamId, force, speed, 0, 0, 0,
+            tonumber(device.minExtend) or 0, tonumber(device.maxExtend) or 0,
+            tonumber(device.virtualMass) or 0, tonumber(device.virtualMass) or 0)
+          if okActuate then _bump("hydraulics") else _bump("skipped") end
+        else
+          remoteHydroTargets[tagName] = nil
+          remoteHydroElapsed[tagName] = nil
+        end
+      end
+    else
+      remoteHydroTargets[tagName] = nil
+      remoteHydroElapsed[tagName] = nil
+    end
+  end
+end
 
 local function _verboseSyncLoggingEnabled()
   local okCfg, cfg = pcall(require, "highbeam/config")
   return okCfg and cfg and cfg.get and cfg.get("verboseSyncLogging") == true
 end
 
-local function _bump(name)
+_bump = function(name)
   _diag[name] = (_diag[name] or 0) + 1
 end
 
@@ -128,6 +235,9 @@ local function _mergeState(dst, src)
           end
         end
       end
+    elseif key == "hydraulics" and type(value) == "table" then
+      dst.hydraulics = dst.hydraulics or {}
+      for tagName, beamLength in pairs(value) do dst.hydraulics[tagName] = beamLength end
     else
       dst[key] = value
     end
@@ -146,6 +256,12 @@ function M.onInit()
   if initialized then return end
   initialized = true
   trackedEngines = {}
+  trackedHydroLengths = {}
+  dirtyHydros = {}
+  remoteHydroTargets = {}
+  remoteHydroElapsed = {}
+  hydroCaptureTimer = HYDRO_CAPTURE_INTERVAL
+  _discoverHydraulics()
   desiredRemoteState = {}
   pendingRemoteState = nil
 end
@@ -163,6 +279,10 @@ function M.setActive(active, remote)
     -- Registration/recovery is a complete-state boundary for a local sender.
     trackedDevices = {}
     trackedEngines = {}
+    trackedHydroLengths = {}
+    dirtyHydros = {}
+    _discoverHydraulics()
+    hydroCaptureTimer = HYDRO_CAPTURE_INTERVAL
     lastIgnitionCoef = -1
     lastStarterCoef = -1
     lastIsStalled = -1
@@ -187,6 +307,7 @@ function M.updateGFX(dt)
         starter = 0,
         ignition = 0,
         stalled = 0,
+        hydraulics = 0,
       }
     end
   end
@@ -194,6 +315,7 @@ function M.updateGFX(dt)
   if not isActive then return end
 
   if isRemote then
+    _updateRemoteHydraulics(dt)
     if pendingRemoteState and (os.clock() - activationTime) >= READINESS_DELAY_SEC then
       local pending = pendingRemoteState
       pendingRemoteState = nil
@@ -205,6 +327,11 @@ function M.updateGFX(dt)
   resyncTimer = resyncTimer + (dt or 0)
   local changed = false
   local delta = {}
+  hydroCaptureTimer = hydroCaptureTimer + (dt or 0)
+  if next(hydroBeams) and hydroCaptureTimer >= HYDRO_CAPTURE_INTERVAL then
+    hydroCaptureTimer = 0
+    if _captureHydraulics() then changed = true end
+  end
 
   if powertrain and powertrain.getDevices then
     local ok, devices = pcall(powertrain.getDevices)
@@ -276,6 +403,12 @@ function M.updateGFX(dt)
         stalled = engineState.stalled,
       }
     end
+    for tagName, _ in pairs(hydroBeams) do dirtyHydros[tagName] = true end
+    _captureHydraulics()
+    delta.hydraulics = {}
+    for tagName, beamLength in pairs(trackedHydroLengths) do
+      delta.hydraulics[tagName] = beamLength
+    end
     changed = true
   end
 
@@ -288,6 +421,7 @@ function M.updateGFX(dt)
       stalled = lastIsStalled,
       ignLevel = lastIgnitionLevel,
       engines = {},
+      hydraulics = {},
     }
     for name, mode in pairs(trackedDevices) do
       snapshot["dev_" .. tostring(name)] = mode
@@ -298,6 +432,9 @@ function M.updateGFX(dt)
         starterCoef = engineState.starterCoef,
         stalled = engineState.stalled,
       }
+    end
+    for tagName, beamLength in pairs(trackedHydroLengths) do
+      snapshot.hydraulics[tagName] = beamLength
     end
     obj:queueGameEngineLua(string.format(
       "extensions.highbeam.onVEPowertrain(%d,%q)",
@@ -347,6 +484,17 @@ _applyPowertrainNow = function(data)
     if key == "engines" and type(val) == "table" then
       for engineName, engineState in pairs(val) do
         _applyEngineState(tostring(engineName), engineState)
+      end
+    elseif key == "hydraulics" and type(val) == "table" then
+      for rawTag, rawLength in pairs(val) do
+        local tagName = tostring(rawTag or "")
+        local beamLength = tonumber(rawLength)
+        if hydroBeams[tagName] and _finite(beamLength, 1000) and beamLength > 0.0001 then
+          remoteHydroTargets[tagName] = beamLength
+          remoteHydroElapsed[tagName] = 0
+        else
+          _bump("skipped")
+        end
       end
     elseif type(key) == "string" and key:sub(1, 4) == "dev_" then
       local devName = key:sub(5)
@@ -428,6 +576,8 @@ end
 
 function M.onHighBeamRemoteReset()
   activationTime = os.clock()
+  remoteHydroTargets = {}
+  remoteHydroElapsed = {}
   pendingRemoteState = _copyState(desiredRemoteState)
 end
 
@@ -439,6 +589,10 @@ function M.onReset()
     -- Forget sender-side hashes so the next frame emits a complete snapshot.
     trackedDevices = {}
     trackedEngines = {}
+    trackedHydroLengths = {}
+    dirtyHydros = {}
+    _discoverHydraulics()
+    hydroCaptureTimer = HYDRO_CAPTURE_INTERVAL
     lastIgnitionCoef = -1
     lastStarterCoef = -1
     lastIsStalled = -1

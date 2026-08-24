@@ -52,6 +52,8 @@ impl WorldState {
                     motion_epoch: None,
                     motion_sequence: 0,
                     damage: vehicle.damage.clone(),
+                    electrics: vehicle.electrics.clone(),
+                    powertrain: vehicle.powertrain.clone(),
                     damage_epoch: 0,
                     damage_revision: 0,
                     config_revision,
@@ -85,6 +87,8 @@ impl WorldState {
             motion_epoch: None,
             motion_sequence: 0,
             damage: None,
+            electrics: None,
+            powertrain: None,
             damage_epoch: 0,
             damage_revision: 0,
             config_revision: 0,
@@ -343,6 +347,22 @@ impl WorldState {
         false
     }
 
+    pub fn update_electrics(&self, player_id: u32, vehicle_id: u16, data: String) -> bool {
+        if let Some(mut entry) = self.vehicles.get_mut(&(player_id, vehicle_id)) {
+            entry.electrics = Some(data);
+            return true;
+        }
+        false
+    }
+
+    pub fn update_powertrain(&self, player_id: u32, vehicle_id: u16, data: String) -> bool {
+        if let Some(mut entry) = self.vehicles.get_mut(&(player_id, vehicle_id)) {
+            entry.powertrain = Some(data);
+            return true;
+        }
+        false
+    }
+
     /// Get a snapshot of the entire world for sending to a newly joined player.
     pub fn get_vehicle_snapshot(&self) -> Vec<VehicleInfo> {
         self.vehicles
@@ -357,6 +377,8 @@ impl WorldState {
                     rotation: v.rotation,
                     velocity: v.velocity,
                     damage: v.damage.clone(),
+                    electrics: v.electrics.clone(),
+                    powertrain: v.powertrain.clone(),
                     snapshot_time_ms: Some(
                         SystemTime::now()
                             .duration_since(UNIX_EPOCH)
@@ -449,6 +471,8 @@ mod tests {
                 rotation: [0.0, 0.0, 0.0, 1.0],
                 velocity: [0.1, 0.2, 0.3],
                 damage: Some("{\"broken\":[4]}".into()),
+                electrics: Some("{\"lights_state\":1}".into()),
+                powertrain: Some("{\"ignLevel\":2}".into()),
                 snapshot_time_ms: Some(1_700_000_000_000),
             },
             VehicleInfo {
@@ -459,6 +483,8 @@ mod tests {
                 rotation: [0.0, 0.0, 0.0, 1.0],
                 velocity: [0.0, 0.0, 0.0],
                 damage: None,
+                electrics: None,
+                powertrain: None,
                 snapshot_time_ms: Some(1_700_000_000_000),
             },
         ];
@@ -486,6 +512,24 @@ mod tests {
         world.update_reset_position(7, vehicle_id, "malformed");
         let snapshot = world.get_vehicle_snapshot();
         assert_eq!(snapshot[0].damage, None);
+    }
+
+    #[test]
+    fn replaceable_components_are_retained_for_late_joiners() {
+        let world = WorldState::new();
+        let vehicle_id = world.spawn_vehicle(7, "{}".into());
+        assert!(world.update_electrics(7, vehicle_id, r#"{"transbrake":0}"#.into()));
+        assert!(world.update_powertrain(7, vehicle_id, r#"{"hydraulics":{"arm":1.25}}"#.into()));
+
+        let snapshot = world.get_vehicle_snapshot();
+        assert_eq!(
+            snapshot[0].electrics.as_deref(),
+            Some(r#"{"transbrake":0}"#)
+        );
+        assert_eq!(
+            snapshot[0].powertrain.as_deref(),
+            Some(r#"{"hydraulics":{"arm":1.25}}"#)
+        );
     }
 
     #[test]

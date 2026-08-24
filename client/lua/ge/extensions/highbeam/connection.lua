@@ -60,6 +60,7 @@ M._lastServerPacketTime = nil
 M._pendingWorldVehicles = nil
 M._pendingWorldStateDeadline = nil
 M._pendingWorldStateLevel = nil
+M._worldTransitionExpected = false
 M._udpFirstSeenVehicles = {}
 M._udpRxCount = 0
 M._udpPositionRxCount = 0
@@ -139,6 +140,10 @@ end
 
 M.getServerProtocolVersion = function()
   return M._serverProtocolVersion
+end
+
+M.isWorldTransitionPending = function()
+  return M._worldTransitionExpected == true
 end
 
 local function _clearTcpSendQueue()
@@ -455,6 +460,7 @@ M._flushPendingWorldVehicles = function(reason)
   M._pendingWorldVehicles = nil
   M._pendingWorldStateDeadline = nil
   M._pendingWorldStateLevel = nil
+  M._worldTransitionExpected = false
   log('I', logTag, 'Spawning deferred world vehicles count=' .. tostring(#pending)
     .. ' reason=' .. tostring(reason))
   _spawnWorldVehicles(pending)
@@ -664,6 +670,7 @@ M.disconnect = function()
   M._pendingWorldVehicles = nil
   M._pendingWorldStateDeadline = nil
   M._pendingWorldStateLevel = nil
+  M._worldTransitionExpected = false
   M._udpFirstSeenVehicles = {}
   M._udpRxCount = 0
   M._udpPositionRxCount = 0
@@ -1113,6 +1120,7 @@ M._handlePacket = function(jsonStr)
       if currentNorm == nil and serverLevel and serverLevel ~= '' then
         needsLoad = true
       end
+      M._worldTransitionExpected = needsLoad
       if needsLoad and serverLevel ~= '' then
         log('I', logTag, 'Loading server map: ' .. serverLevel)
         if freeroam_freeroam and freeroam_freeroam.startFreeroam then
@@ -1575,6 +1583,7 @@ M._onDisconnect = function(reason)
   M._pendingWorldVehicles = nil
   M._pendingWorldStateDeadline = nil
   M._pendingWorldStateLevel = nil
+  M._worldTransitionExpected = false
   M._udpUnexpectedLogCount = 0
   M._setState(M.STATE_DISCONNECTED, "remote_disconnect")
   -- Trigger auto-reconnection if enabled

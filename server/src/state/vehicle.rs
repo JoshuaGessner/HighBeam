@@ -14,6 +14,9 @@ pub struct Vehicle {
     pub motion_sequence: u32,
     /// Latest authoritative full damage snapshot from the owner.
     pub damage: Option<String>,
+    /// Latest complete replaceable component snapshots for late joiners.
+    pub electrics: Option<String>,
+    pub powertrain: Option<String>,
     pub damage_epoch: u64,
     pub damage_revision: u64,
     pub config_revision: u64,

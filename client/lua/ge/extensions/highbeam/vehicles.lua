@@ -619,6 +619,42 @@ M.isRemote = function(gameVehicleId)
   return M._remoteGameIds[gameVehicleId] == true
 end
 
+-- BeamNG 0.39 may delete a repeatedly unstable vehicle automatically. If the
+-- destroyed object is still tagged as a live remote puppet, preserve all
+-- authoritative component snapshots and enter the existing bounded spawn
+-- retry path. Intentional HighBeam deletes clear _remoteGameIds first.
+M.onRemoteObjectDestroyed = function(gameVehicleId)
+  if not M._remoteGameIds[gameVehicleId] then return false end
+  M._remoteGameIds[gameVehicleId] = nil
+  for key, rv in pairs(M.remoteVehicles) do
+    if rv.gameVehicleId == gameVehicleId then
+      rv.gameVehicleId = nil
+      rv.gameVehicle = nil
+      rv._hasVE = false
+      rv._veReadyAt = nil
+      rv._veLastHeartbeat = nil
+      rv._veProbeQueuedAt = nil
+      rv._componentQueue = {}
+      rv._componentQueueLen = 0
+      rv._pendingDamageData = rv._lastDamageData
+      rv._pendingPowertrainData = rv._lastPowertrainData
+      rv._pendingElectricsData = rv._lastElectricsData
+      rv._pendingInputsData = rv._lastInputsData
+      rv._damageInFlight = nil
+      rv.spawnRetry = {
+        attempts = 0,
+        nextAt = os.clock(),
+        lastError = "BeamNG destroyed remote object",
+      }
+      _bumpApplyStat("remote_object_destroyed_recovery")
+      log('W', logTag, 'BeamNG destroyed remote puppet; scheduled recovery key=' .. tostring(key)
+        .. ' oldGameVid=' .. tostring(gameVehicleId))
+      return true
+    end
+  end
+  return false
+end
+
 M.spawnRemote = function(playerId, vehicleId, configData, snapshot)
   local key = makeKey(playerId, vehicleId)
   local deletedAt = M._deletedRemoteKeys[key]
@@ -679,10 +715,12 @@ M.spawnRemote = function(playerId, vehicleId, configData, snapshot)
     _componentQueueLen = 0,
     _lastDamageData = (preSpawnState and preSpawnState.damage) or (snapshot and snapshot.damage) or nil,
     _pendingDamageData = (preSpawnState and preSpawnState.damage) or (snapshot and snapshot.damage) or nil,
-    _pendingElectricsData = preSpawnState and preSpawnState.electrics or nil,
+    _lastElectricsData = (preSpawnState and preSpawnState.electrics) or (snapshot and snapshot.electrics) or nil,
+    _pendingElectricsData = (preSpawnState and preSpawnState.electrics) or (snapshot and snapshot.electrics) or nil,
     _inputState = preSpawnState and preSpawnState.inputState or nil,
     _pendingInputsData = preSpawnState and _serializeInputState(preSpawnState.inputState) or nil,
-    _pendingPowertrainData = preSpawnState and preSpawnState.powertrain or nil,
+    _lastPowertrainData = (preSpawnState and preSpawnState.powertrain) or (snapshot and snapshot.powertrain) or nil,
+    _pendingPowertrainData = (preSpawnState and preSpawnState.powertrain) or (snapshot and snapshot.powertrain) or nil,
     _pendingResetData = preSpawnState and preSpawnState.reset or nil,
     configRevision = math.max(0, math.floor(tonumber(effectiveConfig.configRevision) or 0)),
   }
@@ -729,6 +767,8 @@ M.spawnRemoteFromSnapshot = function(vehicle)
     velocity = vehicle.velocity,
     snapshotTimeMs = vehicle.snapshot_time_ms,
     damage = vehicle.damage,
+    electrics = vehicle.electrics,
+    powertrain = vehicle.powertrain,
   })
 end
 

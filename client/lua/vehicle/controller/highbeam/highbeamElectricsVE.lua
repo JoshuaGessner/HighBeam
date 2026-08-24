@@ -92,7 +92,22 @@ local SAFE_KEYS = {
   signal_L = true, signal_R = true, hazard_enabled = true,
   horn = true, beacon = true, siren = true,
   lightbar = true, lightbar_signal = true, lightbarMode = true,
+  transbrake = true,
 }
+
+local function _applyTransbrake(value)
+  if not controller then return false end
+  local transbrake = nil
+  if controller.getControllerSafe then
+    local ok, result = pcall(controller.getControllerSafe, "transbrake")
+    if ok then transbrake = result end
+  elseif controller.getController then
+    local ok, result = pcall(controller.getController, "transbrake")
+    if ok then transbrake = result end
+  end
+  if not transbrake or not transbrake.setTransbrake then return false end
+  return pcall(transbrake.setTransbrake, value)
+end
 
 local function _jsonEncode(v)
   if jsonEncode then
@@ -176,6 +191,8 @@ function M.applyElectrics(data)
   for key, val in pairs(data) do
     if DENY_LIST[key] or not SAFE_KEYS[key] then
       deniedCount = deniedCount + 1
+    elseif key == "transbrake" then
+      if _applyTransbrake(val) then appliedCount = appliedCount + 1 else deniedCount = deniedCount + 1 end
     else
       electrics.values[key] = val
       appliedCount = appliedCount + 1
