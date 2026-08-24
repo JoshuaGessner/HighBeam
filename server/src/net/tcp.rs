@@ -998,6 +998,7 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
 
                 if world.is_owner(player_id, vehicle_id) {
                     let payload_bytes = data.len();
+                    world.update_electrics(player_id, vehicle_id, data.clone());
                     sessions.broadcast_best_effort(
                         TcpPacket::VehicleElectrics {
                             player_id: Some(player_id),
@@ -1076,6 +1077,7 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                 }
 
                 if world.is_owner(player_id, vehicle_id) {
+                    world.update_powertrain(player_id, vehicle_id, data.clone());
                     sessions.broadcast_best_effort(
                         TcpPacket::VehiclePowertrain {
                             player_id: Some(player_id),

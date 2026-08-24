@@ -282,6 +282,24 @@ pub fn validate_vehicle_powertrain(data: &str) -> Result<()> {
                     json_number(Some(value), field, 4.0)?;
                 }
             }
+        } else if key == "hydraulics" {
+            let hydraulics = value
+                .as_object()
+                .ok_or_else(|| anyhow!("hydraulics must be an object"))?;
+            if hydraulics.len() > 128 {
+                return Err(anyhow!("Too many hydraulic beams"));
+            }
+            for (tag, length) in hydraulics {
+                if tag.is_empty() || tag.len() > 64 || tag.chars().any(char::is_control) {
+                    return Err(anyhow!("Invalid hydraulic beam tag"));
+                }
+                let length = length
+                    .as_f64()
+                    .ok_or_else(|| anyhow!("Hydraulic beam length must be numeric"))?;
+                if !length.is_finite() || !(0.0001..=1000.0).contains(&length) {
+                    return Err(anyhow!("Hydraulic beam length is out of range"));
+                }
+            }
         } else if let Some(_device_name) = key.strip_prefix("dev_") {
             let mode = value
                 .as_str()
@@ -595,6 +613,12 @@ mod component_validation_tests {
         assert!(validate_vehicle_electrics(r#"{"lights_state":1,"signal_L":true}"#).is_ok());
         assert!(validate_vehicle_electrics(r#"{"bad":[]}"#).is_err());
         assert!(validate_vehicle_powertrain(r#"{"ignLevel":2,"dev_gearbox":"drive","engines":{"engineA":{"ignCoef":1,"starterCoef":0,"stalled":0},"engineB":{"ignCoef":0.5}}}"#).is_ok());
+        assert!(validate_vehicle_powertrain(
+            r#"{"hydraulics":{"arm_left":1.25,"bucket-tilt":0.75}}"#
+        )
+        .is_ok());
+        assert!(validate_vehicle_powertrain(r#"{"hydraulics":{"arm_left":-1}}"#).is_err());
+        assert!(validate_vehicle_powertrain(r#"{"hydraulics":{"arm_left":"wide"}}"#).is_err());
         assert!(validate_vehicle_powertrain(r#"{"rawPointer":1}"#).is_err());
     }
 }

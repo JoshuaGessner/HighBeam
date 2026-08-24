@@ -8,6 +8,8 @@
 //! Protocol: newline-delimited JSON.
 //!
 //! Client → `{"type":"join_request","server":"host:port"}\n`
+//! Client → `{"type":"client_ready","client_marker":"…","beamng_version":"…"}\n`
+//! Server → `{"type":"client_ready_ack","launcher_version":"…"}\n`
 //! Server → `{"type":"sync_started","server":"…"}\n`
 //! Server → `{"type":"sync_complete","server":"…"}\n`   OR
 //!           `{"type":"sync_failed","server":"…","error":"…"}\n`
@@ -212,6 +214,22 @@ fn handle_ipc_connection(
     let req_type = value["type"].as_str().unwrap_or("");
     match req_type {
         "join_request" => handle_join_request(&mut stream, &value, cfg, cache_dir, active_proxy),
+        "client_ready" => {
+            let client_marker = value["client_marker"].as_str().unwrap_or("unknown");
+            let beamng_version = value["beamng_version"].as_str().unwrap_or("unknown");
+            tracing::info!(
+                client_marker,
+                beamng_version,
+                "In-game HighBeam client is active"
+            );
+            send_response(
+                &mut stream,
+                serde_json::json!({
+                    "type": "client_ready_ack",
+                    "launcher_version": env!("CARGO_PKG_VERSION"),
+                }),
+            )
+        }
         other => {
             tracing::warn!(req_type = %other, "Unknown IPC request type; ignoring");
             Ok(())

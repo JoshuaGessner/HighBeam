@@ -198,6 +198,39 @@ local _bufs = nil
 
 local IPC_STATE_FILE = "userdata/highbeam-launcher.json"
 
+local function _notifyLauncherClientReady()
+  local content = _readFile(IPC_STATE_FILE)
+  local state = content and _jsonDecode(content) or nil
+  local port = state and tonumber(state.port) or nil
+  if not port then
+    log('W', logTag, 'Launcher readiness check unavailable; launcher state file was not found')
+    return false
+  end
+  local socketOk, socket = pcall(require, "socket")
+  if not socketOk then return false end
+  local tcp = socket.tcp()
+  tcp:settimeout(0.5)
+  local connected, connectErr = tcp:connect("127.0.0.1", port)
+  if not connected then
+    tcp:close()
+    log('W', logTag, 'Launcher readiness check failed: ' .. tostring(connectErr))
+    return false
+  end
+  local request = _jsonEncode({
+    type = "client_ready",
+    client_marker = tostring(rawget(_G, "HIGHBEAM_CLIENT_MARKER") or "unknown"),
+    beamng_version = tostring(rawget(_G, "beamng_version") or rawget(_G, "beamng_versionb") or "unknown"),
+  })
+  local sent, sendErr = tcp:send(request .. "\n")
+  tcp:close()
+  if not sent then
+    log('W', logTag, 'Launcher readiness notification failed: ' .. tostring(sendErr))
+    return false
+  end
+  log('I', logTag, 'Launcher readiness notification sent')
+  return true
+end
+
 M._bridge = {
   state   = "idle",   -- idle | syncing | unavailable | failed
   port    = nil,      -- TCP port of the launcher IPC server
@@ -1293,6 +1326,7 @@ M.load = function(conn, cfg)
   M.loadFavorites()
   M.loadRecents()
   M.loadCommunityNodes()
+  _notifyLauncherClientReady()
   M._visible = true
   M._centerOnShow = true
   log("I", logTag, "Browser module loaded (window visible)")
