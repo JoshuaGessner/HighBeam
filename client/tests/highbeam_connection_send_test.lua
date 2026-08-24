@@ -32,6 +32,20 @@ queued, offset, bytes = connection._testTcpSendQueueState()
 assert(queued == 0 and offset == 1 and bytes == 0, "send queue did not fully drain")
 assert(calls[2] and calls[2].offset == 6, "send resumed from the wrong byte")
 
+-- A fully blocked socket retains one latest-value slot for each replaceable
+-- component. A lifecycle barrier removes stale component state for its vehicle.
+local blockedTcp = { send = function() return nil, "timeout" end }
+connection._testSetTcp(blockedTcp, connection.STATE_CONNECTED)
+assert(connection._sendPacket({ type = "vehicle_pose", vehicle_id = 7, data = "one" }))
+assert(connection._sendPacket({ type = "vehicle_pose", vehicle_id = 7, data = "two" }))
+queued = connection._testTcpSendQueueState()
+assert(queued == 1, "replaceable snapshots must coalesce by type and vehicle")
+local coalesced = connection._testTcpQueueMetrics()
+assert(coalesced >= 1, "coalescing metric was not incremented")
+assert(connection._sendPacket({ type = "vehicle_reset", vehicle_id = 7, data = "{}" }))
+queued = connection._testTcpSendQueueState()
+assert(queued == 1, "reset barrier must supersede queued replaceable state")
+
 local closed = false
 local fakeUdp = { close = function() closed = true end }
 connection._testSetUdp(fakeUdp, connection.STATE_CONNECTED)

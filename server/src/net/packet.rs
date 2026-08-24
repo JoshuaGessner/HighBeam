@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 pub const MAX_PACKET_SIZE: u32 = 1_048_576;
 
 /// Protocol version. Incremented when packet formats change.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// All TCP packet types, JSON-encoded with a length prefix on the wire.
 ///
@@ -509,7 +509,7 @@ mod tests {
 
     #[test]
     fn test_protocol_version() {
-        assert_eq!(PROTOCOL_VERSION, 2);
+        assert_eq!(PROTOCOL_VERSION, 3);
     }
 
     #[test]

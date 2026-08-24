@@ -6,12 +6,13 @@ use dashmap::DashMap;
 use sha2::{Digest, Sha256};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TrySendError;
 use tokio::task::JoinSet;
 use tokio::time::{timeout, Instant};
 
 use crate::net::packet::{PlayerInfo, PlayerPingInfo, TcpPacket};
 
-use super::player::Player;
+use super::player::{Player, ReplaceableOutbox};
 
 /// Error returned when a new player cannot be admitted.
 #[derive(Debug)]
@@ -50,6 +51,10 @@ pub struct SessionManager {
     reliable_closed: AtomicU64,
     best_effort_enqueued: AtomicU64,
     best_effort_dropped: AtomicU64,
+    best_effort_coalesced: AtomicU64,
+    best_effort_replaced: AtomicU64,
+    outbound_queue_high_water: AtomicU64,
+    reliable_disconnected: AtomicU64,
 }
 
 const RELIABLE_BROADCAST_ENQUEUE_TIMEOUT: Duration = Duration::from_secs(1);
@@ -68,6 +73,15 @@ impl BroadcastReport {
     }
 }
 
+fn queue_barrier_vehicle(packet: &TcpPacket) -> Option<u16> {
+    match packet {
+        TcpPacket::VehicleReset { vehicle_id, .. }
+        | TcpPacket::VehicleEdit { vehicle_id, .. }
+        | TcpPacket::VehicleDelete { vehicle_id, .. } => Some(*vehicle_id),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct OutboundDeliveryStats {
     pub reliable_enqueued: u64,
@@ -75,6 +89,11 @@ pub struct OutboundDeliveryStats {
     pub reliable_closed: u64,
     pub best_effort_enqueued: u64,
     pub best_effort_dropped: u64,
+    pub best_effort_coalesced: u64,
+    pub best_effort_replaced: u64,
+    pub outbound_queue_depth: u64,
+    pub outbound_queue_high_water: u64,
+    pub reliable_disconnected: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -94,6 +113,11 @@ fn compute_session_hash(token: &str) -> [u8; 16] {
 }
 
 impl SessionManager {
+    fn observe_outbound_depth(&self, depth: u64) {
+        self.outbound_queue_high_water
+            .fetch_max(depth, Ordering::Relaxed);
+    }
+
     pub fn new() -> Self {
         Self {
             players: DashMap::new(),
@@ -106,6 +130,10 @@ impl SessionManager {
             reliable_closed: AtomicU64::new(0),
             best_effort_enqueued: AtomicU64::new(0),
             best_effort_dropped: AtomicU64::new(0),
+            best_effort_coalesced: AtomicU64::new(0),
+            best_effort_replaced: AtomicU64::new(0),
+            outbound_queue_high_water: AtomicU64::new(0),
+            reliable_disconnected: AtomicU64::new(0),
         }
     }
 
@@ -185,6 +213,7 @@ impl SessionManager {
             session_token: token.clone(),
             addr,
             tcp_tx,
+            replaceable_outbox: std::sync::Arc::new(ReplaceableOutbox::new()),
             udp_addr: None,
             session_hash,
             connected_at: now,
@@ -213,6 +242,12 @@ impl SessionManager {
     /// Look up a player by ID.
     pub fn get_player(&self, player_id: u32) -> Option<dashmap::mapref::one::Ref<'_, u32, Player>> {
         self.players.get(&player_id)
+    }
+
+    pub fn replaceable_outbox(&self, player_id: u32) -> Option<std::sync::Arc<ReplaceableOutbox>> {
+        self.players
+            .get(&player_id)
+            .map(|p| p.replaceable_outbox.clone())
     }
 
     /// Look up a player by ID (mutable), for updating player state (Phase 2.2).
@@ -302,13 +337,45 @@ impl SessionManager {
             if Some(player.id) == exclude {
                 continue;
             }
+            // If this component already occupies a latest-value slot, remove
+            // that older value before attempting the bounded channel. This
+            // prevents an older pending snapshot from being drained after a
+            // newer snapshot that successfully entered the channel.
+            if player.replaceable_outbox.remove_matching(&packet) {
+                self.best_effort_replaced.fetch_add(1, Ordering::Relaxed);
+            }
             match player.tcp_tx.try_send(packet.clone()) {
                 Ok(()) => {
                     self.best_effort_enqueued.fetch_add(1, Ordering::Relaxed);
+                    let depth = (player.tcp_tx.max_capacity() - player.tcp_tx.capacity()) as u64
+                        + player.replaceable_outbox.len() as u64;
+                    self.observe_outbound_depth(depth);
                 }
-                Err(e) => {
+                Err(TrySendError::Full(packet)) => match player.replaceable_outbox.insert(packet) {
+                    Some(replaced) => {
+                        self.best_effort_coalesced.fetch_add(1, Ordering::Relaxed);
+                        if replaced {
+                            self.best_effort_replaced.fetch_add(1, Ordering::Relaxed);
+                        }
+                        let depth = (player.tcp_tx.max_capacity() - player.tcp_tx.capacity())
+                            as u64
+                            + player.replaceable_outbox.len() as u64;
+                        self.observe_outbound_depth(depth);
+                    }
+                    None => {
+                        self.best_effort_dropped.fetch_add(1, Ordering::Relaxed);
+                        tracing::debug!(
+                            player_id = player.id,
+                            "Non-replaceable best-effort broadcast dropped from full queue"
+                        );
+                    }
+                },
+                Err(TrySendError::Closed(_)) => {
                     self.best_effort_dropped.fetch_add(1, Ordering::Relaxed);
-                    tracing::debug!(player_id = player.id, "Best-effort broadcast dropped: {e}");
+                    tracing::debug!(
+                        player_id = player.id,
+                        "Best-effort broadcast dropped: channel closed"
+                    );
                 }
             }
         }
@@ -338,12 +405,26 @@ impl SessionManager {
         exclude: Option<u32>,
         enqueue_timeout: Duration,
     ) -> BroadcastReport {
-        let recipients: Vec<(u32, mpsc::Sender<TcpPacket>)> = self
+        let barrier_vehicle_id = queue_barrier_vehicle(&packet);
+        let recipients: Vec<(
+            u32,
+            mpsc::Sender<TcpPacket>,
+            std::sync::Arc<ReplaceableOutbox>,
+        )> = self
             .players
             .iter()
             .filter_map(|entry| {
                 let player = entry.value();
-                (Some(player.id) != exclude).then(|| (player.id, player.tcp_tx.clone()))
+                (Some(player.id) != exclude).then(|| {
+                    if let Some(vehicle_id) = barrier_vehicle_id {
+                        player.replaceable_outbox.clear_vehicle(vehicle_id);
+                    }
+                    (
+                        player.id,
+                        player.tcp_tx.clone(),
+                        player.replaceable_outbox.clone(),
+                    )
+                })
             })
             .collect();
 
@@ -354,27 +435,29 @@ impl SessionManager {
         let mut pending = JoinSet::new();
         let mut failed_players = Vec::new();
 
-        for (player_id, tx) in recipients {
+        for (player_id, tx, outbox) in recipients {
             let packet = packet.clone();
             pending.spawn(async move {
                 let outcome = timeout(enqueue_timeout, tx.send(packet)).await;
-                (player_id, outcome)
+                (player_id, outcome, tx, outbox)
             });
         }
 
         while let Some(joined) = pending.join_next().await {
             match joined {
-                Ok((_player_id, Ok(Ok(())))) => {
+                Ok((_player_id, Ok(Ok(())), tx, outbox)) => {
                     report.enqueued += 1;
                     self.reliable_enqueued.fetch_add(1, Ordering::Relaxed);
+                    let depth = (tx.max_capacity() - tx.capacity()) as u64 + outbox.len() as u64;
+                    self.observe_outbound_depth(depth);
                 }
-                Ok((player_id, Ok(Err(_)))) => {
+                Ok((player_id, Ok(Err(_)), _, _)) => {
                     report.closed += 1;
                     self.reliable_closed.fetch_add(1, Ordering::Relaxed);
                     tracing::warn!(player_id, "Reliable broadcast channel closed");
                     failed_players.push(player_id);
                 }
-                Ok((player_id, Err(_))) => {
+                Ok((player_id, Err(_), _, _)) => {
                     report.timed_out += 1;
                     self.reliable_timed_out.fetch_add(1, Ordering::Relaxed);
                     tracing::warn!(
@@ -398,18 +481,33 @@ impl SessionManager {
             // safer than leaving a connected client that permanently missed a
             // reset, spawn, or damage revision.
             self.remove_player(player_id);
+            self.reliable_disconnected.fetch_add(1, Ordering::Relaxed);
         }
 
         report
     }
 
     pub fn outbound_delivery_stats(&self) -> OutboundDeliveryStats {
+        let outbound_queue_depth = self
+            .players
+            .iter()
+            .map(|entry| {
+                let player = entry.value();
+                (player.tcp_tx.max_capacity() - player.tcp_tx.capacity()) as u64
+                    + player.replaceable_outbox.len() as u64
+            })
+            .sum();
         OutboundDeliveryStats {
             reliable_enqueued: self.reliable_enqueued.load(Ordering::Relaxed),
             reliable_timed_out: self.reliable_timed_out.load(Ordering::Relaxed),
             reliable_closed: self.reliable_closed.load(Ordering::Relaxed),
             best_effort_enqueued: self.best_effort_enqueued.load(Ordering::Relaxed),
             best_effort_dropped: self.best_effort_dropped.load(Ordering::Relaxed),
+            best_effort_coalesced: self.best_effort_coalesced.load(Ordering::Relaxed),
+            best_effort_replaced: self.best_effort_replaced.load(Ordering::Relaxed),
+            outbound_queue_depth,
+            outbound_queue_high_water: self.outbound_queue_high_water.load(Ordering::Relaxed),
+            reliable_disconnected: self.reliable_disconnected.load(Ordering::Relaxed),
         }
     }
 
@@ -658,7 +756,7 @@ mod tests {
     }
 
     #[test]
-    fn best_effort_broadcast_counts_saturation_drop() {
+    fn best_effort_broadcast_coalesces_saturated_replaceable_state() {
         let manager = SessionManager::new();
         let addr: SocketAddr = "127.0.0.1:18863".parse().expect("valid socket addr");
         let (tx, _rx) = mpsc::channel(1);
@@ -674,13 +772,80 @@ mod tests {
             TcpPacket::VehicleInputs {
                 player_id: Some(7),
                 vehicle_id: 2,
-                data: "{}".into(),
+                data: "s=0.1".into(),
+            },
+            None,
+        );
+
+        manager.broadcast_best_effort(
+            TcpPacket::VehicleInputs {
+                player_id: Some(7),
+                vehicle_id: 2,
+                data: "s=0.9".into(),
             },
             None,
         );
 
         let stats = manager.outbound_delivery_stats();
         assert_eq!(stats.best_effort_enqueued, 0);
-        assert_eq!(stats.best_effort_dropped, 1);
+        assert_eq!(stats.best_effort_dropped, 0);
+        assert_eq!(stats.best_effort_coalesced, 2);
+        assert_eq!(stats.best_effort_replaced, 1);
+        assert_eq!(stats.outbound_queue_depth, 2); // one channel item + one latest-value slot
+
+        let outbox = manager.replaceable_outbox(1).expect("player outbox");
+        let pending = outbox.drain();
+        assert_eq!(pending.len(), 1);
+        assert!(matches!(
+            &pending[0],
+            TcpPacket::VehicleInputs { data, .. } if data == "s=0.9"
+        ));
+    }
+
+    #[tokio::test]
+    async fn reset_is_a_barrier_for_pending_replaceable_state() {
+        let manager = std::sync::Arc::new(SessionManager::new());
+        let addr: SocketAddr = "127.0.0.1:18864".parse().expect("valid socket addr");
+        let (tx, mut rx) = mpsc::channel(1);
+        manager
+            .add_player("barrier_peer".into(), addr, tx.clone(), 4)
+            .expect("player added");
+        tx.send(TcpPacket::ServerMessage {
+            text: "occupy".into(),
+        })
+        .await
+        .expect("prefill queue");
+        manager.broadcast_best_effort(
+            TcpPacket::VehiclePose {
+                player_id: Some(7),
+                vehicle_id: 2,
+                data: "old pose".into(),
+            },
+            None,
+        );
+        let outbox = manager.replaceable_outbox(1).expect("player outbox");
+        assert_eq!(outbox.len(), 1);
+
+        let manager_for_send = manager.clone();
+        let send = tokio::spawn(async move {
+            manager_for_send
+                .broadcast_reliable(
+                    TcpPacket::VehicleReset {
+                        player_id: Some(7),
+                        vehicle_id: 2,
+                        data: "{}".into(),
+                    },
+                    None,
+                )
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert_eq!(outbox.len(), 0, "reset must clear pending component state");
+        rx.recv().await.expect("prefilled packet");
+        assert!(send.await.expect("broadcast task").all_enqueued());
+        assert!(matches!(
+            rx.recv().await,
+            Some(TcpPacket::VehicleReset { .. })
+        ));
     }
 }

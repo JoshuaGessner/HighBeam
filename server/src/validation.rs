@@ -10,6 +10,296 @@ const MAX_VEHICLE_CONFIG_LEN: usize = 1_000_000; // 1MB
 const MAX_DAMAGE_PAYLOAD_LEN: usize = 512 * 1024;
 const MAX_DAMAGE_ITEMS: usize = 20_000;
 const MAX_DAMAGE_GROUPS: usize = 2_048;
+const MAX_COMPONENT_PAYLOAD_LEN: usize = 64 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PoseMetadata {
+    pub position: [f32; 3],
+    pub rotation: [f32; 4],
+    pub velocity: [f32; 3],
+    pub motion_epoch: Option<u64>,
+    pub motion_sequence: Option<u64>,
+}
+
+fn json_number(value: Option<&serde_json::Value>, name: &str, limit: f64) -> Result<f64> {
+    let value = value
+        .and_then(serde_json::Value::as_f64)
+        .ok_or_else(|| anyhow!("{name} must be a number"))?;
+    if !value.is_finite() || value.abs() > limit {
+        return Err(anyhow!("{name} is out of range"));
+    }
+    Ok(value)
+}
+
+fn fixed_numeric_array<const N: usize>(
+    value: Option<&serde_json::Value>,
+    name: &str,
+    limit: f64,
+) -> Result<[f32; N]> {
+    let values = value
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| anyhow!("{name} must be an array"))?;
+    if values.len() != N {
+        return Err(anyhow!("{name} must contain exactly {N} numbers"));
+    }
+    let mut result = [0.0; N];
+    for (index, item) in values.iter().enumerate() {
+        result[index] = json_number(Some(item), name, limit)? as f32;
+    }
+    Ok(result)
+}
+
+pub fn validate_vehicle_pose(data: &str) -> Result<PoseMetadata> {
+    if data.len() > MAX_COMPONENT_PAYLOAD_LEN {
+        return Err(anyhow!("Pose payload is too large"));
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(data).map_err(|e| anyhow!("Pose payload is not valid JSON: {e}"))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| anyhow!("Pose payload must be an object"))?;
+    let position = fixed_numeric_array::<3>(object.get("pos"), "pos", 1e7)?;
+    let rotation = fixed_numeric_array::<4>(object.get("rot"), "rot", 4.0)?;
+    let velocity = fixed_numeric_array::<3>(object.get("vel"), "vel", 1e5)?;
+    let quat_len_sq: f32 = rotation.iter().map(|v| v * v).sum();
+    if quat_len_sq < 1e-8 {
+        return Err(anyhow!("Rotation quaternion is degenerate"));
+    }
+    json_number(object.get("time"), "time", 1e9)?;
+
+    let motion_epoch = object
+        .get("motionEpoch")
+        .map(|v| {
+            v.as_u64()
+                .filter(|value| *value > 0 && *value <= u32::MAX as u64)
+                .ok_or_else(|| anyhow!("motionEpoch must be a non-zero u32"))
+        })
+        .transpose()?;
+    let motion_sequence = object
+        .get("motionSequence")
+        .map(|v| {
+            v.as_u64()
+                .filter(|value| *value <= u32::MAX as u64)
+                .ok_or_else(|| anyhow!("motionSequence must be a u32"))
+        })
+        .transpose()?;
+    if motion_epoch.is_some() != motion_sequence.is_some() {
+        return Err(anyhow!(
+            "motionEpoch and motionSequence must be supplied together"
+        ));
+    }
+    if let Some(lock) = object.get("steeringLock") {
+        let lock = lock
+            .as_u64()
+            .ok_or_else(|| anyhow!("steeringLock must be an integer"))?;
+        if !(1..=4096).contains(&lock) {
+            return Err(anyhow!("steeringLock is out of range"));
+        }
+    }
+    if let Some(ang_vel) = object.get("angVel") {
+        fixed_numeric_array::<3>(Some(ang_vel), "angVel", 1e4)?;
+    }
+    if let Some(inputs) = object.get("inputs") {
+        let inputs = inputs
+            .as_object()
+            .ok_or_else(|| anyhow!("inputs must be an object"))?;
+        for (field, limit) in [
+            ("steer", 8.0),
+            ("throttle", 2.0),
+            ("brake", 2.0),
+            ("gear", 16.0),
+            ("handbrake", 2.0),
+        ] {
+            if let Some(value) = inputs.get(field) {
+                json_number(Some(value), field, limit)?;
+            }
+        }
+        if inputs.keys().any(|field| {
+            !matches!(
+                field.as_str(),
+                "steer" | "throttle" | "brake" | "gear" | "handbrake"
+            )
+        }) {
+            return Err(anyhow!("Unknown pose input field"));
+        }
+    }
+    if let Some(sample_delta) = object.get("sampleDelta") {
+        json_number(Some(sample_delta), "sampleDelta", 1.0)?;
+    }
+
+    Ok(PoseMetadata {
+        position,
+        rotation,
+        velocity,
+        motion_epoch,
+        motion_sequence,
+    })
+}
+
+pub fn validate_vehicle_reset(data: &str) -> Result<()> {
+    if data.len() > MAX_COMPONENT_PAYLOAD_LEN {
+        return Err(anyhow!("Reset payload is too large"));
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(data).map_err(|e| anyhow!("Reset payload is not valid JSON: {e}"))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| anyhow!("Reset payload must be an object"))?;
+    let rotation = fixed_numeric_array::<4>(object.get("rot"), "rot", 4.0)?;
+    fixed_numeric_array::<3>(object.get("pos"), "pos", 1e7)?;
+    if rotation.iter().map(|v| v * v).sum::<f32>() < 1e-8 {
+        return Err(anyhow!("Reset rotation quaternion is degenerate"));
+    }
+    json_number(object.get("time"), "time", 1e9)?;
+    if let Some(epoch) = object.get("motionEpoch") {
+        let epoch = epoch
+            .as_u64()
+            .ok_or_else(|| anyhow!("motionEpoch must be an integer"))?;
+        if epoch == 0 || epoch > u32::MAX as u64 {
+            return Err(anyhow!("motionEpoch is out of range"));
+        }
+    }
+    if object
+        .get("damageEpoch")
+        .is_some_and(|epoch| epoch.as_u64().is_none())
+    {
+        return Err(anyhow!("damageEpoch must be a non-negative integer"));
+    }
+    Ok(())
+}
+
+pub fn validate_vehicle_inputs(data: &str) -> Result<()> {
+    if data.len() > 1024 {
+        return Err(anyhow!("Input payload is too large"));
+    }
+    let mut seen = std::collections::HashSet::new();
+    for part in data.split(',').filter(|part| !part.is_empty()) {
+        let (key, raw) = part
+            .split_once('=')
+            .ok_or_else(|| anyhow!("Invalid input field"))?;
+        if !seen.insert(key) {
+            return Err(anyhow!("Duplicate input field"));
+        }
+        match key {
+            "s" => {
+                let value: f64 = raw.parse().map_err(|_| anyhow!("Invalid steering value"))?;
+                if !value.is_finite() || value.abs() > 8.0 {
+                    return Err(anyhow!("Steering is out of range"));
+                }
+            }
+            "t" | "b" | "p" | "c" => {
+                let value: f64 = raw.parse().map_err(|_| anyhow!("Invalid input value"))?;
+                if !value.is_finite() || !(-0.1..=1.1).contains(&value) {
+                    return Err(anyhow!("Input is out of range"));
+                }
+            }
+            "l" => {
+                let value: u16 = raw.parse().map_err(|_| anyhow!("Invalid steering lock"))?;
+                if !(1..=4096).contains(&value) {
+                    return Err(anyhow!("Steering lock is out of range"));
+                }
+            }
+            "k" => match raw {
+                "manual" | "sequential" | "automatic" | "cvt" | "electric" | "unknown" => {}
+                _ => return Err(anyhow!("Unsupported gearbox schema")),
+            },
+            "g" => {
+                if raw.len() > 16
+                    || !raw
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c))
+                {
+                    return Err(anyhow!("Invalid gear value"));
+                }
+            }
+            _ => return Err(anyhow!("Unknown input field")),
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_vehicle_electrics(data: &str) -> Result<()> {
+    if data.len() > MAX_COMPONENT_PAYLOAD_LEN {
+        return Err(anyhow!("Electrics payload is too large"));
+    }
+    let value: serde_json::Value = serde_json::from_str(data)
+        .map_err(|e| anyhow!("Electrics payload is not valid JSON: {e}"))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| anyhow!("Electrics payload must be an object"))?;
+    if object.len() > 128 {
+        return Err(anyhow!("Too many electrics fields"));
+    }
+    for (key, value) in object {
+        if key.is_empty() || key.len() > 64 || key.chars().any(char::is_control) {
+            return Err(anyhow!("Invalid electrics key"));
+        }
+        match value {
+            serde_json::Value::Bool(_) | serde_json::Value::Null => {}
+            serde_json::Value::Number(number)
+                if number
+                    .as_f64()
+                    .is_some_and(|v| v.is_finite() && v.abs() <= 1e6) => {}
+            serde_json::Value::String(text)
+                if text.len() <= 128 && !text.chars().any(char::is_control) => {}
+            _ => return Err(anyhow!("Invalid electrics value")),
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_vehicle_powertrain(data: &str) -> Result<()> {
+    if data.len() > MAX_COMPONENT_PAYLOAD_LEN {
+        return Err(anyhow!("Powertrain payload is too large"));
+    }
+    let value: serde_json::Value = serde_json::from_str(data)
+        .map_err(|e| anyhow!("Powertrain payload is not valid JSON: {e}"))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| anyhow!("Powertrain payload must be an object"))?;
+    if object.len() > 256 {
+        return Err(anyhow!("Too many powertrain fields"));
+    }
+    for (key, value) in object {
+        if key == "engines" {
+            let engines = value
+                .as_object()
+                .ok_or_else(|| anyhow!("engines must be an object"))?;
+            if engines.len() > 32 {
+                return Err(anyhow!("Too many engines"));
+            }
+            for (name, state) in engines {
+                if name.is_empty() || name.len() > 64 {
+                    return Err(anyhow!("Invalid engine name"));
+                }
+                let state = state
+                    .as_object()
+                    .ok_or_else(|| anyhow!("Engine state must be an object"))?;
+                for (field, value) in state {
+                    if !matches!(field.as_str(), "ignCoef" | "starterCoef" | "stalled") {
+                        return Err(anyhow!("Unknown engine state field"));
+                    }
+                    json_number(Some(value), field, 4.0)?;
+                }
+            }
+        } else if let Some(_device_name) = key.strip_prefix("dev_") {
+            let mode = value
+                .as_str()
+                .ok_or_else(|| anyhow!("Device mode must be a string"))?;
+            if mode.is_empty() || mode.len() > 64 || mode.chars().any(char::is_control) {
+                return Err(anyhow!("Invalid device mode"));
+            }
+        } else if matches!(
+            key.as_str(),
+            "ignCoef" | "starterCoef" | "stalled" | "ignLevel"
+        ) {
+            json_number(Some(value), key, 16.0)?;
+        } else {
+            return Err(anyhow!("Unknown powertrain field"));
+        }
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DamageMetadata {
@@ -264,6 +554,48 @@ mod damage_validation_tests {
         let meta = validate_vehicle_damage(r#"{"broken":[3],"deform":{}}"#)
             .expect("legacy structural snapshot");
         assert_eq!(meta.epoch, None);
+    }
+}
+
+#[cfg(test)]
+mod component_validation_tests {
+    use super::*;
+
+    #[test]
+    fn validates_versioned_pose_and_rejects_nonfinite_or_partial_ordering() {
+        let pose = r#"{"pos":[1,2,3],"rot":[0,0,0,1],"vel":[4,5,6],"time":2.5,"motionEpoch":3,"motionSequence":9,"steeringLock":1080,"angVel":[0,0.1,0]}"#;
+        let metadata = validate_vehicle_pose(pose).expect("valid pose");
+        assert_eq!(metadata.motion_epoch, Some(3));
+        assert_eq!(metadata.motion_sequence, Some(9));
+        assert!(validate_vehicle_pose(
+            r#"{"pos":[1,2,3],"rot":[0,0,0,1],"vel":[0,0,0],"time":1,"motionEpoch":2}"#
+        )
+        .is_err());
+        assert!(validate_vehicle_pose(
+            r#"{"pos":[1e99,2,3],"rot":[0,0,0,1],"vel":[0,0,0],"time":1}"#
+        )
+        .is_err());
+        assert!(validate_vehicle_reset(
+            r#"{"pos":[1,2,3],"rot":[0,0,0,1],"time":1,"motionEpoch":4,"damageEpoch":2}"#
+        )
+        .is_ok());
+        assert!(validate_vehicle_reset(r#"{"pos":[1,2,3],"rot":[0,0,0,0],"time":1}"#).is_err());
+    }
+
+    #[test]
+    fn validates_complete_input_schema_and_ranges() {
+        assert!(validate_vehicle_inputs("l=1080,s=1.2,t=1,b=0,p=0,c=0,k=automatic,g=M2").is_ok());
+        assert!(validate_vehicle_inputs("l=0,s=0").is_err());
+        assert!(validate_vehicle_inputs("k=spaceship,g=D").is_err());
+        assert!(validate_vehicle_inputs("s=0,s=1").is_err());
+    }
+
+    #[test]
+    fn validates_electrics_and_multi_engine_powertrain_shapes() {
+        assert!(validate_vehicle_electrics(r#"{"lights_state":1,"signal_L":true}"#).is_ok());
+        assert!(validate_vehicle_electrics(r#"{"bad":[]}"#).is_err());
+        assert!(validate_vehicle_powertrain(r#"{"ignLevel":2,"dev_gearbox":"drive","engines":{"engineA":{"ignCoef":1,"starterCoef":0,"stalled":0},"engineB":{"ignCoef":0.5}}}"#).is_ok());
+        assert!(validate_vehicle_powertrain(r#"{"rawPointer":1}"#).is_err());
     }
 }
 

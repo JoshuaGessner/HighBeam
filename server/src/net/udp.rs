@@ -16,6 +16,15 @@ const DISCOVERY_QUERY_PACKET: u8 = 0x7A;
 const UDP_BIND_PACKET: u8 = 0x01;
 const UDP_BIND_ACK_PACKET: u8 = 0x02;
 
+fn valid_position_packet_len(packet_type: u8, len: usize) -> bool {
+    match packet_type {
+        0x10 => len == 63 || len == 75,
+        0x11 => len == 73 || len == 85,
+        0x12 => len == 95,
+        _ => false,
+    }
+}
+
 #[derive(Serialize)]
 struct DiscoveryResponse {
     name: String,
@@ -77,6 +86,7 @@ pub async fn start_udp(
     let mut diag_drop_bad_len: u64 = 0;
     let mut diag_drop_unowned: u64 = 0;
     let mut diag_drop_pose_flood: u64 = 0;
+    let mut diag_drop_stale_motion: u64 = 0;
     let mut diag_bind_count: u64 = 0;
     let mut diag_pos_rx: u64 = 0;
     let mut diag_pos_relay_packets: u64 = 0;
@@ -197,11 +207,11 @@ pub async fn start_udp(
                 let _ = socket.send_to(&ack, addr).await;
             }
 
-            // Position update (0x10 legacy / 0x11 extended with inputs)
+            // Position update (0x10 legacy / 0x11 extended / 0x12 versioned stream)
             // Client 0x10: 63 bytes: [16B hash][0x10][2B vid][12B pos][16B rot][12B vel][4B time]
             // Client 0x11: 69 bytes: [16B hash][0x11][2B vid][12B pos][16B rot][12B vel][4B time][6B inputs]
             // Server relays: inserts 2B pid after type byte (65 or 71 bytes)
-            0x10 | 0x11 => {
+            0x10..=0x12 => {
                 // A2: validate the exact datagram length for the packet type and
                 // relay only that exact slice. Accepting `len >= min` and forwarding
                 // `buf[17..len]` verbatim let an attacker append trailing bytes that
@@ -212,13 +222,7 @@ pub async fn start_udp(
                 //   base                         = 63 bytes (hash+type+vid+pos+rot+vel+time)
                 //   + 5x f16 inputs (0x11)       = +10 bytes
                 //   + 3x f32 angular velocity    = +12 bytes
-                let valid_len = match packet_type {
-                    // 63 = base, 75 = base + angvel
-                    0x10 => len == 63 || len == 75,
-                    // 73 = base + inputs, 85 = base + inputs + angvel
-                    0x11 => len == 73 || len == 85,
-                    _ => false,
-                };
+                let valid_len = valid_position_packet_len(packet_type, len);
                 if !valid_len {
                     diag_drop_bad_len += 1;
                     continue;
@@ -263,17 +267,61 @@ pub async fn start_udp(
                 let pos = read_f32x3(&buf[19..31]);
                 let rot = read_f32x4(&buf[31..47]);
                 let vel = read_f32x3(&buf[47..59]);
+                let sim_time =
+                    f32::from_le_bytes(buf[59..63].try_into().expect("fixed time slice"));
 
-                if !all_finite3(&pos) || !all_finite4(&rot) || !all_finite3(&vel) {
+                let quat_len_sq: f32 = rot.iter().map(|value| value * value).sum();
+                let angular_velocity = match (packet_type, len) {
+                    (0x10, 75) => Some(read_f32x3(&buf[63..75])),
+                    (0x11, 85) => Some(read_f32x3(&buf[73..85])),
+                    (0x12, 95) => Some(read_f32x3(&buf[83..95])),
+                    _ => None,
+                };
+                let versioned_metadata_valid = packet_type != 0x12 || {
+                    let epoch =
+                        u32::from_le_bytes(buf[63..67].try_into().expect("fixed epoch slice"));
+                    let steering_lock =
+                        u16::from_le_bytes(buf[71..73].try_into().expect("fixed lock slice"));
+                    epoch > 0 && (1..=4096).contains(&steering_lock)
+                };
+
+                if !all_finite_within(&pos, 1e7)
+                    || !all_finite_within(&rot, 4.0)
+                    || !all_finite_within(&vel, 1e5)
+                    || !sim_time.is_finite()
+                    || sim_time.abs() > 1e9
+                    || quat_len_sq < 1e-8
+                    || angular_velocity.is_some_and(|values| !all_finite_within(&values, 1e4))
+                    || !versioned_metadata_valid
+                {
                     tracing::debug!(player_id, vid, "Dropping non-finite UDP position payload");
                     diag_drop_invalid_pose += 1;
                     continue;
                 }
 
+                // Update world state through the shared cross-transport order
+                // gate for protocol-v3 packets. Legacy packets retain arrival
+                // order for compatibility.
+                if packet_type == 0x12 {
+                    let epoch =
+                        u32::from_le_bytes(buf[63..67].try_into().expect("fixed epoch slice"));
+                    let sequence =
+                        u32::from_le_bytes(buf[67..71].try_into().expect("fixed sequence slice"));
+                    if !world.update_position_ordered(
+                        player_id,
+                        vid,
+                        pos,
+                        rot,
+                        vel,
+                        (epoch, sequence),
+                    ) {
+                        diag_drop_stale_motion += 1;
+                        continue;
+                    }
+                } else {
+                    world.update_position(player_id, vid, pos, rot, vel);
+                }
                 diag_pos_rx += 1;
-
-                // Update world state
-                world.update_position(player_id, vid, pos, rot, vel);
 
                 let throttle_key = (player_id, vid);
                 let should_relay = last_relay_at
@@ -288,7 +336,7 @@ pub async fn start_udp(
                 last_relay_at.insert(throttle_key, now);
 
                 // Build relay packet: insert player_id (u16 LE) after type byte
-                let relay_capacity = if packet_type == 0x11 { 71 } else { 65 };
+                let relay_capacity = len + 2;
                 let mut relay = Vec::with_capacity(relay_capacity);
                 relay.extend_from_slice(&[0u8; 16]); // zeroed hash (receivers ignore it)
                 relay.push(buf[16]); // type byte
@@ -339,6 +387,7 @@ pub async fn start_udp(
                 drop_bad_len = diag_drop_bad_len,
                 drop_unowned = diag_drop_unowned,
                 drop_pose_flood = diag_drop_pose_flood,
+                drop_stale_motion = diag_drop_stale_motion,
                 binds = diag_bind_count,
                 pos_rx = diag_pos_rx,
                 pos_relays = diag_pos_relay_packets,
@@ -358,6 +407,7 @@ pub async fn start_udp(
             diag_drop_bad_len = 0;
             diag_drop_unowned = 0;
             diag_drop_pose_flood = 0;
+            diag_drop_stale_motion = 0;
             diag_bind_count = 0;
             diag_pos_rx = 0;
             diag_pos_relay_packets = 0;
@@ -387,10 +437,30 @@ fn read_f32x4(data: &[u8]) -> [f32; 4] {
     ]
 }
 
-fn all_finite3(values: &[f32; 3]) -> bool {
-    values.iter().all(|v| v.is_finite())
+fn all_finite_within<const N: usize>(values: &[f32; N], limit: f32) -> bool {
+    values
+        .iter()
+        .all(|value| value.is_finite() && value.abs() <= limit)
 }
 
-fn all_finite4(values: &[f32; 4]) -> bool {
-    values.iter().all(|v| v.is_finite())
+#[cfg(test)]
+mod tests {
+    use super::{all_finite_within, valid_position_packet_len};
+
+    #[test]
+    fn versioned_motion_packet_requires_exact_length() {
+        assert!(valid_position_packet_len(0x12, 95));
+        assert!(!valid_position_packet_len(0x12, 94));
+        assert!(!valid_position_packet_len(0x12, 96));
+        assert!(valid_position_packet_len(0x10, 63));
+        assert!(valid_position_packet_len(0x11, 85));
+    }
+
+    #[test]
+    fn motion_values_reject_nonfinite_and_out_of_range_samples() {
+        assert!(all_finite_within(&[1.0, -2.0, 3.0], 10.0));
+        assert!(!all_finite_within(&[f32::NAN, 0.0, 0.0], 10.0));
+        assert!(!all_finite_within(&[f32::INFINITY, 0.0, 0.0], 10.0));
+        assert!(!all_finite_within(&[11.0, 0.0, 0.0], 10.0));
+    }
 }

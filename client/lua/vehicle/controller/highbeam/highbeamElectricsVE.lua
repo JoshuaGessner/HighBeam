@@ -124,6 +124,11 @@ function M.setActive(active, remote)
   M.onInit()
   isActive = active and true or false
   isRemote = remote and true or false
+  if isActive and not isRemote then
+    lastSentValues = {}
+    sendTimer = SEND_INTERVAL
+    fullResyncTimer = 0
+  end
 end
 
 function M.updateGFX(dt)
@@ -137,7 +142,7 @@ function M.updateGFX(dt)
   if sendTimer < SEND_INTERVAL then return end
   sendTimer = 0
 
-  local delta = {}
+  local snapshot = {}
   local changed = false
 
   for key, val in pairs(electrics.values) do
@@ -147,10 +152,10 @@ function M.updateGFX(dt)
         rounded = math.floor(val * ROUND_FACTOR + 0.5) / ROUND_FACTOR
       end
       if lastSentValues[key] ~= rounded then
-        delta[key] = rounded
         lastSentValues[key] = rounded
         changed = true
       end
+      snapshot[key] = rounded
     end
   end
 
@@ -158,7 +163,7 @@ function M.updateGFX(dt)
     obj:queueGameEngineLua(string.format(
       "extensions.highbeam.onVEElectrics(%d,%q)",
       gameVehicleId,
-      _jsonEncode(delta)
+      _jsonEncode(snapshot)
     ))
   end
 end

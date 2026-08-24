@@ -1,7 +1,7 @@
 local M = {}
 local logTag = "HighBeam.Protocol"
 
-M.VERSION = 2
+M.VERSION = 3
 
 -- NOTE: TCP packets are JSON-encoded by connection.lua today; there is no binary
 -- TCP codec. The previous encodeTcp/decodeTcp stubs always returned nil and were
@@ -39,7 +39,8 @@ local function valid_motion(pos, rot, vel, simTime, angVel)
   return angVel == nil or valid_array(angVel, 3, 1e4)
 end
 
--- Position update: type 0x10 (legacy) / 0x11 (extended with inputs)
+-- Position update: type 0x10 (legacy) / 0x11 (extended with inputs) /
+-- 0x12 (versioned motion stream with explicit epoch/sequence and steering lock)
 -- Legacy layout: [vid:u16] [pos:3xf32] [rot:4xf32] [vel:3xf32] [time:f32]
 -- Extended layout: [vid:u16] [pos:3xf32] [rot:4xf32] [vel:3xf32] [time:f32]
 --                  [steer:f16] [throttle:f16] [brake:f16] [gear:f16] [handbrake:f16]
@@ -67,6 +68,26 @@ local function f16_to_f32(u16)
   return i / 16384.0
 end
 
+-- Versioned steering retains the 450-degree reference convention. Locks such
+-- as 1080 degrees can therefore produce +/-2.4 at full input, so use a wider
+-- fixed-point range than the legacy input codec without changing packet size.
+local function steering_to_i16(val)
+  local numeric = tonumber(val) or 0
+  if numeric ~= numeric or numeric == math.huge or numeric == -math.huge then numeric = 0 end
+  local f = math.max(-8, math.min(8, numeric))
+  local i = math.floor(f * 4096 + 0.5)
+  if i < -32768 then i = -32768 end
+  if i > 32767 then i = 32767 end
+  if i < 0 then i = i + 65536 end
+  return i
+end
+
+local function i16_to_steering(u16)
+  local i = u16
+  if i >= 32768 then i = i - 65536 end
+  return i / 4096.0
+end
+
 local function write_u16_le(buf, offset, value)
   local v = math.floor(tonumber(value) or 0) % 65536
   buf[offset] = v % 256
@@ -77,6 +98,22 @@ local function read_u16_le(data, offset)
   local b1 = string.byte(data, offset + 1) or 0
   local b2 = string.byte(data, offset + 2) or 0
   return b1 + b2 * 256
+end
+
+local function write_u32_le(buf, offset, value)
+  local v = math.floor(tonumber(value) or 0) % 4294967296
+  buf[offset] = v % 256
+  buf[offset + 1] = math.floor(v / 256) % 256
+  buf[offset + 2] = math.floor(v / 65536) % 256
+  buf[offset + 3] = math.floor(v / 16777216) % 256
+end
+
+local function read_u32_le(data, offset)
+  local b1 = string.byte(data, offset + 1) or 0
+  local b2 = string.byte(data, offset + 2) or 0
+  local b3 = string.byte(data, offset + 3) or 0
+  local b4 = string.byte(data, offset + 4) or 0
+  return b1 + b2 * 256 + b3 * 65536 + b4 * 16777216
 end
 
 local function write_f32_le(buf, offset, value)
@@ -99,7 +136,8 @@ local function read_f32_le(data, offset)
   return tmp[0]
 end
 
-M.encodePositionUpdate = function(sessionHash, vehicleId, pos, rot, vel, simTime, inputs, angVel)
+M.encodePositionUpdate = function(sessionHash, vehicleId, pos, rot, vel, simTime, inputs, angVel,
+    motionEpoch, motionSequence, steeringLock)
   if type(sessionHash) ~= "string" or #sessionHash ~= 16 then
     log('E', logTag, 'encodePositionUpdate: invalid session hash (expected 16 bytes)')
     return nil
@@ -109,19 +147,22 @@ M.encodePositionUpdate = function(sessionHash, vehicleId, pos, rot, vel, simTime
     return nil
   end
 
+  local hasMotionVersion = motionEpoch ~= nil and motionSequence ~= nil
   local hasInputs = type(inputs) == "table"
     and (inputs.steer ~= nil or inputs.throttle ~= nil or inputs.brake ~= nil)
-  local typeByte = hasInputs and 0x11 or 0x10
+  local typeByte = hasMotionVersion and 0x12 or (hasInputs and 0x11 or 0x10)
 
   -- Secondary #1: Quaternion normalization removed from encode path.
   -- Normalize once at decode time only to avoid accumulated float error.
 
   local hasAngVel = type(angVel) == "table" and (angVel[1] ~= nil or angVel[2] ~= nil or angVel[3] ~= nil)
   local expectedSize = 63
-  if hasInputs then
+  if hasMotionVersion then
+    expectedSize = 95 -- base + epoch/sequence + steering lock + five inputs + angular velocity
+  elseif hasInputs then
     expectedSize = expectedSize + 10 -- steer/throttle/brake/gear/handbrake
   end
-  if hasAngVel then
+  if hasAngVel and not hasMotionVersion then
     expectedSize = expectedSize + 12 -- 3xf32
   end
   local buf = ffi.new("uint8_t[?]", expectedSize)
@@ -147,15 +188,23 @@ M.encodePositionUpdate = function(sessionHash, vehicleId, pos, rot, vel, simTime
 
   write_f32_le(buf, o, simTime); o = o + 4
 
-  if hasInputs then
-    write_u16_le(buf, o, f32_to_f16(inputs.steer or 0)); o = o + 2
+  if hasMotionVersion then
+    write_u32_le(buf, o, motionEpoch); o = o + 4
+    write_u32_le(buf, o, motionSequence); o = o + 4
+    write_u16_le(buf, o, math.max(1, math.min(4096, math.floor(tonumber(steeringLock) or 450)))); o = o + 2
+  end
+
+  if hasInputs or hasMotionVersion then
+    inputs = inputs or {}
+    write_u16_le(buf, o, hasMotionVersion and steering_to_i16(inputs.steer or 0)
+      or f32_to_f16(inputs.steer or 0)); o = o + 2
     write_u16_le(buf, o, f32_to_f16(inputs.throttle or 0)); o = o + 2
     write_u16_le(buf, o, f32_to_f16(inputs.brake or 0)); o = o + 2
     write_u16_le(buf, o, f32_to_f16(inputs.gear or 0)); o = o + 2
     write_u16_le(buf, o, f32_to_f16(inputs.handbrake or 0)); o = o + 2
   end
 
-  if hasAngVel then
+  if hasAngVel or hasMotionVersion then
     write_f32_le(buf, o, angVel and angVel[1]); o = o + 4
     write_f32_le(buf, o, angVel and angVel[2]); o = o + 4
     write_f32_le(buf, o, angVel and angVel[3]); o = o + 4
@@ -176,6 +225,7 @@ end
 -- Type 0x10 -> 65 bytes total (legacy)
 -- Type 0x11 -> 71 bytes minimum (legacy extended with 3 inputs),
 --              75 bytes with gear/handbrake, optionally 87 with angular velocity
+-- Type 0x12 -> 97 bytes exactly (epoch, sequence, steering lock, inputs, angular velocity)
 M.decodePositionUpdate = function(data)
   if #data < 65 then return nil end
   local typeByte = string.byte(data, 17)
@@ -211,6 +261,16 @@ M.decodePositionUpdate = function(data)
     time = simTime,
   }
 
+  if typeByte == 0x12 then
+    if #data ~= 97 then return nil end
+    result.motionEpoch = read_u32_le(data, o); o = o + 4
+    result.motionSequence = read_u32_le(data, o); o = o + 4
+    result.steeringLock = read_u16_le(data, o); o = o + 2
+    if result.motionEpoch <= 0 or result.steeringLock < 1 or result.steeringLock > 4096 then
+      return nil
+    end
+  end
+
   -- P1.1: Normalize decoded quaternion to prevent drift from float imprecision
   local rlen = math.sqrt(r1*r1 + r2*r2 + r3*r3 + r4*r4)
   if rlen > 0.0001 and math.abs(rlen - 1.0) > 0.0001 then
@@ -228,7 +288,7 @@ M.decodePositionUpdate = function(data)
   end
 
   -- Decode inputs if present.
-  if typeByte == 0x11 and #data >= 71 then
+  if (typeByte == 0x11 and #data >= 71) or typeByte == 0x12 then
     local iSteer = read_u16_le(data, o); o = o + 2
     local iThrottle = read_u16_le(data, o); o = o + 2
     local iBrake = read_u16_le(data, o); o = o + 2
@@ -239,15 +299,17 @@ M.decodePositionUpdate = function(data)
       iHandbrake = read_u16_le(data, o); o = o + 2
     end
     result.inputs = {
-      steer = f16_to_f32(iSteer),
+      steer = typeByte == 0x12 and i16_to_steering(iSteer) or f16_to_f32(iSteer),
       throttle = f16_to_f32(iThrottle),
       brake = f16_to_f32(iBrake),
       gear = f16_to_f32(iGear),
       handbrake = f16_to_f32(iHandbrake),
     }
 
-    if not valid_array({ result.inputs.steer, result.inputs.throttle, result.inputs.brake,
-        result.inputs.gear, result.inputs.handbrake }, 5, 4) then
+    local steerLimit = typeByte == 0x12 and 8 or 4
+    if not is_finite(result.inputs.steer, steerLimit)
+      or not valid_array({ result.inputs.throttle, result.inputs.brake,
+        result.inputs.gear, result.inputs.handbrake }, 4, 4) then
       return nil
     end
 
