@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-08-24
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.2-dev.53 (protocol v3)
+> **Current version:** v0.8.2-dev.54 (protocol v3)
 > **Status:** v0.8.1 released | v0.8.2 in development
 
 ---
@@ -1202,6 +1202,33 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.2-dev.54 - 2026-08-24 (draft)
+- **BeamNG 0.39 lifecycle compatibility.** Startup now accepts the supported
+  0.39.x line explicitly and refuses known unsupported game versions. Connected
+  sessions temporarily suppress BeamNG's repeated-instability auto-removal and
+  restore the exact prior callback on disconnect/unload. If BeamNG still
+  destroys a remote puppet, HighBeam retains authoritative component state and
+  enters the existing bounded respawn path instead of leaving a stale object ID.
+- **Walking and mission cleanup.** The 0.39 `getCurrentUnicycle()` API is used
+  with the older getter as fallback; abandoned local unicycles are removed when
+  switching back into a vehicle, while remote ownership is preserved. Mission
+  teardown disconnects stale sessions but keeps deliberate server map changes
+  alive, and menu registration retries on the 0.39 world-ready lifecycle hook.
+- **Transbrake and hydraulic cylinders.** Transbrake on/off state is captured
+  and applied through the safe controller setter. Hydraulic beam tags are
+  discovered from `v.data.powertrainHydros`, complete rest-length targets are
+  validated and coalesced with powertrain state, and receivers use bounded
+  `obj:actuateBeam` correction rather than node/beam teleportation.
+- **Late join and diagnostics.** The server retains complete electrics and
+  powertrain snapshots for world-state joins and puppet recovery. The in-game
+  mod reports readiness to the launcher, and optional deform-group observations
+  are emitted in verbose diagnostics to audit 0.39 damage behavior without
+  guessing at undocumented mutation APIs.
+- Added focused transbrake, hydraulic actuation, validation, packet round-trip,
+  and late-join persistence coverage. Server and launcher versions bumped to
+  `0.8.2-dev.54`; protocol remains `v3` because the existing optional JSON
+  component/world-state envelopes remain backward compatible.
 
 ### v0.8.2-dev.53 - 2026-08-24 (draft)
 - **Deterministic motion lifetimes (protocol v3).** The canonical UDP `0x12`
