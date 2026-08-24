@@ -35,6 +35,9 @@ local _veSampleTime = {}   -- [gameVehicleId] = vehicle-local motion timer
 local _veSampleDelta = {}  -- [gameVehicleId] = exact vehicle-side sample delta
 local _veDataReady = {}    -- [gameVehicleId] = true if VE callback is active
 local _veLastDataAt = {}   -- [gameVehicleId] = os.clock timestamp
+local _motionEpoch = {}    -- [gameVehicleId] = explicit controller lifetime (u32, non-zero)
+local _motionSequence = {} -- [gameVehicleId] = monotonic pose sequence within epoch
+local _motionEpochChangedAt = {}
 local _veQueueAgeAccum = 0
 local _veQueueAgeSamples = 0
 M._cachedInputs = {}  -- [gameVehicleId] = {steer, throttle, brake} from vlua callback
@@ -137,6 +140,9 @@ local function _clearLocalVehicleState(gameVid, keepMapping)
   _veSampleDelta[gameVid] = nil
   _veDataReady[gameVid] = nil
   _veLastDataAt[gameVid] = nil
+  _motionEpoch[gameVid] = nil
+  _motionSequence[gameVid] = nil
+  _motionEpochChangedAt[gameVid] = nil
   M._cachedInputs[gameVid] = nil
   M._cachedVluaRot[gameVid] = nil
   M._cachedVluaRotTime[gameVid] = nil
@@ -398,6 +404,15 @@ local function _sendLocalVehiclePoses(now)
 
       local sampleTime = _veSampleTime[gameVid]
       local sampleDelta = _veSampleDelta[gameVid] or 0
+      if not _motionEpoch[gameVid] then
+        M.beginMotionEpoch(gameVid, "lazy_pose_init")
+      end
+      if (_motionSequence[gameVid] or 0) >= 4294967295 then
+        M.beginMotionEpoch(gameVid, "sequence_wrap")
+      end
+      local motionEpoch = _motionEpoch[gameVid]
+      local motionSequence = (_motionSequence[gameVid] or 0) + 1
+      _motionSequence[gameVid] = motionSequence
 
       -- Capture input state for input-augmented extrapolation
       -- NOTE: electrics are in vlua context, so we read from cached data
@@ -412,6 +427,7 @@ local function _sendLocalVehiclePoses(now)
         gear = tonumber(cachedInputs.gear) or 0,
         handbrake = tonumber(cachedInputs.handbrake) or 0,
       } or nil
+      local steeringLock = cachedInputs and (tonumber(cachedInputs.steeringLock) or 450) or 450
       local angVel = M._cachedAngVel and M._cachedAngVel[gameVid] or nil
 
       -- Poses are sent unconditionally at the (adaptive) tick rate — no delta
@@ -419,6 +435,9 @@ local function _sendLocalVehiclePoses(now)
       -- a steady stream; suppressing "unchanged" poses starves it and stalls
       -- corrections (BeamMP likewise streams poses at a fixed 50 Hz).
       if udpAvailable then
+        local serverProtocol = connection.getServerProtocolVersion
+          and connection.getServerProtocolVersion() or 3
+        local useVersionedMotion = serverProtocol >= 3
         local okEncode, dataOrErr = pcall(
           protocol.encodePositionUpdate,
           sessionHash,
@@ -428,7 +447,10 @@ local function _sendLocalVehiclePoses(now)
           velArr,
           sampleTime,
           inputs,
-          angVel
+          angVel,
+          useVersionedMotion and motionEpoch or nil,
+          useVersionedMotion and motionSequence or nil,
+          useVersionedMotion and steeringLock or nil
         )
 
         if not okEncode then
@@ -485,6 +507,9 @@ local function _sendLocalVehiclePoses(now)
             sampleDelta = sampleDelta,
             inputs = inputs,
             angVel = angVel,
+            motionEpoch = motionEpoch,
+            motionSequence = motionSequence,
+            steeringLock = steeringLock,
           })
 
           local sent = poseData and connection._sendPacket({
@@ -937,7 +962,7 @@ M._pollInputsAndRotation = function(gameVid)
       .. 'local ga = e.gear_A or 0 '
       .. 'local hb = (e.parkingbrake and e.parkingbrake > 0.5) and 1 or 0 '
       .. 'local r = quatFromDir(-vec3(obj:getDirectionVector()), vec3(obj:getDirectionVectorUp())) '
-      .. 'obj:queueGameEngineLua("extensions.highbeam.onInputsAndRotationReport(' .. gameVid .. '," .. st .. "," .. th .. "," .. br .. "," .. ga .. "," .. hb .. "," .. r.x .. "," .. r.y .. "," .. r.z .. "," .. r.w .. ")")'
+      .. 'obj:queueGameEngineLua("extensions.highbeam.onInputsAndRotationReport(' .. gameVid .. '," .. st .. "," .. th .. "," .. br .. "," .. ga .. "," .. hb .. "," .. lock .. "," .. r.x .. "," .. r.y .. "," .. r.z .. "," .. r.w .. ")")'
     )
   end)
   _pollLuaCommandCount = _pollLuaCommandCount + 1
@@ -949,14 +974,15 @@ end
 M._pollInputs = M._pollInputsAndRotation
 
 -- Called back from vehicle-side Lua with input values
-M.onInputsReport = function(gameVid, steer, throttle, brake, gear, handbrake)
-  M._cachedInputs[gameVid] = {
-    steer = steer or 0,
-    throttle = throttle or 0,
-    brake = brake or 0,
-    gear = gear or 0,
-    handbrake = handbrake or 0,
-  }
+M.onInputsReport = function(gameVid, steer, throttle, brake, gear, handbrake, steeringLock)
+  local cached = M._cachedInputs[gameVid] or {}
+  cached.steer = steer or 0
+  cached.throttle = throttle or 0
+  cached.brake = brake or 0
+  cached.gear = gear or 0
+  cached.handbrake = handbrake or 0
+  cached.steeringLock = steeringLock or 450
+  M._cachedInputs[gameVid] = cached
 end
 
 -- ── Vlua rotation polling ───────────────────────────────────────────
@@ -967,8 +993,8 @@ M._pollVluaRotation = function(gameVid)
   M._pollInputsAndRotation(gameVid)
 end
 
-M.onInputsAndRotationReport = function(gameVid, steer, throttle, brake, gear, handbrake, rx, ry, rz, rw)
-  M.onInputsReport(gameVid, steer, throttle, brake, gear, handbrake)
+M.onInputsAndRotationReport = function(gameVid, steer, throttle, brake, gear, handbrake, steeringLock, rx, ry, rz, rw)
+  M.onInputsReport(gameVid, steer, throttle, brake, gear, handbrake, steeringLock)
   M.onVluaRotationReport(gameVid, rx, ry, rz, rw)
 end
 
@@ -997,9 +1023,10 @@ M.onVluaRotationReport = function(gameVid, rx, ry, rz, rw)
 end
 
 M.onVEData = function(gameVid, px, py, pz, rx, ry, rz, rw, vx, vy, vz, avx, avy, avz,
-    steer, throttle, brake, gear, handbrake, sampleTime, sampleDelta)
+    steer, throttle, brake, gear, handbrake, steeringLock, sampleTime, sampleDelta)
   local geReceivedAt = os.clock()
   local numericGameVid = tonumber(gameVid) or 0
+  gameVid = numericGameVid
   if not (_isFinite(tonumber(px), 1e7) and _isFinite(tonumber(py), 1e7) and _isFinite(tonumber(pz), 1e7)
     and _isFinite(tonumber(rx), 4) and _isFinite(tonumber(ry), 4) and _isFinite(tonumber(rz), 4) and _isFinite(tonumber(rw), 4)
     and _isFinite(tonumber(vx), 1e5) and _isFinite(tonumber(vy), 1e5) and _isFinite(tonumber(vz), 1e5)
@@ -1029,13 +1056,14 @@ M.onVEData = function(gameVid, px, py, pz, rx, ry, rz, rw, vx, vy, vz, avx, avy,
   _veDataReady[gameVid] = true
   _veLastDataAt[gameVid] = geReceivedAt
 
-  M._cachedInputs[gameVid] = {
-    steer = tonumber(steer) or 0,
-    throttle = tonumber(throttle) or 0,
-    brake = tonumber(brake) or 0,
-    gear = tonumber(gear) or 0,
-    handbrake = tonumber(handbrake) or 0,
-  }
+  local cachedInputs = M._cachedInputs[gameVid] or {}
+  cachedInputs.steer = tonumber(steer) or 0
+  cachedInputs.throttle = tonumber(throttle) or 0
+  cachedInputs.brake = tonumber(brake) or 0
+  cachedInputs.gear = tonumber(gear) or 0
+  cachedInputs.handbrake = tonumber(handbrake) or 0
+  cachedInputs.steeringLock = math.max(1, math.min(4096, tonumber(steeringLock) or 450))
+  M._cachedInputs[gameVid] = cachedInputs
 
   M._cachedVluaRot[gameVid] = {
     x = tonumber(rx) or 0,
@@ -1049,6 +1077,28 @@ M.onVEData = function(gameVid, px, py, pz, rx, ry, rz, rw, vx, vy, vz, avx, avy,
     tonumber(avy) or 0,
     tonumber(avz) or 0,
   }
+end
+
+-- Begin a new authoritative motion lifetime. This is called from the VLua
+-- controller-init callback so a controller reload/reset cannot be confused
+-- with packet reordering from the previous lifetime.
+M.beginMotionEpoch = function(gameVid, reason, debounceSec)
+  gameVid = tonumber(gameVid) or gameVid
+  local now = os.clock()
+  local debounce = math.max(0, tonumber(debounceSec) or 0)
+  if debounce > 0 and _motionEpoch[gameVid] and _motionEpochChangedAt[gameVid]
+    and (now - _motionEpochChangedAt[gameVid]) < debounce then
+    return _motionEpoch[gameVid]
+  end
+  local nextEpoch = ((_motionEpoch[gameVid] or 0) + 1) % 4294967296
+  if nextEpoch == 0 then nextEpoch = 1 end
+  _motionEpoch[gameVid] = nextEpoch
+  _motionSequence[gameVid] = 0
+  _motionEpochChangedAt[gameVid] = now
+  _veDataReady[gameVid] = false
+  log('I', logTag, 'Motion epoch started gameVid=' .. tostring(gameVid)
+    .. ' epoch=' .. tostring(nextEpoch) .. ' reason=' .. tostring(reason or 'controller_init'))
+  return nextEpoch
 end
 
 M.onLocalVEReady = function(gameVid, ready, missingCsv)
@@ -1069,6 +1119,10 @@ M.getLocalMotionTime = function(gameVid)
   return _veSampleTime[gameVid] or 0
 end
 
+M.getLocalMotionEpoch = function(gameVid)
+  return _motionEpoch[gameVid]
+end
+
 local function _parseInputDeltaStr(deltaStr)
   local out = {}
   if type(deltaStr) ~= "string" or deltaStr == "" then
@@ -1077,7 +1131,7 @@ local function _parseInputDeltaStr(deltaStr)
   for part in string.gmatch(deltaStr, "[^,]+") do
     local key, val = string.match(part, "^([%a]+)=([^,]+)$")
     if key and val then
-      out[key] = (key == "g" and tonumber(val) == nil) and val or (tonumber(val) or 0)
+      out[key] = ((key == "g" or key == "k") and tonumber(val) == nil) and val or (tonumber(val) or 0)
     end
   end
   return out
@@ -1087,25 +1141,43 @@ M.onVEInputs = function(gameVid, deltaStr)
   if not connection or connection.getState() ~= connection.STATE_CONNECTED then return end
   local serverVid = M.localVehicles[gameVid]
   if not serverVid then return end
+  local delta = _parseInputDeltaStr(deltaStr)
+  local cached = M._cachedInputs[gameVid] or {
+    steer = 0, throttle = 0, brake = 0, gear = 0, handbrake = 0,
+    clutch = 0, steeringLock = 450, gearSchema = "unknown"
+  }
+  if delta.s ~= nil then cached.steer = delta.s end
+  if delta.t ~= nil then cached.throttle = delta.t end
+  if delta.b ~= nil then cached.brake = delta.b end
+  if delta.g ~= nil then cached.gear = delta.g end
+  if delta.p ~= nil then cached.handbrake = delta.p end
+  if delta.c ~= nil then cached.clutch = delta.c end
+  if delta.l ~= nil then cached.steeringLock = math.max(1, math.min(4096, delta.l)) end
+  if delta.k ~= nil then cached.gearSchema = tostring(delta.k) end
+  M._cachedInputs[gameVid] = cached
+
+  -- Send a complete desired state, not an edge-triggered delta. Replaceable
+  -- queue coalescing is then lossless even under prolonged TCP backpressure.
+  local fullState = table.concat({
+    "l=" .. tostring(math.floor((tonumber(cached.steeringLock) or 450) + 0.5)),
+    "s=" .. tostring(tonumber(cached.steer) or 0),
+    "t=" .. tostring(tonumber(cached.throttle) or 0),
+    "b=" .. tostring(tonumber(cached.brake) or 0),
+    "p=" .. tostring(tonumber(cached.handbrake) or 0),
+    "c=" .. tostring(tonumber(cached.clutch) or 0),
+    "k=" .. tostring(cached.gearSchema or "unknown"),
+    "g=" .. tostring(cached.gear or 0),
+  }, ",")
   local sent = connection._sendPacket({
     type = "vehicle_inputs",
     vehicle_id = serverVid,
-    data = tostring(deltaStr or ""),
+    data = fullState,
   })
   if sent then
     _componentTxStats.inputs_sent = _componentTxStats.inputs_sent + 1
   else
     _componentTxStats.inputs_send_failed = _componentTxStats.inputs_send_failed + 1
   end
-
-  local delta = _parseInputDeltaStr(deltaStr)
-  local cached = M._cachedInputs[gameVid] or { steer = 0, throttle = 0, brake = 0, gear = 0, handbrake = 0 }
-  if delta.s ~= nil then cached.steer = delta.s end
-  if delta.t ~= nil then cached.throttle = delta.t end
-  if delta.b ~= nil then cached.brake = delta.b end
-  if delta.g ~= nil then cached.gear = delta.g end
-  if delta.p ~= nil then cached.handbrake = delta.p end
-  M._cachedInputs[gameVid] = cached
 end
 
 M.onVEElectrics = function(gameVid, jsonStr)
@@ -1214,6 +1286,11 @@ M.onLocalVehicleSpawned = function(serverVehicleId, configData, spawnRequestId)
     _clearLocalVehicleState(gameVid, false)
     M.localVehicles[gameVid] = serverVehicleId
     log('I', logTag, 'Local vehicle mapped: game=' .. tostring(gameVid) .. ' server=' .. tostring(serverVehicleId) .. ' reqId=' .. tostring(spawnRequestId))
+    M._damageDirty[gameVid] = true
+    local hb = extensions and extensions.highbeam
+    if hb and hb.ensureLocalVE then
+      hb.ensureLocalVE(gameVid, "server_mapping_ready")
+    end
   else
     -- Confirmation arrived after our pending request timed out (phantom).
     -- Tell the server to delete this orphaned vehicle immediately.
@@ -1410,6 +1487,9 @@ M.onDisconnect = function()
   _veVel = {}
   _veDataReady = {}
   _veLastDataAt = {}
+  _motionEpoch = {}
+  _motionSequence = {}
+  _motionEpochChangedAt = {}
   _localVeRecovery = {}
   M._cachedInputs = {}
   M._cachedVluaRot = {}

@@ -159,6 +159,15 @@ function M.setActive(active, remote)
     _applyBlockedCount = 0
     _applySuccessCount = 0
     pendingRemoteState = _copyState(desiredRemoteState)
+  elseif isActive then
+    -- Registration/recovery is a complete-state boundary for a local sender.
+    trackedDevices = {}
+    trackedEngines = {}
+    lastIgnitionCoef = -1
+    lastStarterCoef = -1
+    lastIsStalled = -1
+    lastIgnitionLevel = -1
+    resyncTimer = RESYNC_INTERVAL
   end
 end
 
@@ -271,10 +280,29 @@ function M.updateGFX(dt)
   end
 
   if changed and obj and obj.queueGameEngineLua then
+    -- Emit a complete desired state so queued powertrain updates may safely
+    -- supersede one another during backpressure.
+    local snapshot = {
+      ignCoef = lastIgnitionCoef,
+      starterCoef = lastStarterCoef,
+      stalled = lastIsStalled,
+      ignLevel = lastIgnitionLevel,
+      engines = {},
+    }
+    for name, mode in pairs(trackedDevices) do
+      snapshot["dev_" .. tostring(name)] = mode
+    end
+    for name, engineState in pairs(trackedEngines) do
+      snapshot.engines[name] = {
+        ignCoef = engineState.ignCoef,
+        starterCoef = engineState.starterCoef,
+        stalled = engineState.stalled,
+      }
+    end
     obj:queueGameEngineLua(string.format(
       "extensions.highbeam.onVEPowertrain(%d,%q)",
       gameVehicleId,
-      _jsonEncode(delta)
+      _jsonEncode(snapshot)
     ))
   end
 end

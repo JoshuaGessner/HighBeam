@@ -433,6 +433,9 @@ where
     }
 
     tracing::info!(player_id, name = %username, "Player ready");
+    let replaceable_outbox = sessions
+        .replaceable_outbox(player_id)
+        .context("Player replaceable outbox missing after authentication")?;
 
     // 9. Send WorldState snapshot to the new player
     let world_snapshot = TcpPacket::WorldState {
@@ -461,10 +464,34 @@ where
     // Spawn a task to forward outbound packets from the channel to the TCP stream
     let write_task = tokio::spawn(async move {
         let mut write_half = write_half;
-        while let Some(packet) = tcp_rx.recv().await {
-            if let Err(e) = write_packet_to(&mut write_half, &packet).await {
-                tracing::warn!(player_id, "Write error: {e}");
+        loop {
+            // Preserve channel order first (including lifecycle barriers), then
+            // flush one latest snapshot per coalesced component.
+            while let Ok(packet) = tcp_rx.try_recv() {
+                if let Err(e) = write_packet_to(&mut write_half, &packet).await {
+                    tracing::warn!(player_id, "Write error: {e}");
+                    return;
+                }
+            }
+            for packet in replaceable_outbox.drain() {
+                if let Err(e) = write_packet_to(&mut write_half, &packet).await {
+                    tracing::warn!(player_id, "Write error: {e}");
+                    return;
+                }
+            }
+            if tcp_rx.is_closed() && replaceable_outbox.len() == 0 {
                 break;
+            }
+            tokio::select! {
+                packet = tcp_rx.recv() => {
+                    if let Some(packet) = packet {
+                        if let Err(e) = write_packet_to(&mut write_half, &packet).await {
+                            tracing::warn!(player_id, "Write error: {e}");
+                            break;
+                        }
+                    }
+                }
+                _ = replaceable_outbox.notified() => {}
             }
         }
     });
@@ -606,6 +633,7 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
             anyhow::bail!("Session removed while connection was active");
         }
         if component_diag_last.elapsed() >= component_diag_interval {
+            let outbound = sessions.outbound_delivery_stats();
             tracing::info!(
                 player_id,
                 component_rx = diag_component_rx,
@@ -620,6 +648,16 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                 coupling_rx = diag_coupling_rx,
                 world_vehicle_count = world.vehicle_count(),
                 player_vehicle_count = world.vehicle_count_for_player(player_id),
+                outbound_queue_depth = outbound.outbound_queue_depth,
+                outbound_queue_high_water = outbound.outbound_queue_high_water,
+                reliable_enqueued = outbound.reliable_enqueued,
+                reliable_timeouts = outbound.reliable_timed_out,
+                reliable_closed = outbound.reliable_closed,
+                reliable_disconnected = outbound.reliable_disconnected,
+                best_effort_enqueued = outbound.best_effort_enqueued,
+                best_effort_coalesced = outbound.best_effort_coalesced,
+                best_effort_replaced = outbound.best_effort_replaced,
+                best_effort_dropped = outbound.best_effort_dropped,
                 "TCP component diagnostics"
             );
             component_diag_last = Instant::now();
@@ -842,9 +880,9 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                     tracing::warn!(player_id, vehicle_id, error = %e, "VehicleReset: invalid vehicle ID");
                     continue;
                 }
-                if let Err(e) = crate::validation::validate_vehicle_config_size(&data) {
+                if let Err(e) = crate::validation::validate_vehicle_reset(&data) {
                     diag_component_reject_validation += 1;
-                    tracing::warn!(player_id, error = %e, "VehicleReset: invalid config");
+                    tracing::warn!(player_id, error = %e, "VehicleReset: invalid payload");
                     continue;
                 }
 
@@ -952,7 +990,7 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                     tracing::warn!(player_id, vehicle_id, error = %e, "VehicleElectrics: invalid vehicle ID");
                     continue;
                 }
-                if let Err(e) = crate::validation::validate_vehicle_config_size(&data) {
+                if let Err(e) = crate::validation::validate_vehicle_electrics(&data) {
                     diag_component_reject_validation += 1;
                     tracing::warn!(player_id, error = %e, "VehicleElectrics: invalid payload");
                     continue;
@@ -995,7 +1033,7 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                     tracing::warn!(player_id, vehicle_id, error = %e, "VehicleInputs: invalid vehicle ID");
                     continue;
                 }
-                if let Err(e) = crate::validation::validate_vehicle_config_size(&data) {
+                if let Err(e) = crate::validation::validate_vehicle_inputs(&data) {
                     diag_component_reject_validation += 1;
                     tracing::warn!(player_id, error = %e, "VehicleInputs: invalid payload");
                     continue;
@@ -1031,7 +1069,7 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                     tracing::warn!(player_id, vehicle_id, error = %e, "VehiclePowertrain: invalid vehicle ID");
                     continue;
                 }
-                if let Err(e) = crate::validation::validate_vehicle_config_size(&data) {
+                if let Err(e) = crate::validation::validate_vehicle_powertrain(&data) {
                     diag_component_reject_validation += 1;
                     tracing::warn!(player_id, error = %e, "VehiclePowertrain: invalid payload");
                     continue;
@@ -1068,52 +1106,39 @@ async fn receive_loop<R: AsyncReadExt + Unpin>(
                     tracing::warn!(player_id, vehicle_id, error = %e, "VehiclePose: invalid vehicle ID");
                     continue;
                 }
-                if let Err(e) = crate::validation::validate_vehicle_config_size(&data) {
-                    diag_component_reject_validation += 1;
-                    tracing::warn!(player_id, error = %e, "VehiclePose: invalid payload");
-                    continue;
-                }
+                let pose = match crate::validation::validate_vehicle_pose(&data) {
+                    Ok(pose) => pose,
+                    Err(e) => {
+                        diag_component_reject_validation += 1;
+                        tracing::warn!(player_id, error = %e, "VehiclePose: invalid payload");
+                        continue;
+                    }
+                };
 
                 if world.is_owner(player_id, vehicle_id) {
-                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&data) {
-                        let pos_arr = val.get("pos").and_then(|v| v.as_array());
-                        let rot_arr = val.get("rot").and_then(|v| v.as_array());
-                        let vel_arr = val.get("vel").and_then(|v| v.as_array());
-                        if let (Some(pos), Some(rot), Some(vel)) = (pos_arr, rot_arr, vel_arr) {
-                            if pos.len() >= 3 && rot.len() >= 4 && vel.len() >= 3 {
-                                if let (
-                                    Some(px),
-                                    Some(py),
-                                    Some(pz),
-                                    Some(rx),
-                                    Some(ry),
-                                    Some(rz),
-                                    Some(rw),
-                                    Some(vx),
-                                    Some(vy),
-                                    Some(vz),
-                                ) = (
-                                    pos[0].as_f64(),
-                                    pos[1].as_f64(),
-                                    pos[2].as_f64(),
-                                    rot[0].as_f64(),
-                                    rot[1].as_f64(),
-                                    rot[2].as_f64(),
-                                    rot[3].as_f64(),
-                                    vel[0].as_f64(),
-                                    vel[1].as_f64(),
-                                    vel[2].as_f64(),
-                                ) {
-                                    world.update_position(
-                                        player_id,
-                                        vehicle_id,
-                                        [px as f32, py as f32, pz as f32],
-                                        [rx as f32, ry as f32, rz as f32, rw as f32],
-                                        [vx as f32, vy as f32, vz as f32],
-                                    );
-                                }
-                            }
+                    let accepted = match (pose.motion_epoch, pose.motion_sequence) {
+                        (Some(epoch), Some(sequence)) => world.update_position_ordered(
+                            player_id,
+                            vehicle_id,
+                            pose.position,
+                            pose.rotation,
+                            pose.velocity,
+                            (epoch as u32, sequence as u32),
+                        ),
+                        _ => {
+                            world.update_position(
+                                player_id,
+                                vehicle_id,
+                                pose.position,
+                                pose.rotation,
+                                pose.velocity,
+                            );
+                            true
                         }
+                    };
+                    if !accepted {
+                        tracing::debug!(player_id, vehicle_id, "Dropped stale TCP fallback pose");
+                        continue;
                     }
 
                     sessions.broadcast_best_effort(

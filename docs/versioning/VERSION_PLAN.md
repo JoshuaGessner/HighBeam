@@ -1,8 +1,8 @@
 # HighBeam Version Plan
 
-> **Last updated:** 2026-08-23
+> **Last updated:** 2026-08-24
 > **Versioning scheme:** [Semantic Versioning 2.0.0](https://semver.org/)
-> **Current version:** v0.8.2-dev.52 (protocol v2)
+> **Current version:** v0.8.2-dev.53 (protocol v3)
 > **Status:** v0.8.1 released | v0.8.2 in development
 
 ---
@@ -47,7 +47,7 @@ The network protocol has its own integer version (independent of SemVer). Protoc
 
 The server and client negotiate protocol version during the handshake. Mismatches result in a clean disconnect with an error message.
 
-**Current protocol version:** 2 (bumped from 1 when PingPong heartbeat was added)
+**Current protocol version:** 3 (explicit motion epochs, sequences, and steering-lock metadata)
 
 ---
 
@@ -1202,6 +1202,36 @@ Ideas for future development (not committed):
 ---
 
 ## Recent Release Notes
+
+### v0.8.2-dev.53 - 2026-08-24 (draft)
+- **Deterministic motion lifetimes (protocol v3).** The canonical UDP `0x12`
+  stream carries a non-zero controller epoch, monotonic sequence, sender
+  steering lock, complete compact inputs, and angular velocity. Receivers
+  reject duplicate/stale packets and atomically clear motion smoothers on epoch
+  changes; repair/reset and controller reloads create ordering barriers. Legacy
+  timer-jump recovery and v1/v2 pose encoding remain available for compatibility.
+- **Backpressure is latest-state, not lost-state.** Client and server TCP paths
+  coalesce replaceable pose/input/electrics/powertrain snapshots per vehicle and
+  component. Reset/edit/delete clear superseded queued component state, while
+  critical lifecycle and damage delivery retains bounded reliable fanout.
+  Queue depth/high-water, coalesces, saturation, timeouts, and quarantined-peer
+  counts are exposed in diagnostics.
+- **Unified inputs and explicit gearbox schemas.** TCP and UDP share the same
+  450-degree steering reference and carry sender steering-lock metadata, with
+  codec coverage through 1080° full lock. Inputs are complete desired snapshots,
+  smoothed every update, retained across reset, and source permissions restore
+  cleanly. Manual, sequential, automatic/DCT, CVT, and electric gearbox schemas
+  are advertised and validated while automatic modes such as P/R/N/D/M2 remain
+  strings.
+- **Typed component trust boundaries.** TCP fallback poses, inputs, electrics,
+  powertrain device/engine maps, and existing damage envelopes are parsed and
+  range-checked before world mutation or relay. Exact v3 UDP lengths and finite
+  values remain mandatory.
+- Added focused regression coverage for epoch/sequence ordering and wrap,
+  reset barriers, client/server coalescing, 450°/900°/1080° steering, gearbox
+  schemas, exact `0x12` encode/relay/decode, multi-engine state, and malformed
+  component rejection. Server and launcher versions bumped to
+  `0.8.2-dev.53`; protocol is now `v3`.
 
 ### v0.8.2-dev.52 - 2026-08-23 (draft)
 - **Reliable lifecycle and damage ordering.** Critical spawn/edit/delete/reset,

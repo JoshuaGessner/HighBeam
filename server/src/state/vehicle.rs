@@ -10,6 +10,8 @@ pub struct Vehicle {
     pub position: [f32; 3],
     pub rotation: [f32; 4],
     pub velocity: [f32; 3],
+    pub motion_epoch: Option<u32>,
+    pub motion_sequence: u32,
     /// Latest authoritative full damage snapshot from the owner.
     pub damage: Option<String>,
     pub damage_epoch: u64,

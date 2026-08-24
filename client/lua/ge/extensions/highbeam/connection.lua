@@ -50,6 +50,7 @@ M._players = {}  -- player_id -> { name = "..." }
 M._serverEventHandlers = {}  -- event_name -> callback(payload)
 M._serverMap = nil  -- map path from ServerHello
 M._serverMaxCars = nil
+M._serverProtocolVersion = nil
 
 -- Error tracking for diagnostics (Phase 2.4)
 M._errorCount = 0
@@ -78,6 +79,10 @@ M._udpUnexpectedLogCount = 0 -- capped detailed logs for unexpected UDP packets
 M._componentRxStats = {}
 M._tcpRxTypeCounts = {}
 M._tcpTxTypeCounts = {}
+M._tcpCoalescedCount = 0
+M._tcpQueueFullCount = 0
+M._tcpQueueDisconnectCount = 0
+M._tcpQueueHighWaterBytes = 0
 M._diagTimer = 0
 M._diagIntervalSec = 5.0
 
@@ -132,17 +137,64 @@ M.isUdpHealthy = function(now)
   return age >= 0 and age <= UDP_HEALTH_TIMEOUT
 end
 
+M.getServerProtocolVersion = function()
+  return M._serverProtocolVersion
+end
+
 local function _clearTcpSendQueue()
   tcpSendQueue = {}
   tcpSendOffset = 1
   tcpSendQueuedBytes = 0
 end
 
+local REPLACEABLE_TCP_TYPES = {
+  vehicle_pose = true,
+  vehicle_inputs = true,
+  vehicle_electrics = true,
+  vehicle_powertrain = true,
+}
+
+local QUEUE_BARRIER_TYPES = {
+  vehicle_reset = true,
+  vehicle_edit = true,
+  vehicle_delete = true,
+}
+
+local CRITICAL_TCP_TYPES = {
+  vehicle_spawn = true,
+  vehicle_delete = true,
+  vehicle_edit = true,
+  vehicle_reset = true,
+  vehicle_damage = true,
+  vehicle_coupling = true,
+}
+
+local function _replaceableKey(packet)
+  local packetType = packet and packet.type
+  local vehicleId = packet and tonumber(packet.vehicle_id)
+  if not REPLACEABLE_TCP_TYPES[packetType] or not vehicleId then return nil end
+  return tostring(packetType) .. ":" .. tostring(vehicleId)
+end
+
+local function _removeQueuedReplaceableForVehicle(vehicleId)
+  if not vehicleId then return end
+  for i = #tcpSendQueue, 1, -1 do
+    local entry = tcpSendQueue[i]
+    local canMutate = i > 1 or tcpSendOffset == 1
+    if canMutate and entry.replaceable and entry.vehicleId == vehicleId then
+      tcpSendQueuedBytes = math.max(0, tcpSendQueuedBytes - #entry.frame)
+      table.remove(tcpSendQueue, i)
+      M._tcpCoalescedCount = M._tcpCoalescedCount + 1
+    end
+  end
+end
+
 local function _flushTcpSendQueue()
   if not tcp then return false end
 
   while #tcpSendQueue > 0 do
-    local frame = tcpSendQueue[1]
+    local entry = tcpSendQueue[1]
+    local frame = entry.frame
     local sent, sendErr, lastSent = tcp:send(frame, tcpSendOffset)
     local lastIndex = sent or lastSent
     if type(lastIndex) == "number" and lastIndex >= tcpSendOffset then
@@ -607,6 +659,7 @@ M.disconnect = function()
   M._connectStartTime = nil
   M._serverMap = nil
   M._serverMaxCars = nil
+  M._serverProtocolVersion = nil
   M._players = {}
   M._pendingWorldVehicles = nil
   M._pendingWorldStateDeadline = nil
@@ -804,7 +857,12 @@ M.tick = function(dt)
         .. ' deferredWorldVehicles=' .. tostring(deferredCount))
       log('I', logTag, 'Sync diag tcpRxTypes=' .. _formatCounterMap(M._tcpRxTypeCounts)
         .. ' tcpTxTypes=' .. _formatCounterMap(M._tcpTxTypeCounts)
+        .. ' tcpTxQueueDepth=' .. tostring(#tcpSendQueue)
         .. ' tcpTxQueuedBytes=' .. tostring(tcpSendQueuedBytes)
+        .. ' tcpTxQueueHighWater=' .. tostring(M._tcpQueueHighWaterBytes)
+        .. ' tcpTxCoalesced=' .. tostring(M._tcpCoalescedCount)
+        .. ' tcpTxQueueFull=' .. tostring(M._tcpQueueFullCount)
+        .. ' tcpTxQueueDisconnects=' .. tostring(M._tcpQueueDisconnectCount)
         .. ' udpPerPlayer=' .. _formatCounterMap(M._udpPerPlayerRx)
         .. ' componentRx=' .. _formatCounterMap(M._componentRxStats)
         .. ' reconnectAttempt=' .. tostring(M._reconnectAttempt)
@@ -820,6 +878,9 @@ M.tick = function(dt)
       M._udpUnexpectedLogCount = 0
       M._tcpRxTypeCounts = {}
       M._tcpTxTypeCounts = {}
+      M._tcpCoalescedCount = 0
+      M._tcpQueueFullCount = 0
+      M._tcpQueueDisconnectCount = 0
     end
   end
 end
@@ -884,13 +945,50 @@ M._sendPacket = function(packetTable)
     math.floor(len / 16777216) % 256
   )
   local frame = header .. jsonStr
+  local packetType = packetTable and packetTable.type
+  local vehicleId = packetTable and tonumber(packetTable.vehicle_id)
+  if QUEUE_BARRIER_TYPES[packetType] then
+    _removeQueuedReplaceableForVehicle(vehicleId)
+  end
+
+  local replaceableKey = _replaceableKey(packetTable)
+  if replaceableKey then
+    for i = #tcpSendQueue, 1, -1 do
+      local entry = tcpSendQueue[i]
+      local canMutate = i > 1 or tcpSendOffset == 1
+      if canMutate and entry.key == replaceableKey then
+        local projectedBytes = tcpSendQueuedBytes - #entry.frame + #frame
+        if projectedBytes > MAX_TCP_SEND_QUEUE_BYTES then
+          M._tcpQueueFullCount = M._tcpQueueFullCount + 1
+          return false
+        end
+        tcpSendQueuedBytes = projectedBytes
+        entry.frame = frame
+        M._tcpCoalescedCount = M._tcpCoalescedCount + 1
+        M._tcpQueueHighWaterBytes = math.max(M._tcpQueueHighWaterBytes, tcpSendQueuedBytes)
+        _bumpCounter(M._tcpTxTypeCounts, packetType)
+        return _flushTcpSendQueue()
+      end
+    end
+  end
   if tcpSendQueuedBytes + #frame > MAX_TCP_SEND_QUEUE_BYTES then
+    M._tcpQueueFullCount = M._tcpQueueFullCount + 1
     M._reportError('W', 'send_packet', 'TCP send queue full: ' .. tostring(tcpSendQueuedBytes) .. ' bytes')
+    if CRITICAL_TCP_TYPES[packetType] then
+      M._tcpQueueDisconnectCount = M._tcpQueueDisconnectCount + 1
+      M._onDisconnect('Critical TCP packet could not enter full send queue: ' .. tostring(packetType))
+    end
     return false
   end
 
-  tcpSendQueue[#tcpSendQueue + 1] = frame
+  tcpSendQueue[#tcpSendQueue + 1] = {
+    frame = frame,
+    key = replaceableKey,
+    replaceable = replaceableKey ~= nil,
+    vehicleId = vehicleId,
+  }
   tcpSendQueuedBytes = tcpSendQueuedBytes + #frame
+  M._tcpQueueHighWaterBytes = math.max(M._tcpQueueHighWaterBytes, tcpSendQueuedBytes)
   _bumpCounter(M._tcpTxTypeCounts, packetTable and packetTable.type)
   return _flushTcpSendQueue()
 end
@@ -952,8 +1050,9 @@ M._handlePacket = function(jsonStr)
     log('I', logTag, 'Received ServerHello: ' .. tostring(packet.name) .. ' map=' .. tostring(packet.map))
     M._serverMap = packet.map
     M._serverMaxCars = tonumber(packet.max_cars)
+    M._serverProtocolVersion = tonumber(packet.version)
     -- Validate protocol version
-    if packet.version ~= 1 and packet.version ~= 2 then
+    if packet.version ~= 1 and packet.version ~= 2 and packet.version ~= 3 then
       log('E', logTag, 'Protocol version mismatch: ' .. tostring(packet.version))
       M.disconnect()
       return
@@ -1379,8 +1478,8 @@ M._tickUdp = function()
         log('I', logTag, 'UDP bind confirmed — bind ACK received'
           .. ' (retries=' .. tostring(M._udpBindRetrySent) .. ')')
       end
-    elseif #data >= 65 and (packetType == 0x10 or packetType == 0x11) then
-      -- Binary position update (0x10 legacy / 0x11 extended) — decode and dispatch
+    elseif #data >= 65 and (packetType == 0x10 or packetType == 0x11 or packetType == 0x12) then
+      -- Binary position update (legacy or explicit epoch/sequence) — decode and dispatch
       local wasConfirmed = M._udpBindConfirmed
       _markUdpValid("position_packet")
       if not wasConfirmed then
@@ -1471,6 +1570,7 @@ M._onDisconnect = function(reason)
   M._sessionHash = nil
   M._lastPingTime = nil  -- Clear ping tracking on disconnect (Phase 2.2)
   M._serverMap = nil
+  M._serverProtocolVersion = nil
   M._players = {}
   M._pendingWorldVehicles = nil
   M._pendingWorldStateDeadline = nil
@@ -1528,6 +1628,9 @@ if rawget(_G, "HIGHBEAM_TEST") then
   M._testFlushTcpSendQueue = _flushTcpSendQueue
   M._testTcpSendQueueState = function()
     return #tcpSendQueue, tcpSendOffset, tcpSendQueuedBytes
+  end
+  M._testTcpQueueMetrics = function()
+    return M._tcpCoalescedCount, M._tcpQueueFullCount, M._tcpQueueHighWaterBytes
   end
   M._testSetUdp = function(fakeUdp, stateValue)
     udp = fakeUdp

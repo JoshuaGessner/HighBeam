@@ -375,6 +375,13 @@ M.onVehicleResetted = function(gameVehicleId)
   local serverVid = state.localVehicles[gameVehicleId]
   if not serverVid then return end
 
+  -- Reset is also a motion-stream ordering barrier. A delayed pre-reset UDP
+  -- packet can no longer overwrite the repaired pose after this epoch change.
+  if state.beginMotionEpoch then
+    state.beginMotionEpoch(gameVehicleId, "local_reset", debounceSec)
+  end
+  local motionEpoch = state.getLocalMotionEpoch and state.getLocalMotionEpoch(gameVehicleId) or 0
+
   local veh = be:getObjectByID(gameVehicleId)
   if not veh then return end
 
@@ -392,6 +399,7 @@ M.onVehicleResetted = function(gameVehicleId)
     damageEpoch = state.beginLocalDamageEpoch(gameVehicleId, debounceSec) or 0
   end
   local resetData = '{"pos":[' .. pos.x .. ',' .. pos.y .. ',' .. pos.z .. '],"rot":[' .. rot.x .. ',' .. rot.y .. ',' .. rot.z .. ',' .. rot.w .. '],"time":' .. tostring(resetTime)
+    .. ',"motionEpoch":' .. tostring(motionEpoch)
     .. ',"damageEpoch":' .. tostring(damageEpoch) .. '}'
 
   local lastSent = _lastLocalResetSentAt[gameVehicleId]
@@ -448,9 +456,9 @@ M.onInputsReport = function(gameVid, steer, throttle, brake, gear, handbrake)
 end
 
 -- Called from vehicle-side queueGameEngineLua with input values and physics rotation
-M.onInputsAndRotationReport = function(gameVid, steer, throttle, brake, gear, handbrake, rx, ry, rz, rw)
+M.onInputsAndRotationReport = function(gameVid, steer, throttle, brake, gear, handbrake, steeringLock, rx, ry, rz, rw)
   if state and state.onInputsAndRotationReport then
-    state.onInputsAndRotationReport(gameVid, steer, throttle, brake, gear, handbrake, rx, ry, rz, rw)
+    state.onInputsAndRotationReport(gameVid, steer, throttle, brake, gear, handbrake, steeringLock, rx, ry, rz, rw)
   end
 end
 
@@ -463,10 +471,10 @@ end
 
 -- Called from vehicle-side highbeamVE.lua with per-frame data.
 M.onVEData = function(gameVid, px, py, pz, rx, ry, rz, rw, vx, vy, vz, avx, avy, avz,
-    steer, throttle, brake, gear, handbrake, sampleTime, sampleDelta)
+    steer, throttle, brake, gear, handbrake, steeringLock, sampleTime, sampleDelta)
   if state and state.onVEData then
     state.onVEData(gameVid, px, py, pz, rx, ry, rz, rw, vx, vy, vz, avx, avy, avz,
-      steer, throttle, brake, gear, handbrake, sampleTime, sampleDelta)
+      steer, throttle, brake, gear, handbrake, steeringLock, sampleTime, sampleDelta)
   end
 end
 
@@ -485,6 +493,9 @@ end
 -- Temporary sync diagnostics: confirms controller lifecycle hooks are firing
 -- after controller.loadControllerExternal registration.
 M.onVEControllerInit = function(gameVid, controllerName, physicsHookAvailable)
+  if state and state.beginMotionEpoch then
+    state.beginMotionEpoch(gameVid, controllerName or "controller_init")
+  end
   log('I', logTag, 'VE controller init name=' .. tostring(controllerName)
     .. ' gameVid=' .. tostring(gameVid)
     .. ' physicsHookAvailable=' .. tostring(physicsHookAvailable))

@@ -49,6 +49,8 @@ impl WorldState {
                     position: vehicle.position,
                     rotation: vehicle.rotation,
                     velocity: vehicle.velocity,
+                    motion_epoch: None,
+                    motion_sequence: 0,
                     damage: vehicle.damage.clone(),
                     damage_epoch: 0,
                     damage_revision: 0,
@@ -80,6 +82,8 @@ impl WorldState {
             position: [0.0; 3],
             rotation: [0.0, 0.0, 0.0, 1.0],
             velocity: [0.0; 3],
+            motion_epoch: None,
+            motion_sequence: 0,
             damage: None,
             damage_epoch: 0,
             damage_revision: 0,
@@ -154,6 +158,45 @@ impl WorldState {
         }
     }
 
+    /// Update a protocol-v3 position only if its motion epoch/sequence is newer
+    /// than the last accepted sample. This shared gate orders UDP and TCP
+    /// fallback against each other and keeps late-join snapshots current.
+    pub fn update_position_ordered(
+        &self,
+        player_id: u32,
+        vehicle_id: u16,
+        pos: [f32; 3],
+        rot: [f32; 4],
+        vel: [f32; 3],
+        motion_order: (u32, u32),
+    ) -> bool {
+        let (epoch, sequence) = motion_order;
+        if epoch == 0 {
+            return false;
+        }
+        let Some(mut entry) = self.vehicles.get_mut(&(player_id, vehicle_id)) else {
+            return false;
+        };
+        let accepted = match entry.motion_epoch {
+            None => true,
+            Some(current) if current == epoch => sequence > entry.motion_sequence,
+            Some(current) => {
+                let delta = epoch.wrapping_sub(current);
+                delta > 0 && delta < (u32::MAX / 2 + 1)
+            }
+        };
+        if !accepted {
+            return false;
+        }
+        entry.motion_epoch = Some(epoch);
+        entry.motion_sequence = sequence;
+        entry.position = pos;
+        entry.rotation = rot;
+        entry.velocity = vel;
+        entry.last_update = Instant::now();
+        true
+    }
+
     /// Update a vehicle's config (from VehicleEdit).
     pub fn update_config(&self, player_id: u32, vehicle_id: u16, config: String) -> bool {
         if let Some(mut entry) = self.vehicles.get_mut(&(player_id, vehicle_id)) {
@@ -215,6 +258,23 @@ impl WorldState {
             entry.damage_revision = 0;
             // Best-effort parse of {"pos":[x,y,z],"rot":[x,y,z,w]}
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(data) {
+                if let Some(epoch) = val
+                    .get("motionEpoch")
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|value| u32::try_from(value).ok())
+                    .filter(|value| *value > 0)
+                {
+                    let is_newer = entry.motion_epoch.is_none_or(|current| {
+                        current == epoch || {
+                            let delta = epoch.wrapping_sub(current);
+                            delta > 0 && delta < (u32::MAX / 2 + 1)
+                        }
+                    });
+                    if is_newer && entry.motion_epoch != Some(epoch) {
+                        entry.motion_epoch = Some(epoch);
+                        entry.motion_sequence = 0;
+                    }
+                }
                 if let Some(epoch) = val.get("damageEpoch").and_then(serde_json::Value::as_u64) {
                     // Versioned reset epochs come from the authoritative
                     // owner. Duplicate delivery is therefore idempotent.
@@ -491,5 +551,34 @@ mod tests {
             Some(1),
             Some(0)
         ));
+    }
+
+    #[test]
+    fn motion_epoch_orders_udp_tcp_and_reset_barriers() {
+        let world = WorldState::new();
+        let vehicle_id = world.spawn_vehicle(12, "{}".into());
+        let rot = [0.0, 0.0, 0.0, 1.0];
+        let vel = [0.0; 3];
+
+        assert!(world.update_position_ordered(12, vehicle_id, [1.0, 0.0, 0.0], rot, vel, (7, 1)));
+        assert!(!world.update_position_ordered(12, vehicle_id, [2.0, 0.0, 0.0], rot, vel, (7, 1)));
+        assert!(!world.update_position_ordered(12, vehicle_id, [3.0, 0.0, 0.0], rot, vel, (6, 99)));
+        assert!(world.update_position_ordered(12, vehicle_id, [4.0, 0.0, 0.0], rot, vel, (8, 0)));
+
+        world.update_reset_position(
+            12,
+            vehicle_id,
+            r#"{"pos":[10,0,0],"rot":[0,0,0,1],"time":0,"motionEpoch":9,"damageEpoch":1}"#,
+        );
+        assert!(!world.update_position_ordered(
+            12,
+            vehicle_id,
+            [5.0, 0.0, 0.0],
+            rot,
+            vel,
+            (8, 100)
+        ));
+        assert!(world.update_position_ordered(12, vehicle_id, [11.0, 0.0, 0.0], rot, vel, (9, 1)));
+        assert_eq!(world.get_vehicle_snapshot()[0].position, [11.0, 0.0, 0.0]);
     }
 }

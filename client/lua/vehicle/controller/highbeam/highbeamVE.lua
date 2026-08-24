@@ -184,8 +184,9 @@ local function _sampleAndSend(dt)
 
   local e = electrics and electrics.values or {}
   -- Match highbeamInputsVE's wire convention on both UDP and TCP: steering is
-  -- normalized to BeamNG's 450-degree reference and inverted on receive.
+  -- normalized to BeamNG's 450-degree reference and decoded with sender lock.
   local steer = (e.steering_input or e.steering or 0) * _getSteeringLock() / 450
+  local steeringLock = _getSteeringLock()
   local throttle = e.throttle_input or e.throttle or 0
   local brake = e.brake_input or e.brake or 0
   local gear = e.gear_A or 0
@@ -231,13 +232,13 @@ local function _sampleAndSend(dt)
 
   if obj.queueGameEngineLua then
     obj:queueGameEngineLua(string.format(
-      "extensions.highbeam.onVEData(%d,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.5f,%.5f,%.5f,%.0f,%.5f,%.6f,%.6f)",
+      "extensions.highbeam.onVEData(%d,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.5f,%.5f,%.5f,%.0f,%.5f,%.0f,%.6f,%.6f)",
       gameVehicleId,
       pos.x, pos.y, pos.z,
       rot.x, rot.y, rot.z, rot.w,
       vel.x, vel.y, vel.z,
       avx, avy, avz,
-      steer, throttle, brake, gear, handbrake,
+      steer, throttle, brake, gear, handbrake, steeringLock,
       sampleTime, sampleDelta
     ))
   end

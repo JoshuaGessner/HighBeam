@@ -6,7 +6,7 @@ local isActive = false
 local gameVehicleId = 0
 local initialized = false
 
-local lastSent = { s = 0, t = 0, b = 0, p = 0, c = 0, g = 0 }
+local lastSent = { s = 0, t = 0, b = 0, p = 0, c = 0, g = 0, l = 450, k = nil }
 local ROUND_FACTOR = 10000
 local SEND_THRESHOLD = 0.001
 local gearResyncTimer = 0
@@ -20,6 +20,8 @@ local READINESS_DELAY_SEC = 0.5
 local smoothing = { s = 0, t = 0, b = 0, p = 0, c = 0 }
 local desiredInputs = { s = 0, t = 0, b = 0, p = 0, c = 0 }
 local desiredGear = nil
+local desiredGearSchema = nil
+local remoteSteeringLock = 450
 local gearPending = false
 local gearRetryTimer = 0
 local SMOOTH_RATE = 30
@@ -51,6 +53,15 @@ local GEARBOX_HANDLER = {
   automaticGearbox = "controller",
   cvtGearbox = "controller",
   electricMotor = "controller",
+}
+
+local GEARBOX_SCHEMA = {
+  manualGearbox = "manual",
+  sequentialGearbox = "sequential",
+  dctGearbox = "automatic",
+  automaticGearbox = "automatic",
+  cvtGearbox = "cvt",
+  electricMotor = "electric",
 }
 
 local GEAR_MODE_INDEX = {
@@ -140,6 +151,10 @@ local function _getSteeringLock()
   return 450
 end
 
+local function _gearSchema(dev)
+  return (dev and GEARBOX_SCHEMA[dev.type]) or "unknown"
+end
+
 local function _shouldSnapInput(key, targetVal, current)
   local delta = math.abs(targetVal - current)
   local atLimit
@@ -175,7 +190,10 @@ local function _emitContinuousInputs(dt)
   for _, key in ipairs(INPUT_KEYS) do
     local targetVal = tonumber(desiredInputs[key]) or 0
     if key == "s" then
-      targetVal = targetVal * 450 / math.max(_getSteeringLock(), 1)
+      -- The wire value is referenced to a 450-degree wheel. Convert it back
+      -- using the sender's advertised lock; the receiver's lock must not
+      -- change the driver's normalized steering command.
+      targetVal = targetVal * 450 / math.max(remoteSteeringLock, 1)
       targetVal = math.max(-1, math.min(1, targetVal))
     else
       targetVal = math.max(0, math.min(1, targetVal))
@@ -199,7 +217,7 @@ function M.onInit()
   end
   if initialized then return end
   initialized = true
-  lastSent = { s = 0, t = 0, b = 0, p = 0, c = 0, g = 0 }
+  lastSent = { s = 0, t = 0, b = 0, p = 0, c = 0, g = 0, l = 450, k = nil }
   smoothing = { s = 0, t = 0, b = 0, p = 0, c = 0 }
   desiredInputs = { s = 0, t = 0, b = 0, p = 0, c = 0 }
 end
@@ -212,6 +230,11 @@ function M.setActive(active, remote)
   if isActive and isRemote then
     activationTime = os.clock()
     gearRetryTimer = 0
+  elseif isActive then
+    -- Controller activation is a wire resynchronization boundary. Advertise a
+    -- complete input state including steering lock and gearbox schema.
+    lastSent = {}
+    gearResyncTimer = GEAR_RESYNC_INTERVAL
   end
   if wasRemoteActive and not (isActive and isRemote) then
     desiredInputs = { s = 0, t = 0, b = 0, p = 0, c = 0 }
@@ -261,6 +284,8 @@ function M.updateGFX(dt)
   -- numeric fallback used by manuals and older vehicles.
   local g = e.gear
   if g == nil or g == "" then g = tonumber(e.gear_A or 0) or 0 end
+  local gearbox = _findGearbox()
+  local schema = _gearSchema(gearbox)
 
   local changed = false
   local delta = {}
@@ -270,6 +295,8 @@ function M.updateGFX(dt)
   if math.abs(b - (lastSent.b or 0)) > SEND_THRESHOLD then delta.b = b; changed = true end
   if math.abs(p - (lastSent.p or 0)) > SEND_THRESHOLD then delta.p = p; changed = true end
   if math.abs(c - (lastSent.c or 0)) > SEND_THRESHOLD then delta.c = c; changed = true end
+  if math.abs(lock - (lastSent.l or 0)) >= 0.5 then delta.l = math.floor(lock + 0.5); changed = true end
+  if schema ~= lastSent.k then delta.k = schema; changed = true end
 
   gearResyncTimer = gearResyncTimer + (dt or 0)
   if g ~= lastSent.g or gearResyncTimer > GEAR_RESYNC_INTERVAL then
@@ -313,6 +340,15 @@ function M._applyGear(gearValue)
     _logVerbose("unsupported_" .. tostring(dev.type), 'gear skip unsupported gearbox type=' .. tostring(dev.type)
       .. ' device=' .. tostring(devName)
       .. ' value=' .. tostring(gearValue))
+    return false, false
+  end
+
+  local actualSchema = _gearSchema(dev)
+  if desiredGearSchema and desiredGearSchema ~= "unknown" and actualSchema ~= desiredGearSchema then
+    _bump("unsupportedGearbox")
+    _logVerbose("schema_" .. tostring(desiredGearSchema) .. "_" .. tostring(actualSchema),
+      'gear schema mismatch sender=' .. tostring(desiredGearSchema)
+        .. ' receiver=' .. tostring(actualSchema) .. ' value=' .. tostring(gearValue))
     return false, false
   end
 
@@ -396,6 +432,17 @@ end
 function M.applyInputs(data)
   if not isRemote or type(data) ~= "table" then return end
 
+  if data.l ~= nil then
+    remoteSteeringLock = math.max(1, math.min(4096, tonumber(data.l) or 450))
+  end
+  if data.k ~= nil then
+    local schema = tostring(data.k)
+    if schema == "manual" or schema == "sequential" or schema == "automatic"
+      or schema == "cvt" or schema == "electric" or schema == "unknown" then
+      desiredGearSchema = schema
+    end
+  end
+
   for key, target in pairs(data) do
     if key == "s" or key == "t" or key == "b" or key == "p" or key == "c" then
       -- Network packets may be deltas. Merge them into a complete desired
@@ -419,7 +466,9 @@ function M.getInputActivity()
 end
 
 function M.onHighBeamRemoteReset()
-  desiredInputs = { s = 0, t = 0, b = 0, p = 0, c = 0 }
+  -- Reset interpolation, but retain the complete authoritative desired state.
+  -- A reset while throttle or steering is held must resume that command
+  -- without waiting for another edge-triggered input change.
   smoothing = { s = 0, t = 0, b = 0, p = 0, c = 0 }
   activationTime = os.clock()
   gearPending = desiredGear ~= nil
@@ -444,7 +493,7 @@ if rawget(_G, "HIGHBEAM_TEST") then
   M._testShouldSnapInput = _shouldSnapInput
   M._testSetReady = function() activationTime = -1000000; gearRetryTimer = 1 end
   M._testGetState = function()
-    return desiredInputs, smoothing, desiredGear, gearPending
+    return desiredInputs, smoothing, desiredGear, gearPending, remoteSteeringLock, desiredGearSchema
   end
 end
 

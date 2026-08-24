@@ -47,8 +47,8 @@ local function _isFinite(value, limit)
     and math.abs(value) <= (limit or 1e20)
 end
 
-local INPUT_KEYS = { "s", "t", "b", "p", "c", "g" }
-local INPUT_KEY_SET = { s = true, t = true, b = true, p = true, c = true, g = true }
+local INPUT_KEYS = { "l", "s", "t", "b", "p", "c", "k", "g" }
+local INPUT_KEY_SET = { l = true, s = true, t = true, b = true, p = true, c = true, k = true, g = true }
 
 local function _mergeInputState(state, deltaStr)
   state = state or {}
@@ -59,7 +59,7 @@ local function _mergeInputState(state, deltaStr)
       local numeric = tonumber(raw)
       if numeric and _isFinite(numeric, 1e4) then
         state[key] = numeric
-      elseif key == "g" and #raw <= 16 and string.match(raw, "^[%w%+%-%.]+$") then
+      elseif (key == "g" or key == "k") and #raw <= 16 and string.match(raw, "^[%w%+%-%.]+$") then
         state[key] = raw
       end
     end
@@ -670,6 +670,8 @@ M.spawnRemote = function(playerId, vehicleId, configData, snapshot)
     gameVehicle = vehObj,
     snapshots = {},
     lastSeqTime = -1,  -- For out-of-order rejection
+    motionEpoch = preReset and tonumber(preReset.motionEpoch) or nil,
+    motionSequence = -1,
     spawnSpec = spec,
     spawnRetry = nil,
     _hasVE = false,
@@ -731,6 +733,38 @@ M.spawnRemoteFromSnapshot = function(vehicle)
 end
 
 local _updateRemoteDropLog = 0
+local function _epochIsNewer(incoming, current)
+  if current == nil then return true end
+  local delta = (incoming - current) % 4294967296
+  return delta > 0 and delta < 2147483648
+end
+
+local function _acceptExplicitMotionOrder(rv, decoded)
+  local incomingEpoch = math.floor(tonumber(decoded.motionEpoch) or -1)
+  local incomingSequence = math.floor(tonumber(decoded.motionSequence) or -1)
+  if incomingEpoch <= 0 or incomingSequence < 0 then
+    return false, false, "invalid_order"
+  end
+
+  local epochRestart = false
+  if rv.motionEpoch == nil or _epochIsNewer(incomingEpoch, rv.motionEpoch) then
+    epochRestart = rv.motionEpoch ~= nil or (rv.lastSeqTime or -1) >= 0 or #(rv.snapshots or {}) > 0
+    rv.motionEpoch = incomingEpoch
+    rv.motionSequence = -1
+    rv.lastSeqTime = -1
+    rv.snapshots = {}
+    rv._motionRestartPreviousTime = nil
+    rv._motionRestartGuardUntil = nil
+  elseif incomingEpoch ~= rv.motionEpoch then
+    return false, false, "stale_epoch"
+  elseif incomingSequence <= (rv.motionSequence or -1) then
+    return false, false, "stale_sequence"
+  end
+
+  rv.motionSequence = incomingSequence
+  return true, epochRestart, epochRestart and "epoch_restart" or "accepted"
+end
+
 M.updateRemote = function(decoded)
   if not _validMotion(decoded) then
     _bumpApplyStat("pose_drop_nonfinite")
@@ -749,11 +783,23 @@ M.updateRemote = function(decoded)
 
   local recvTime = os.clock()
   local epochRestart = false
+  local explicitOrder = decoded.motionEpoch ~= nil and decoded.motionSequence ~= nil
+
+  if explicitOrder then
+    local accepted, restarted, reason = _acceptExplicitMotionOrder(rv, decoded)
+    if not accepted then
+      _staleDropCount = _staleDropCount + 1
+      _bumpApplyStat("pose_drop_" .. tostring(reason))
+      return
+    end
+    epochRestart = restarted
+    _bumpApplyStat(epochRestart and "pose_epoch_restart" or "pose_epoch_accept")
+  end
 
   -- Compatibility recovery for senders whose VLua motion timer restarted.
   -- Keep a short guard against a delayed packet from the previous high-time
   -- epoch arriving after the first low-time packet from the new epoch.
-  if rv._motionRestartGuardUntil and recvTime < rv._motionRestartGuardUntil
+  if not explicitOrder and rv._motionRestartGuardUntil and recvTime < rv._motionRestartGuardUntil
     and rv._motionRestartPreviousTime and decoded.time > (rv.lastSeqTime + 2.0)
     and decoded.time >= (rv._motionRestartPreviousTime - 1.0) then
     _staleDropCount = _staleDropCount + 1
@@ -761,19 +807,19 @@ M.updateRemote = function(decoded)
   end
 
   -- Out-of-order protection: reject packets older than newest received
-  if decoded.time and rv.lastSeqTime and decoded.time < rv.lastSeqTime then
+  if not explicitOrder and decoded.time and rv.lastSeqTime and decoded.time < rv.lastSeqTime then
     local backwardJump = rv.lastSeqTime - decoded.time
     local receiveGap = rv._lastMotionReceivedAt and (recvTime - rv._lastMotionReceivedAt) or 0
     if backwardJump > 1.0 and (decoded.time < 3.0 or receiveGap > 0.75) then
       epochRestart = true
       rv._motionRestartPreviousTime = rv.lastSeqTime
       rv._motionRestartGuardUntil = recvTime + 3.0
-      rv.motionEpoch = (rv.motionEpoch or 0) + 1
+      rv._legacyMotionEpoch = (rv._legacyMotionEpoch or 0) + 1
       rv.lastSeqTime = -1
       rv.snapshots = {}
       _bumpApplyStat("pose_epoch_restart")
       log('I', logTag, 'Detected remote motion epoch restart key=' .. key
-        .. ' epoch=' .. tostring(rv.motionEpoch)
+        .. ' epoch=legacy-' .. tostring(rv._legacyMotionEpoch)
         .. ' backward=' .. string.format('%.3f', backwardJump)
         .. ' receiveGap=' .. string.format('%.3f', receiveGap))
     else
@@ -792,6 +838,8 @@ M.updateRemote = function(decoded)
     _packetInterArrival[key] = recvTime
     log('D', logTag, 'UDP remote packet key=' .. key
       .. ' remoteTime=' .. string.format('%.6f', decoded.time or 0)
+      .. ' epoch=' .. tostring(decoded.motionEpoch or 'legacy')
+      .. ' seq=' .. tostring(decoded.motionSequence or 'legacy')
       .. ' interArrival=' .. string.format('%.4f', arrivalDt))
   end
 
@@ -815,13 +863,13 @@ M.updateRemote = function(decoded)
     -- A3: apply the UDP inputs visually for smoother remote animation
     -- (steering/throttle/brake/handbrake). Discrete gear changes deliberately
     -- stay on the reliable TCP path, so gear is intentionally excluded here.
-    -- The UDP steer value is the normalized steering_input (-1..1); it is fed
-    -- through the same applyInputs pipeline the TCP path uses so smoothing and
-    -- guards stay consistent.
+    -- The UDP steer value uses the same 450-degree reference as TCP and carries
+    -- sender lock metadata; feed both through the shared smoothing pipeline.
     if decoded.inputs then
       local di = decoded.inputs
       local deltaStr = string.format(
-        "s=%.4f,t=%.4f,b=%.4f,p=%.4f",
+        "l=%d,s=%.4f,t=%.4f,b=%.4f,p=%.4f",
+        math.max(1, math.min(4096, math.floor(tonumber(decoded.steeringLock) or 450))),
         tonumber(di.steer) or 0,
         tonumber(di.throttle) or 0,
         tonumber(di.brake) or 0,
@@ -840,6 +888,8 @@ M.updateRemote = function(decoded)
     vel = decoded.vel,
     time = decoded.time,
     received = recvTime,
+    motionEpoch = decoded.motionEpoch,
+    motionSequence = decoded.motionSequence,
   })
 
   local maxSnapshots = _getMaxSnapshots()
@@ -926,6 +976,20 @@ M.resetRemote = function(playerId, vehicleId, data)
     _bumpApplyStat("reset_drop_decode")
     return
   end
+  if type(cfg.pos) ~= "table" or type(cfg.rot) ~= "table"
+    or not (_isFinite(tonumber(cfg.pos[1]), 1e7) and _isFinite(tonumber(cfg.pos[2]), 1e7)
+      and _isFinite(tonumber(cfg.pos[3]), 1e7) and _isFinite(tonumber(cfg.rot[1]), 4)
+      and _isFinite(tonumber(cfg.rot[2]), 4) and _isFinite(tonumber(cfg.rot[3]), 4)
+      and _isFinite(tonumber(cfg.rot[4]), 4) and _isFinite(tonumber(cfg.time) or 0, 1e9)) then
+    _bumpApplyStat("reset_drop_nonfinite")
+    return
+  end
+  local resetQuatLenSq = tonumber(cfg.rot[1])^2 + tonumber(cfg.rot[2])^2
+    + tonumber(cfg.rot[3])^2 + tonumber(cfg.rot[4])^2
+  if resetQuatLenSq < 1e-8 then
+    _bumpApplyStat("reset_drop_degenerate_rotation")
+    return
+  end
   local rv = M.remoteVehicles[key]
   if not rv then
     M._pendingRemoteState[key] = M._pendingRemoteState[key] or {}
@@ -933,6 +997,20 @@ M.resetRemote = function(playerId, vehicleId, data)
     M._pendingRemoteState[key].damage = nil
     _bumpApplyStat("reset_retained_pre_spawn")
     return
+  end
+  local suppliedMotionEpoch = math.floor(tonumber(cfg.motionEpoch) or 0)
+  if suppliedMotionEpoch > 0 then
+    if rv.motionEpoch and suppliedMotionEpoch ~= rv.motionEpoch
+      and not _epochIsNewer(suppliedMotionEpoch, rv.motionEpoch) then
+      _bumpApplyStat("reset_drop_stale_motion_epoch")
+      return
+    end
+    if rv.motionEpoch ~= suppliedMotionEpoch then
+      rv.motionEpoch = suppliedMotionEpoch
+      rv.motionSequence = -1
+      rv.snapshots = {}
+      rv.lastSeqTime = -1
+    end
   end
   local veh = rv.gameVehicle or (rv.gameVehicleId and scenetree.findObjectById(rv.gameVehicleId))
   if not veh then
@@ -1346,7 +1424,7 @@ M.applyInputs = function(playerId, vehicleId, deltaStr)
     return string.format("%q", s or "")
   end
 
-  local cmd = "local _hb=controller and controller.getController and controller.getController('highbeamInputsVE') or nil; if _hb and _hb.applyInputs then local d={} for part in string.gmatch(" .. escapeLuaString(deltaStr) .. ",'[^,]+') do local k,v=string.match(part,'^([%a]+)=([^,]+)$'); if k then if k=='g' and tonumber(v)==nil then d[k]=v else d[k]=tonumber(v) or 0 end end end _hb.applyInputs(d) end"
+  local cmd = "local _hb=controller and controller.getController and controller.getController('highbeamInputsVE') or nil; if _hb and _hb.applyInputs then local d={} for part in string.gmatch(" .. escapeLuaString(deltaStr) .. ",'[^,]+') do local k,v=string.match(part,'^([%a]+)=([^,]+)$'); if k then if (k=='g' or k=='k') and tonumber(v)==nil then d[k]=v else d[k]=tonumber(v) or 0 end end end _hb.applyInputs(d) end"
   local ok = _queueVeLuaCommand(veh, cmd, "inputs")
   if ok then
     _bumpApplyStat("inputs_applied")
@@ -1419,6 +1497,9 @@ M.applyPose = function(playerId, vehicleId, poseData)
     time = tonumber(pose.time),
     inputs = pose.inputs,
     angVel = pose.angVel,
+    motionEpoch = tonumber(pose.motionEpoch),
+    motionSequence = tonumber(pose.motionSequence),
+    steeringLock = tonumber(pose.steeringLock),
   }
 
   if type(decoded.pos) ~= "table" or #decoded.pos < 3
@@ -1771,6 +1852,10 @@ M.getPlayerActiveVehicle = function(playerId)
   end
 
   return selected
+end
+
+if rawget(_G, "HIGHBEAM_TEST") then
+  M._testAcceptExplicitMotionOrder = _acceptExplicitMotionOrder
 end
 
 return M
