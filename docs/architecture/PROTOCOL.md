@@ -1,8 +1,8 @@
 # HighBeam Network Protocol Specification
 
-> **Last updated:** 2026-08-23
-> **Protocol version:** 2
-> **Applies to:** v0.8.2-dev.52
+> **Last updated:** 2026-08-24
+> **Protocol version:** 3
+> **Applies to:** v0.8.2-dev.53
 > **Parent doc:** [OVERVIEW.md](OVERVIEW.md)
 
 ---
@@ -138,9 +138,9 @@ Client                                  Server
 | `vehicle_spawn` | Remote vehicle spawned | `player_id`, `vehicle_id`, `data` (config JSON) |
 | `vehicle_edit` | Remote vehicle edited | `player_id`, `vehicle_id`, `data` (config JSON) |
 | `vehicle_delete` | Remote vehicle deleted | `player_id`, `vehicle_id` |
-| `vehicle_reset` | Remote vehicle reset | `player_id`, `vehicle_id`, `data` (position JSON) |
+| `vehicle_reset` | Remote vehicle reset/order barrier | `player_id`, `vehicle_id`, `data` (pose, `motionEpoch`, `damageEpoch`) |
 | `vehicle_damage` | Authoritative structural damage snapshot | `player_id`, `vehicle_id`, `data` (damage envelope JSON) |
-| `vehicle_inputs` | Input-state delta | `player_id`, `vehicle_id`, `data` (`s/t/b/p/c/g` delta string) |
+| `vehicle_inputs` | Complete desired input state | `player_id`, `vehicle_id`, `data` (`l/s/t/b/p/c/k/g` state string) |
 | `vehicle_electrics` | Safe visual/control electrics state | `player_id`, `vehicle_id`, `data` (JSON) |
 | `vehicle_powertrain` | Powertrain/device state | `player_id`, `vehicle_id`, `data` (JSON) |
 | `vehicle_coupling` | Coupler attach/detach state | source/target vehicle and node IDs, `coupled` |
@@ -160,10 +160,10 @@ Client                                  Server
 | `vehicle_spawn` | Local vehicle spawned | `vehicle_id`, `data` (config JSON) |
 | `vehicle_edit` | Local vehicle edited | `vehicle_id`, `data` (config JSON) |
 | `vehicle_delete` | Local vehicle deleted | `vehicle_id` |
-| `vehicle_reset` | Local vehicle reset | `vehicle_id`, `data` (position JSON) |
+| `vehicle_reset` | Local vehicle reset/order barrier | `vehicle_id`, `data` (pose, `motionEpoch`, `damageEpoch`) |
 | `vehicle_pose` | TCP fallback local pose update | `vehicle_id`, `data` (pose JSON) |
 | `vehicle_damage` | Structural damage snapshot | `vehicle_id`, `data` (damage envelope JSON) |
-| `vehicle_inputs` | Input-state delta | `vehicle_id`, `data` (`s/t/b/p/c/g` delta string) |
+| `vehicle_inputs` | Complete desired input state | `vehicle_id`, `data` (`l/s/t/b/p/c/k/g` state string) |
 | `vehicle_electrics` | Safe visual/control electrics state | `vehicle_id`, `data` (JSON) |
 | `vehicle_powertrain` | Powertrain/device state | `vehicle_id`, `data` (JSON) |
 | `vehicle_coupling` | Coupler attach/detach state | source/target vehicle and node IDs, `coupled` |
@@ -177,7 +177,8 @@ Client                                  Server
 
 ### Position Update (Client → Server, Server → Client)
 
-Type bytes: `0x10` for base pose, `0x11` when input deltas are appended.
+Type bytes: `0x10` for the legacy base pose, `0x11` for the legacy input-augmented
+pose, and `0x12` for the protocol-v3 motion stream.
 
 ```
 ┌──────────────┬──────┬──────────┬────────────────┬────────────────┬────────────────┬──────┐
@@ -190,6 +191,22 @@ Total: 16 + 1 + 2 + 12 + 16 + 12 + 4 = **63 bytes per update**
 
 The extended `0x11` packet appends compact steering, throttle, brake, gear, and handbrake fields (five 16-bit values). When angular velocity is available, three additional `f32` values are appended after the inputs.
 
+The canonical protocol-v3 `0x12` packet always appends:
+
+```
+epoch:u32LE | sequence:u32LE | steeringLock:u16LE |
+steer:i16 fixed | throttle:i16 fixed | brake:i16 fixed | gear:i16 fixed | handbrake:i16 fixed |
+angularVelocity:3xf32LE
+```
+
+`epoch` identifies the sender/controller lifetime and is non-zero. `sequence`
+is monotonic within that epoch. A receiver atomically clears interpolation,
+prediction, and clock state when a newer epoch arrives, rejects duplicate or
+older sequences, and retains timer-backward-jump detection only for legacy
+packets. `steeringLock` is in degrees. Steering retains HighBeam's 450-degree
+reference representation; the v3 steering fixed point covers ±8 so 900° and
+1080° full-lock values are lossless at the protocol's input precision.
+
 Exact client→server datagram sizes are validated by the server (other lengths are
 dropped, not relayed):
 
@@ -199,8 +216,9 @@ dropped, not relayed):
 | `0x10` | no | yes | 75 bytes |
 | `0x11` | yes | no | 73 bytes |
 | `0x11` | yes | yes | 85 bytes |
+| `0x12` | yes + epoch/sequence/lock | yes | 95 bytes |
 
-Receiving clients apply the `0x11` inputs (steering/throttle/brake/handbrake) to
+Receiving clients apply the `0x11`/`0x12` inputs (steering/throttle/brake/handbrake) to
 remote vehicles for smoother animation; discrete gear changes are delivered over
 the reliable TCP input channel rather than UDP.
 
@@ -213,7 +231,9 @@ When server relays to other clients, it prepends the player_id:
 └──────────────┴──────┴──────────┴──────────┴────────────────┴────────────────┴────────────────┴──────┘
 ```
 
-Total: 16 + 1 + 2 + 2 + 12 + 16 + 12 + 4 = **65 bytes per relayed update**
+The server inserts the two-byte player ID without rewriting the motion payload.
+Relayed sizes are therefore client size + 2 bytes: **65/77**, **75/87**, and
+**97 bytes** for the canonical `0x12` packet.
 
 ### Position Fields
 
@@ -223,6 +243,9 @@ Total: 16 + 1 + 2 + 2 + 12 + 16 + 12 + 4 = **65 bytes per relayed update**
 | `rot` | 4x f32 | Rotation quaternion (x, y, z, w) |
 | `vel` | 3x f32 | Linear velocity (x, y, z) |
 | `time` | f32 | Simulation time since vehicle spawn |
+| `epoch` | u32 | Non-zero vehicle/controller motion lifetime (`0x12`) |
+| `sequence` | u32 | Monotonic packet order within the epoch (`0x12`) |
+| `steeringLock` | u16 | Sender steering-wheel lock in degrees (`0x12`) |
 
 ### TCP Pose Fallback
 
@@ -235,6 +258,9 @@ Clients continue to send a reliable `vehicle_pose` packet while the UDP bind is 
   "vel": [0.0, 0.0, 0.0],
   "time": 0.0,
   "sampleDelta": 0.016,
+  "motionEpoch": 3,
+  "motionSequence": 42,
+  "steeringLock": 1080,
   "inputs": {
     "steer": 0.0,
     "throttle": 0.0,
@@ -270,7 +296,8 @@ Damage is a retained full structural snapshot, not transient node pose data:
 - `revision` is monotonic within an epoch; duplicates and older snapshots are ignored.
 - `configRevision` binds beam IDs to a specific vehicle topology. Topology edits are accepted only in exact monotonic order and carry the new `damageEpoch`.
 - `state.broken` and `state.deform` are applied incrementally and acknowledged by vehicle Lua. Transient node coordinates are rejected because replaying suspension/wheel travel would fight the remote vehicle's local physics.
-- Reset payloads include `damageEpoch`; duplicate delivery is idempotent.
+- Reset payloads include `motionEpoch` and `damageEpoch`; duplicate delivery is
+  idempotent and delayed poses/damage from the prior lifetimes are rejected.
 
 Critical lifecycle packets (spawn, edit, delete, reset, damage, coupling, and player membership changes) use bounded reliable fanout. A peer that cannot accept one within the delivery window is disconnected so it cannot continue with permanently divergent world state. High-rate pose, inputs, electrics, and powertrain updates remain best-effort/coalesced state.
 
@@ -372,7 +399,8 @@ to on-path observers — enable TLS on untrusted networks.
 
 ### Protocol Version Mismatch
 - The `server_hello` includes the protocol version.
-- If client's protocol version does not match, client should disconnect and display an error.
+- Protocol-v3 clients retain a legacy v1/v2 pose encoder for compatible older
+  servers. Unsupported versions disconnect with an explicit error.
 
 ---
 
