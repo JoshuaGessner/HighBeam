@@ -1850,20 +1850,299 @@ M.recentServers = {} -- { {host, port, name, lastConnected}, ... }
 
 ---
 
+## Forward Implementation Program — v0.8.2 to v1.0
+
+This section is the implementation companion to the chronological forward roadmap
+in `docs/versioning/VERSION_PLAN.md`. The version plan owns scope and milestone
+status; this guide owns sequencing, component boundaries, test strategy, and PR
+slices. It supersedes unfinished implementation advice in older phases where the
+current code has already evolved beyond the original scaffold.
+
+### Delivery Rules
+
+1. Do not mix a protocol migration, a BeamNG physics change, and a major UI feature
+   in one PR.
+2. Add observability and a failing regression test before changing correction,
+   queueing, retry, or fallback behavior.
+3. Every new packet field is optional while protocol v3 remains supported. A truly
+   incompatible wire change requires negotiated protocol v4.
+4. Every asynchronous queue has a documented maximum size, timeout, cancellation
+   path, and shutdown behavior.
+5. The server validates ownership, revision, length/range, and rate before mutating
+   authoritative state or broadcasting.
+6. Expensive BeamNG operations (vehicle spawn/config apply, mod activation) must be
+   scheduled explicitly and never performed repeatedly because a packet was retried.
+7. Each milestone ends with a dev draft and the same two-client acceptance matrix;
+   public release occurs only after two clean runs.
+
+### Phase 7 — v0.8.2 Release Gate
+
+**Purpose:** validate dev.54 and close the current sync/lifecycle milestone before
+introducing new feature variables.
+
+**Test matrix:**
+
+| Case | Required observation |
+|---|---|
+| Vanilla spawn/drive/turn | Correct heading, stable suspension, bounded correction |
+| Collision and damage | Both clients see beam breaks/deformation; no repeated node reset |
+| Repair/reset/edit | Revision advances once; remote state converges without stale replay |
+| Late join | Vehicle config, pose, damage, electrics, powertrain and hydraulics converge |
+| Walk/unicycle | Local switch does not delete or claim another player's vehicle |
+| Disconnect/rejoin | Remote objects are removed once and cleanly respawn on rejoin |
+| Server map transition | Session survives only the intentional transition and reconnects |
+| Unexpected mission exit | Stale session disconnects and restores wrapped BeamNG callbacks |
+| UDP blocked | Existing TCP pose fallback is visible in diagnostics and movement continues |
+
+Collect `p1.log`, `p2.log`, launcher logs, and `server.log` from one clock-aligned
+session. A video is required for a motion defect that logs cannot distinguish.
+
+**Allowed code changes:** release-blocking fixes and diagnostics only. Protocol stays
+v3. A clean result advances to Phase 8.
+
+### Phase 8 — v0.9.0 Trust Foundation
+
+Implement phases A–F already specified in `VERSION_PLAN.md` as separate PRs:
+
+1. ZIP structure/content scanner in `launcher/src/mod_sandbox.rs`.
+2. Lua scanner in `launcher/src/lua_scan.rs`.
+3. BeamNG runtime restrictions in a dedicated client extension.
+4. Server plugin quotas and eval policy under `server/src/plugin/`.
+5. Signed manifest and TLS enforcement across `server/src/net/mod_transfer.rs`,
+   `launcher/src/mod_sync.rs`, and the launcher trust store.
+6. Malicious/legitimate end-to-end fixture suite.
+
+Do not begin resumable transfer work until the manifest signature and content hash
+contract are stable; resumed bytes must be verified against that contract.
+
+### Phase 9 — v0.10.0 Connection Confidence & Scale
+
+#### 9.1 Capability and health foundation
+
+**Primary files:**
+
+- `server/src/net/packet.rs`: optional capabilities during v3 negotiation; v4 envelope
+  when binary work begins.
+- `server/src/net/tcp.rs`, `server/src/net/udp.rs`: probe/ack routing and peer health.
+- `server/src/session/player.rs`, `server/src/session/manager.rs`: bounded health state.
+- `client/lua/ge/extensions/highbeam/connection.lua`: probe state machine, fallback,
+  counters, and sanitized export.
+- `client/lua/ge/extensions/highbeam/overlay.lua`: compact player-facing health state.
+- `launcher/src/ipc.rs`: client-ready/health/support-export events.
+
+**State machine:**
+
+`TCP connected → authenticated → UDP probing → healthy UDP | TCP fallback → periodic
+UDP recovery probe → healthy UDP`. Authentication and reliable control traffic never
+depend on successful UDP. Probe IDs are random/session-bound and expire; an old probe
+cannot revive a previous session.
+
+**Metrics:** sent/received sequence, duplicate/out-of-order/loss estimate, jitter EWMA,
+last receive by transport, current pose transport, send queue bytes, remote heartbeat
+age, and correction-error buckets. Reset all metrics on session epoch change.
+
+**PR slices:**
+
+1. Metrics only, no behavior change.
+2. Pre-spawn probe and UI states.
+3. Automatic fallback/recovery with deterministic tests.
+4. Sanitized support-bundle export and redaction tests.
+
+#### 9.2 Resumable mod delivery
+
+**Primary files:** `launcher/src/mod_sync.rs`, `launcher/src/mod_cache.rs`,
+`launcher/src/ipc.rs`, `server/src/net/mod_transfer.rs`,
+`server/src/mod_sync_state.rs`, and `server/src/net/packet.rs`.
+
+**Protocol additions:**
+
+- Manifest preflight response: manifest revision, total bytes, content hash/signature,
+  and descriptors.
+- Range/chunk request: content hash, verified offset, preferred chunk size.
+- Progress/error events remain launcher-local IPC, not gameplay TCP packets.
+
+**Invariants:**
+
+- A `.part` file is never treated as a cache hit.
+- Resume offset must be aligned and no greater than the advertised size.
+- Existing partial bytes are re-hashed before a resume request; the index alone is
+  never trusted as proof that the prefix is intact.
+- The final whole-file SHA-256 and signed manifest entry must both verify.
+- Cancellation closes sockets, flushes safe partial metadata, and releases permits.
+- Parallel workers share a global byte/connection limit and preserve deterministic
+  final staging order.
+
+**PR slices:** preflight UI → partial-file format → single-stream resume → bounded
+parallel scheduler → cache repair/space management → failure-injection tests.
+
+#### 9.3 Vehicle-edit transactions
+
+**Primary files:** `server/src/net/packet.rs`, `server/src/net/tcp.rs`,
+`server/src/state/vehicle.rs`, `server/src/state/world.rs`,
+`client/lua/ge/extensions/highbeam/state.lua`, and
+`client/lua/ge/extensions/highbeam/vehicles.lua`.
+
+The current `configRevision` becomes explicit protocol metadata. Server accepts only
+the owner's next valid revision, stores the latest full config, and broadcasts an
+idempotent transaction. Client holds at most one unapplied edit per remote vehicle.
+Replacement is latest-wins; deletion clears it; reset/damage packets either target the
+same revision or wait behind it. Apply policy is local (`manual`, `safe`, `immediate`)
+and does not change server truth.
+
+Test stale, duplicate, skipped, reordered, delete-during-pending, damage-during-edit,
+and late-join cases before wiring the UI.
+
+#### 9.4 Adaptive relevance
+
+**Primary files:** `server/src/net/udp.rs`, `server/src/session/manager.rs`,
+`server/src/state/world.rs`, `client/lua/ge/extensions/highbeam/state.lua`, and
+vehicle diagnostics controllers.
+
+Start with server relay rate tiers; do not change BeamNG physics representation in
+the first PR. Observer hints are untrusted and clamped. Distance is computed from
+server-held latest poses. Tier changes use enter/exit thresholds plus a minimum dwell
+time to avoid oscillation. Nearby vehicles, recently colliding vehicles, and active
+event participants have priority.
+
+Only after relay-rate tests pass may a separate feasibility PR test safe client-side
+physics reduction. If BeamNG lacks a stable non-colliding/simplified API, retain full
+vehicles and expose a user-controlled hide option instead.
+
+#### 9.5 Binary protocol v4
+
+Keep the existing JSON length-prefixed decoder for v3. Add a new bounded frame codec
+beside it rather than rewriting all handlers. Handshake selects one codec for the
+session; mixed frames after selection are rejected. Convert pose/input/electrics
+first on TCP (the primary UDP pose datagram is already binary). Reliable lifecycle
+packets remain JSON until benchmarks justify migration.
+
+Required tests: round trips, maximum lengths, truncated frames, unknown types, schema
+version mismatch, malformed numeric values, allocation bounds, delta baseline loss,
+and cross-version handshake. Benchmark on the same packet corpus and machine recorded
+in the release notes.
+
+### Phase 10 — v0.11.0 Public-Session Quality
+
+#### 10.1 Browser preflight
+
+Extend the community-node summary only with compact sortable fields. Fetch detailed
+manifest/compatibility data lazily through the existing resolve/query path. Update
+`client/lua/ge/extensions/highbeam/browser.lua`, `launcher/src/discovery.rs`,
+`server/src/community_node.rs`, and `server/src/net/packet.rs` without putting signing
+keys, passwords, or raw addresses in the public list.
+
+#### 10.2 Reservation queue
+
+Implement queueing as a separate bounded pre-auth state, not a partially authenticated
+`Player` in `SessionManager`. Suggested server module: `server/src/session/queue.rs`.
+Queue records contain opaque ID, requested username/account identity where available,
+arrival sequence, heartbeat deadline, and source rate-limit key. Admission produces a
+single-use reservation token consumed by normal auth.
+
+Required transitions:
+
+`waiting → admitted/reserved → syncing → authenticated`, plus `cancelled`, `expired`,
+`rejected`, and `server_shutdown`. Every terminal transition releases state exactly
+once. Queue position is advisory; arrival sequence is authoritative.
+
+Launcher/browser owns waiting UI and cancellation. A reservation grace timer starts
+when admission is issued, not when the user first enters the queue.
+
+#### 10.3 Personal controls
+
+Add a local policy module under `client/lua/ge/extensions/highbeam/` keyed by stable
+server identity and remote player identity when available. Packet decoding continues,
+but blocked players are rejected before spawn/edit/pose/damage application. On block,
+clear pending transactions and remove current remote vehicles through the intentional
+HighBeam delete path so self-heal does not respawn them. Chat mute is independent from
+vehicle block.
+
+#### 10.4 Moderation and reports
+
+Build on `server/src/control.rs`, `server/src/cli.rs`, `server/src/gui.rs`, and plugin
+events. Add an atomic server-owned ban/audit store and a permission check shared by
+GUI, CLI, plugin, and in-game requests. Do not implement four separate authorization
+paths. Report packets reference server event IDs and a bounded recent-chat window;
+the server decides retention and export.
+
+Abuse tests include forged actor IDs, guest reconnects, vote brigading, duplicate
+votes, disconnect during action, expired bans, clock changes, and malformed reasons.
+
+#### 10.5 Share links
+
+Register the URI handler in the launcher per OS. Parse with a strict allowlist and
+display a confirmation containing resolved server name, compatibility, and mod bytes.
+The URI carries only a stable community server ID and optional non-secret event ID.
+Passwords and auth tokens never appear in links, logs, clipboard diagnostics, or OS
+registration commands.
+
+### Phase 11 — v0.12.0 Shared World & Events
+
+#### 11.1 World-state model
+
+Extend `server/src/state/world.rs` with a separate revisioned environment object; do
+not overload vehicle `WorldState` fields without separating the types. Add optional
+environment snapshot/change packets in `server/src/net/packet.rs`. Client applies
+supported fields through a new `world.lua` module with exact old-state restoration on
+disconnect where HighBeam changed session-local settings.
+
+World time uses a server monotonic epoch plus rate, not repeated wall-clock timestamps.
+Weather changes are named/revisioned presets first; arbitrary parameter streaming is
+deferred until a stable BeamNG API matrix exists.
+
+#### 11.2 Traffic signals
+
+The client inventories signal controllers and computes a stable map metadata hash.
+Server stores only capability/hash and the shared phase epoch. Clients with the same
+hash derive phases locally; sparse corrections include controller ID, phase, revision,
+and effective epoch. Hash mismatch disables signal sync for that client and reports a
+clear capability state.
+
+#### 11.3 Event primitives and reference plugins
+
+Core owns only generic validated state and timing. Put race/convoy/meetup rules in
+plugins. Event IDs and revisions prevent late packets from a previous event. Checkpoint
+progress is ordered server-side and rate-limited. Countdown uses the world epoch so it
+does not depend on equal client frame or load times.
+
+Map voting calls the existing deliberate-transition path with a new reason enum. Test
+queue/reservations, mod staging, environment snapshot, and vehicle cleanup across the
+transition as one integration scenario.
+
+### Phase 12 — v1.0 Stabilization
+
+No new feature scope. Freeze protocol v4 and the plugin API only after:
+
+- malicious packet/mod/plugin suites pass;
+- two-client and late-join matrices pass on every supported BeamNG version;
+- loss/latency/reconnect and 50-player synthetic tests pass;
+- queue/mod-download cancellation leaves no leaked sessions or staged files;
+- accessibility/controller checks pass for browser and session controls;
+- operator backup/migration/rollback and player troubleshooting docs are complete.
+
+Publish at least one release candidate and test upgrade and rollback from the latest
+public v0.x release before tagging v1.0.0.
+
+---
+
 ## Technical Decisions & Research Notes
 
 ### Why These Networking Choices?
 
 **State Synchronization model** (per Glenn Fiedler's research):
-- Each client is authoritative over its own vehicles (no prediction needed for local vehicles)
-- Clients send state (position, rotation, velocity) to the server
-- Server relays state to other clients
-- Other clients interpolate between received snapshots
+- Each client is authoritative over its own vehicles' motion and simulation outputs.
+- The server is authoritative for session ownership, lifecycle, revisions, ordering,
+  validation, and relay policy; it does not run BeamNG soft-body physics.
+- Clients send ordered state to the server; observers buffer/predict a target and use
+  bounded vehicle-physics correction rather than resetting transforms every packet.
+- Reliable configuration, damage, electrics, and powertrain state is revisioned and
+  retained for late join.
 
 This is ideal for BeamNG because:
 - BeamNG's physics runs at 2000Hz on a per-vehicle thread — too complex to replicate remotely
-- Each player only controls their own vehicles (no shared world physics)
-- Network state is purely visual — position, rotation, velocity for smooth rendering
+- Each player controls only their own vehicle while each observer still simulates a
+  physical remote puppet for suspension, wheels, parts, and collisions.
+- The server can validate and order state without pretending to be the physics host.
 
 **Update rate: 20Hz default** (not 30Hz or 60Hz):
 - 20Hz provides good visual quality with interpolation
@@ -1871,10 +2150,15 @@ This is ideal for BeamNG because:
 - At 20pps with 3-snapshot buffer, interpolation delay is ~150ms (acceptable)
 - Higher rates can be configured if bandwidth allows
 
-**Snapshot interpolation** (not extrapolation):
-- Extrapolation is unreliable for vehicles that turn, brake, or collide
-- Interpolation with a small buffer (2-3 snapshots) gives smooth, accurate results
-- The ~150ms visual delay is imperceptible while driving
+**Buffered prediction plus bounded correction:**
+- Buffer recent ordered snapshots and estimate the current target using reported
+  linear/angular velocity within a strict prediction horizon.
+- Apply distributed cluster/node acceleration in vehicle Lua so suspension and damage
+  simulation remain active.
+- Use hard correction only for epoch changes, spawn/reset, timeout recovery, or errors
+  beyond the documented safety threshold.
+- Never extrapolate indefinitely; late or missing packets transition to the diagnosed
+  fallback/recovery path.
 
 **LuaSocket for client networking:**
 - BeamNG's LuaJIT runtime should include or support LuaSocket
@@ -1886,13 +2170,17 @@ This is ideal for BeamNG because:
 
 From official BeamNG documentation:
 - **GELUA** (Game Engine Lua): Main thread, runs at graphics framerate. This is where HighBeam's networking lives.
-- **VLUA** (Vehicle Lua): Separate thread per vehicle, runs at physics rate (2000Hz). We do NOT network from here.
+- **VLUA** (Vehicle Lua): Separate vehicle context. HighBeam auxiliary controllers
+  sample local physics and apply remote correction/state here; sockets remain in GE.
 - **Communication**: GELUA ↔ VLUA via async queues (`obj:queueGameEngineLua()`, `be:getPlayerVehicle():queueLuaCommand()`) and mailboxes.
 
-HighBeam runs entirely in GELUA. We:
-1. Read vehicle positions from GELUA using `be:getPlayerVehicle(n)` APIs
-2. Network in GELUA's `onUpdate` (non-blocking sockets)
-3. Apply remote vehicle positions directly in GELUA
+HighBeam is deliberately split:
+1. GE owns TCP/UDP, session state, browser/chat UI, lifecycle, and packet ordering.
+2. Local vehicle controllers sample physics-facing state and report it asynchronously
+   to GE.
+3. GE forwards ordered remote targets/state to the correct remote controller.
+4. Remote vehicle controllers apply bounded correction, inputs, electrics, powertrain,
+   hydraulics, and damage without networking from the vehicle VM.
 
 ### Port 18860
 
@@ -1913,3 +2201,9 @@ HighBeam runs entirely in GELUA. We:
 | 4 | v0.4.0 | Plugins + vehicle persistence | `runtime.rs`, `api.rs`, `events.rs`, `persistence.rs`, example plugin |
 | 5 | v0.5.0 | Server GUI + performance | `gui/app.rs`, `gui/tray.rs`, panels, binary protocol, delta compression |
 | 6 | v0.6.0 | Server discovery | Query protocol, relay registration, server browser |
+| 7 | v0.8.2 | Current sync/lifecycle release gate | Two-client matrix, aligned logs, dev draft |
+| 8 | v0.9.0 | Mod and plugin trust foundation | Sandbox, quotas, signatures, TLS enforcement |
+| 9 | v0.10.0 | Connection confidence and scale | Health probes, resumable mods, edit transactions, relevance, protocol v4 |
+| 10 | v0.11.0 | Public-session quality | Browser preflight, queue, block/mute, moderation, share links |
+| 11 | v0.12.0 | Shared world and events | World epoch, environment, traffic signals, event primitives |
+| 12 | v1.0.0 | Contract freeze and stabilization | Security, load, network, migration, release candidate |

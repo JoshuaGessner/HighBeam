@@ -68,60 +68,65 @@ The server and client negotiate protocol version during the handshake. Mismatche
 
 ### Active Implementation Queue
 
-- [x] PR1: v0.3 hardening closeout tests
-   - Added malformed-packet decode corpus tests (server).
-   - Added rapid connect/disconnect stress validation tests (server).
-   - Added explicit bad-JSON recovery scenario helper (client).
-- [x] PR2: v0.3 manual verification run
-   - Execute timeout, rate-limit, validation, and log-rotation manual pass.
-   - Captured results and edge cases in this file.
-- [x] PR3: v0.6 backend control plane foundation
-   - Introduce server admin command/snapshot interfaces for future GUI wiring.
-   - Keep headless path unchanged.
-   - Delivered `ControlPlane` backend module with:
-     - Runtime snapshot API (`ServerSnapshot`)
-     - Admin command API (`GetSnapshot`, `BroadcastServerMessage`, `KickPlayer`, `ReloadPlugins`)
-     - Console command routing (`status`, `say`, `kick`, `plugins reload`, `lua`)
-- [x] PR4: v0.6 GUI shell
-   - Add egui/eframe application shell with dashboard tab and status metrics.
-   - Delivered desktop GUI scaffold with tabbed layout and live dashboard snapshot:
-     - Tabs: Dashboard, Players, Plugins, Console, Settings
-     - Live status from `ControlPlane::snapshot()` (players, vehicles, plugins, uptime, map, port)
-     - Non-headless launch path integrated while preserving `--headless` behavior
-- [x] PR5: v0.6 discovery protocol slice
-   - Add unauthenticated server query endpoint and basic client discovery model.
-   - Delivered unauthenticated UDP discovery query endpoint on server.
-   - Delivered launcher discovery query client (`--query-server host:port`).
-- [x] PR6: v0.7 protocol optimization prep
-   - Add JSON baseline benchmark harness and dual-format migration plan.
-   - Delivered server benchmark mode: `--protocol-benchmark`.
-   - Added benchmark harness (`net::benchmark`) with representative packet corpus and throughput/size reporting.
-   - Migration plan (dual-format):
-     1. Introduce protocol v3 with explicit transport format negotiation in handshake.
-     2. Support JSON (v2/v3 compatibility mode) and binary codec (v3 preferred) in parallel decode path.
-     3. Keep JSON encode for legacy clients until adoption threshold.
-     4. Flip default encode to binary for v3-capable clients.
-     5. Remove JSON encode path in a future major after deprecation window.
-- [x] PR7: v0.6.1 in-game client UX
-   - Add IMGUI server browser window to client mod GE extension.
-   - Direct Connect tab: host / port / username / password fields, values persisted to config JSON.
-   - Browse Servers tab: relay URL input, Refresh button, live server table (name, map, players, ping).
-   - Favorites tab: saved servers with one-click connect and remove buttons.
-   - Recent tab: last 10 connections with timestamps, quick reconnect, and favorite-toggle.
-   - Favorites list persists to `userdata/highbeam/favorites.json` in BeamNG user folder.
-   - Recent list persists to `userdata/highbeam/recents.json`.
-   - Relay fetch via plain HTTP GET over LuaSocket TCP; UDP 0x7A ping for per-server latency.
-   - Config save/load: username, last host/port, and relay URL are remembered between sessions.
-   - Browser auto-opens when HighBeam loads and user is not connected; closes on successful connect.
-   - Reopenable from GE Lua console: `extensions.highbeam.openBrowser()`.
-- [x] PR8: v0.6.5 launcher join-scoped sync + GUI tray UX hardening (all phases complete)
-   - [x] Remove launcher startup hardwire sync to configured server address.
-   - [x] Trigger mod sync only when user joins a specific server (`--server` flag).
-   - [x] Stage server mods per join-session (`highbeam-session-*` prefix + session manifest).
-   - [x] Keep cache entries for reuse; clean staged BeamNG mods on session end and on stale-session recovery.
-   - [x] Fix GUI close behavior to hide to tray reliably and keep Quit in tray as full exit path.
-   - [x] Ensure Windows GUI mode does not show CLI console window (release build).
-   - [x] Phase C: Wire in-game join action to launcher join-sync-ready handshake (IPC bridge).
+Work proceeds strictly in this order. A milestone cannot start until the previous
+milestone's exit gate is satisfied; this prevents feature work from obscuring
+transport, physics, or lifecycle regressions.
+
+1. **v0.8.2 release gate — current**
+   - [ ] Complete the dev.54 two-client acceptance matrix: spawn, drive, collide,
+     damage, repair, edit, reset, walk/unicycle, late join, disconnect/rejoin, and
+     deliberate map transition.
+   - [ ] Repeat the matrix with one modded vehicle and one hydraulics/transbrake
+     vehicle.
+   - [ ] Capture client 1, client 2, launcher, and server logs for the same session.
+   - [ ] Fix only release-blocking sync/lifecycle defects; publish v0.8.2 when the
+     matrix passes twice without a new critical diagnostic.
+2. **v0.9.0 trust foundation**
+   - Implement the already-specified mod sandbox, plugin hardening, signed mod
+     manifests, and transfer-integrity gates.
+3. **v0.10.0 connection confidence and scale**
+   - Add self-diagnosing connectivity, resumable mod delivery, edit transactions,
+     adaptive relevance, and negotiated binary transport.
+4. **v0.11.0 public-session quality**
+   - Add useful server sorting/preflight, full-server queues, personal safety
+     controls, server moderation/audit tools, and shareable join links.
+5. **v0.12.0 shared world and events**
+   - Synchronize time/weather/traffic signals and provide reusable event primitives
+     for races, convoys, meetups, and map voting.
+6. **v1.0.0 stabilization**
+   - Freeze protocol/plugin contracts, complete security/load/network testing, and
+     publish operator/player documentation.
+
+### Player Research and Product Priorities (2026-08-24)
+
+This is a qualitative product sample, not a statistically representative survey.
+It cross-checks recurring player reports on Reddit and Steam with BeamMP's public
+forum and issue trackers. One-off hardware or configuration problems were not
+treated as roadmap evidence unless the same failure pattern appeared in multiple
+places.
+
+| Recurring pain | Evidence | HighBeam response | Priority |
+|---|---|---|---|
+| Movement desync is hard to distinguish from blocked UDP, bad mods, or a failed client load. | [Reddit: asymmetric/frozen movement](https://www.reddit.com/r/BeamMP/comments/1uo4mco/error_10038_asymmetric_lag_i_can_see_other/), [Reddit: persistent sync failure](https://www.reddit.com/r/BeamMP/comments/1o6x307/multiplayer_problem_while_playing_with_my_friend/), [BeamMP issue list: misleading connection failures](https://github.com/BeamMP/BeamMP/issues) | Preflight probes, live path health, automatic TCP fallback, actionable error states, and one-click support bundles. | **P0** |
+| Large mod packs stall, restart, redownload, or provide no useful progress. | [Reddit: 2.5GB join failures](https://www.reddit.com/r/BeamMP/comments/1snnwrw/i_can_not_play_on_a_server_with_more_then_25gb_of/), [Reddit: stuck downloads](https://www.reddit.com/r/BeamMP/comments/1v563ld/mod_downloading_fix/), [BeamMP feedback: multiple mod downloads](https://forum.beammp.com/c/votes-feedback/37) | Preflight size/conflict report, resumable content-addressed transfers, bounded parallelism, verified cache repair, and honest per-file/overall progress. | **P0** |
+| Vehicle edits and distant vehicles cause frame/physics stalls. | [Steam discussion: edit freezes and FPS](https://steamcommunity.com/app/284160/discussions/0/600782777428789193/), [Reddit: edit queue freezes](https://www.reddit.com/r/BeamMP/comments/14hz56g/edits_take_forever_to_load_please_help/), [BeamMP server issue: simplified configs](https://github.com/BeamMP/BeamMP-Server/issues/185) | Latest-wins edit transactions, safe apply scheduling, distance/visibility relevance, per-client vehicle budgets, and measurable binary/delta transport. | **P0** |
+| Public servers are frequently disrupted by intentional crashing, node-grabbing, spam, or anonymous repeat offenders. | [Reddit: public-server trolling](https://www.reddit.com/r/BeamMP/comments/1hpdqea/can_we_talk_about_the_amount_of_trolls_and/), [Steam discussion: random-server trolling](https://steamcommunity.com/app/284160/discussions/0/600782777428789193/), [BeamMP forum: report-button request](https://forum.beammp.com/t/we-need-a-report-button/1017206) | Immediate local hide/block/mute, durable server roles and bans, audit logs, evidence-assisted reports, and configurable anti-spam/AFK policy. | **P1** |
+| Finding the right server and entering a full one is unnecessarily frustrating. | [BeamMP issue: player join queue](https://github.com/BeamMP/BeamMP-Server/issues/79), [Steam discussion: repeated full-server refresh](https://steamcommunity.com/app/284160/discussions/0/600782777428789193/), [BeamMP issue list: sort by players/ping](https://github.com/BeamMP/BeamMP/issues) | Compatibility/mod-size preflight, sortable/filterable browser, cancellable reservation queue, and stable share/invite links. | **P1** |
+| The world feels client-local and public play lacks lightweight structure. | [BeamMP issue: traffic-light sync](https://github.com/BeamMP/BeamMP/issues/555), [BeamMP feedback index: friends, voice, AFK and activities](https://forum.beammp.com/c/votes-feedback/37), [BeamMP forum: proximity-chat tradeoffs](https://forum.beammp.com/t/adding-proximity-chat-its-where-you-can-talk-in-the-game/974925) | Server-clocked environment state plus reusable ready/countdown/checkpoint/vote primitives. Voice remains post-1.0 until moderation, privacy, and transport costs are solved. | **P2** |
+
+**Product rules derived from the research:**
+
+- Reliability and understandable failures come before social novelty.
+- Reduce local physics work before merely compressing packets; bandwidth and CPU
+  are separate bottlenecks.
+- Safety controls must work immediately and locally even if a server has no active
+  moderator.
+- HighBeam remains decentralized: queues, reports, bans, and invites are owned by
+  the selected server, not a mandatory central account service.
+- Shared-world synchronization uses an authoritative server epoch and late-join
+  snapshots, never a permanently trusted player host.
+- Voice chat is not bundled into the core roadmap merely because it is popular;
+  it requires a separate privacy, abuse, codec, and moderation design review.
 
 ### v0.1.0 — Foundation (Pre-Alpha) ✅
 
@@ -576,20 +581,19 @@ As of 2026-03-30, historical hardening notes were merged into this plan.
 
 ---
 
-### v0.7.0 — Protocol Optimization (Beta)
+### v0.7.0 — Protocol Optimization (Superseded Planning Milestone)
 
-**Goal:** Reduce bandwidth overhead and improve performance at scale.
+HighBeam advanced to v0.8.x before the original v0.7 optimization scope shipped.
+This version number will not be released retroactively. Completed preparation
+(benchmark harness and restart persistence) remains valid; all unfinished work has
+been moved to the dependency-correct **v0.10.0** milestone below.
 
-**Server & Client:**
-- [ ] Binary TCP packet format (replace JSON with MessagePack or custom proto)
-- [ ] Delta compression for vehicle config updates
-- [ ] Adaptive update rates based on distance/visibility
+- [x] JSON baseline benchmark harness
 - [x] State save on shutdown with recovery on restart
-
-**Performance Targets:**
-- [ ] Binary protocol reduces per-packet overhead by >50% vs JSON
-- [ ] 50-player server uses < 5Mbps total bandwidth
-- [ ] Memory stable with 50+ players (< 1GB RSS)
+- [→ v0.10.0] Negotiated binary TCP packet format
+- [→ v0.10.0] Delta/coalesced vehicle configuration updates
+- [→ v0.10.0] Adaptive update rates based on distance/visibility
+- [→ v0.10.0] 50-player bandwidth and memory targets
 
 ---
 
@@ -1133,12 +1137,239 @@ ModSigningTrust = "tofu"  # "tofu", "pinned", or "none"
 
 ---
 
+### v0.10.0 — Connection Confidence & Scale (Beta)
+
+**Goal:** Make joining and staying synchronized predictable on imperfect networks
+and heavily modded servers, then reduce CPU and bandwidth cost with measured—not
+speculative—optimization.
+
+**Required order:** observability → mod delivery → edit scheduling → relevance →
+binary transport. Later slices may use the measurements and capability negotiation
+introduced by earlier slices; they must not be implemented out of order.
+
+#### A. Connection health and support bundle
+
+- [ ] Add a pre-spawn TCP/UDP path probe with direction-specific results.
+- [ ] Track pose sequence loss, out-of-order packets, jitter, last TCP/UDP receive,
+  correction error, and active fallback mode per peer.
+- [ ] Automatically remain on the existing TCP pose fallback when UDP is unhealthy;
+  periodically probe for safe recovery without interrupting play.
+- [ ] Show concise states in-game: `Healthy`, `Degraded (TCP fallback)`,
+  `Remote client not sending`, `Local UDP blocked`, and `Client mod not ready`.
+- [ ] Add one-click support export containing sanitized HighBeam/launcher/server
+  diagnostics, version/capability data, and timestamps. Never include passwords,
+  auth tokens, signing keys, or full filesystem paths.
+
+#### B. Resumable mod preflight and delivery
+
+- [ ] Query manifest, total bytes, cache hits, conflicts, and free-space requirement
+  before joining or reserving a player slot.
+- [ ] Extend content-addressed cache entries with verified byte count and partial-file
+  metadata; re-hash existing partial bytes and resume only when server hash, size,
+  and chunk boundary match.
+- [ ] Support bounded parallel downloads (default 2, configurable 1–4) so parallelism
+  improves throughput without saturating disks or starving gameplay traffic.
+- [ ] Emit per-file and overall byte progress, throughput, ETA, retry reason, and a
+  cancellable state through launcher IPC.
+- [ ] Repair one corrupt cache entry without requiring users to clear the entire
+  cache; atomically promote verified `.part` files.
+- [ ] Keep v0.9 signature/TLS verification mandatory at finalization and resume.
+
+#### C. Vehicle-edit transactions
+
+- [ ] Assign every spawn/edit a monotonic vehicle revision and content hash.
+- [ ] Coalesce pending edits per vehicle to latest-wins before expensive local apply.
+- [ ] Default to apply when the observer is stopped or the edited vehicle is outside
+  an immediate collision radius; allow `Manual`, `When safe`, and `Immediate` modes.
+- [ ] Preserve ordered reset/damage semantics across an edit and explicitly rebase or
+  reject stale transactions.
+- [ ] Show pending edit count and source player; allow a player to apply or discard a
+  locally blocked remote vehicle's pending work.
+
+#### D. Adaptive relevance and physics budget
+
+- [ ] Clients report a rate-limited observer position, camera/visibility hints, and
+  current physics FPS class; the server validates all numeric values.
+- [ ] Server assigns update tiers with hysteresis: nearby/collision-risk, visible,
+  distant, and dormant. Never use a single frame's visibility to change tiers.
+- [ ] Keep lifecycle, chat, damage, and configuration reliable regardless of tier;
+  only high-frequency pose/input/electrics sampling is reduced.
+- [ ] Add a configurable per-client remote-vehicle physics budget and deterministic
+  prioritization (distance, visibility, recent interaction, party/event membership).
+- [ ] Use a safe local fallback for over-budget vehicles only after a BeamNG API
+  feasibility test; never silently replace a player's configuration with a guessed
+  simplified variant.
+
+#### E. Negotiated binary transport (protocol v4)
+
+- [ ] Add explicit capability negotiation (`json-v3`, `binary-v4`, supported optional
+  features) to the handshake.
+- [ ] Introduce a bounded binary envelope with packet type, schema version, payload
+  length, and validation before allocation. Retain JSON v3 as the compatibility path.
+- [ ] Keep the existing binary UDP pose datagram. Convert TCP pose fallback and the
+  highest-volume reliable input/electrics packets first; migrate lower-rate control
+  packets only where benchmark data shows material benefit.
+- [ ] Record old/new encoded size and encode/decode time using the existing benchmark
+  corpus before changing defaults.
+- [ ] Delta encode only against acknowledged baselines; on loss or epoch change,
+  request/send a full state without relying on a missing delta chain.
+
+**Exit gate:**
+
+- [ ] An intentionally blocked UDP path is identified before remote spawning and
+  continues through TCP fallback with an actionable UI state.
+- [ ] A 5GB interrupted mod set resumes without redownloading verified bytes and
+  produces the same SHA-256 manifest as a clean download.
+- [ ] Twenty rapid edits of one vehicle cause at most one expensive local apply when
+  latest-wins mode is enabled.
+- [ ] Network-emulated 2%, 5%, and 10% loss plus 50/150/300ms RTT complete a 15-minute
+  drive without permanent freeze, stale epoch application, or unbounded queues.
+- [ ] 50-player/vehicle synthetic load stays below 5Mbps aggregate server egress for
+  pose traffic and below 1GB server RSS on the documented benchmark machine.
+- [ ] Binary high-rate packets are at least 50% smaller than JSON baseline and legacy
+  v3 clients still receive a clean compatibility response.
+
+---
+
+### v0.11.0 — Public-Session Quality (Beta)
+
+**Goal:** Make public servers easy to choose, enter, share, and moderate without
+requiring a centralized HighBeam identity or social backend.
+
+#### A. Server browser and compatibility preflight
+
+- [ ] Sort/filter by ping, players, available slots, mod bytes, map, password,
+  protocol/game compatibility, favorites, and trusted signing-key state.
+- [ ] Display explicit `Full`, `Queue available`, `Version mismatch`, `Mods blocked`,
+  and `Unreachable` states before launching or downloading.
+- [ ] Resolve details lazily so the community-node list stays small; cache with an
+  expiry and never expose server addresses in the UI.
+
+#### B. Full-server reservation queue
+
+- [ ] Add a lightweight pre-auth queue session with opaque queue ID, heartbeat,
+  position updates, cancellation, timeout, and server-shutdown handling.
+- [ ] On admission, issue a single-use, short-lived reservation token and hold the
+  slot for a configurable mod-sync grace period.
+- [ ] Do not download multi-gigabyte mod sets while waiting unless the user explicitly
+  opts into prefetch; prefetch never guarantees admission.
+- [ ] Expose queue events to plugins while enforcing server-owned maximum queue size,
+  per-IP/account limits, and rate limits.
+
+#### C. Immediate personal safety controls
+
+- [ ] Add per-player `Mute chat`, `Hide/block vehicles`, and `Block interactions`
+  actions to the player list.
+- [ ] Blocking suppresses future spawn/edit/pose/damage application for that remote
+  player and intentionally removes their currently spawned remote vehicles; it does
+  not claim server-wide enforcement.
+- [ ] Persist blocks by authenticated server identity when available and otherwise
+  scope them to the current server session; make this distinction visible.
+- [ ] Treat a visible non-colliding ghost as a separate BeamNG feasibility item. The
+  guaranteed fallback is hide/block, which uses already-supported vehicle removal.
+
+#### D. Server moderation and auditability
+
+- [ ] Add owner/admin/moderator roles with least-privilege permissions for kick,
+  mute, temp-ban, ban, vehicle remove/freeze, and announcement actions.
+- [ ] Store bans and moderation events atomically with actor, target identity, reason,
+  duration, server time, and source. Redact network addresses in normal UI exports.
+- [ ] Add an in-game report action that packages recent chat and relevant server event
+  IDs for that server's moderators; no mandatory central upload.
+- [ ] Add configurable AFK, chat-spam, repeated-spawn/edit, and vehicle-count policies.
+- [ ] Keep vote-kick disabled by default. If enabled, require minimum unique eligible
+  voters, cooldowns, quorum, and moderator audit records to reduce group abuse.
+
+#### E. Sharing and lightweight social flow
+
+- [ ] Register a `highbeam://join/<server-id>` launcher URI with explicit confirmation,
+  resolved through the community node and never containing a password.
+- [ ] Add copy-invite and join-from-clipboard actions, plus party/event grouping scoped
+  to the current server.
+- [ ] Defer global friends/presence until there is an explicit identity, privacy,
+  blocking, and data-retention design.
+
+**Exit gate:**
+
+- [ ] Browser filters and compatibility states are keyboard/controller usable at
+  1280×720 and do not block game update callbacks.
+- [ ] Queue order remains stable across churn; cancelled/expired reservations cannot
+  consume slots; a reconnect cannot reuse a consumed token.
+- [ ] A blocked player cannot respawn a remote vehicle locally through edit/reset or
+  late-join replay until unblocked.
+- [ ] Moderation permissions reject every unauthorized action and all accepted actions
+  create an audit record.
+- [ ] A share link resolves by stable server ID, asks for confirmation, completes mod
+  preflight, and never exposes credentials.
+
+---
+
+### v0.12.0 — Shared World & Events (Beta)
+
+**Goal:** Make every player inhabit the same environment and give server operators
+small, composable tools for organized driving instead of hard-coding one game mode.
+
+#### A. Authoritative world clock and environment snapshot
+
+- [ ] Add a server monotonic world epoch plus revisioned snapshot containing map ID,
+  time-of-day policy, weather preset/parameters, and optional simulation-speed policy.
+- [ ] Clients advertise environment capabilities and map metadata hash; unsupported
+  fields are ignored explicitly and reported, not guessed.
+- [ ] Late join receives a full snapshot followed by sparse revisioned changes.
+- [ ] Server plugins may propose changes through validated APIs; the server remains
+  authoritative and records the actor/source.
+
+#### B. Traffic-signal synchronization
+
+- [ ] Discover map signal controllers and deterministic timing metadata client-side;
+  report only a validated metadata hash/capability to the server.
+- [ ] Synchronize a shared phase epoch first. Use sparse authoritative phase
+  corrections only when drift exceeds tolerance; never stream every light every frame.
+- [ ] If clients disagree on signal metadata, mark traffic sync unavailable for those
+  clients and leave native local behavior intact.
+
+#### C. Event primitives
+
+- [ ] Add plugin/core packets for event create/join/leave, ready state, synchronized
+  countdown epoch, checkpoint progress, finish/result, and cancellation.
+- [ ] Provide reference race/convoy/meetup plugins rather than embedding game-specific
+  rules in transport code.
+- [ ] Add map-vote primitives with eligible-voter snapshot, bounded choices, quorum,
+  cooldown, deterministic tie-break, and an explicit server transition reason so
+  existing world-transition lifecycle handling remains correct.
+- [ ] Prioritize event participants in v0.10 relevance scoring without starving nearby
+  non-participants.
+
+#### D. Voice-chat decision record (design only)
+
+- [ ] Produce a post-1.0 RFC covering opt-in defaults, push-to-talk, per-player/mute-all,
+  proximity/channel policy, codec/licensing, bandwidth, recording indicators, abuse
+  reporting, parental/privacy concerns, and server disablement.
+- [ ] Do not ship microphone capture or audio transport in v0.12.0.
+
+**Exit gate:**
+
+- [ ] Two clients joining five minutes apart converge on time/weather within defined
+  tolerance without a visible backward time jump.
+- [ ] Traffic lights remain phase-aligned for 30 minutes across vehicle loads and one
+  late join; mismatched maps degrade safely.
+- [ ] A race countdown starts on the same server epoch for all clients and checkpoint
+  results reject duplicates, stale event IDs, and impossible orderings.
+- [ ] A successful map vote triggers one deliberate world transition and reconnect;
+  it does not look like an accidental disconnect.
+
+---
+
 ### v1.0.0 — Stable Release
 
 **Goal:** Feature-complete, documented, stable multiplayer framework.
 
 **Requirements for 1.0.0:**
-- All v0.x features stable and tested (v0.1–v0.5 minimum required; v0.6–v0.9 recommended)
+- v0.8.2 sync/lifecycle acceptance matrix passes on the supported BeamNG release
+- v0.9 mod trust foundation is operational and tested
+- v0.10 connection/mod/performance paths pass network and load gates
+- v0.11 queue, blocking, moderation, and browser flows pass abuse/churn tests
+- v0.12 shared-world state and event primitives pass late-join/transition tests
 - Mod sandbox system operational and tested (v0.9.0)
 - Protocol version finalized (breaking changes require major version bump after this)
 - Plugin API stable (HB.* namespace frozen)
@@ -1189,15 +1420,14 @@ ModSigningTrust = "tofu"  # "tofu", "pinned", or "none"
 
 Ideas for future development (not committed):
 
-- **Voice chat** — UDP Opus codec channel
+- **Proximity/channel voice** — only after the v0.12 privacy, moderation, and transport RFC
 - **Spectator mode** — Watch without spawning
 - **Replay system** — Record and playback sessions
-- **Headless mode** — Server without console for Docker/systemd
-- **ARM support** — Compile for ARM64 (Raspberry Pi, etc.)
-- **Map voting** — Plugin + client UI for map rotation
+- **Persistent career/co-op economy** — Server-owned progression with explicit migration rules
+- **Container/ARM distribution expansion** — Supported images and additional server architectures
 - **Vehicle permissions** — Per-player vehicle restrictions
-- **Bandwidth optimization** — Adaptive update rates based on distance/visibility
 - **Web dashboard** — Optional browser-based remote admin panel (separate from local GUI)
+- **Global friends/presence** — Only with an explicit identity/privacy/data-retention design
 
 ---
 

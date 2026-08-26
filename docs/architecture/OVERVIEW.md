@@ -1,7 +1,7 @@
 # HighBeam Architecture Overview
 
-> **Last updated:** 2026-04-03
-> **Applies to:** v0.8.0
+> **Last updated:** 2026-08-24
+> **Applies to:** v0.8.2-dev.54
 
 ---
 
@@ -9,7 +9,7 @@
 
 HighBeam is an open-source multiplayer framework for BeamNG.drive that provides:
 
-1. **A launcher** — A lightweight Rust CLI that installs/updates the client mod, downloads server-required mods, and launches BeamNG.drive.
+1. **A launcher** — A Rust desktop/CLI companion that installs/updates the client mod, downloads and stages server-required mods, launches/monitors BeamNG.drive, and provides session IPC plus a localhost network proxy.
 2. **A client mod** — A Lua-based BeamNG.drive mod that handles in-game multiplayer UI, vehicle synchronization, and communication with the server.
 3. **A server binary** — A standalone Rust application that manages player connections, game state, vehicle data relay, and server-side Lua plugins.
 
@@ -107,7 +107,11 @@ The server is designed to be hosted on **dedicated Linux servers** (headless mod
 
 ### Launcher (`launcher/`)
 
-The launcher is a lightweight Rust CLI that runs **before** BeamNG.drive launches. It is **not a network proxy** and does **not stay running** during gameplay.
+The launcher is a lightweight Rust desktop/CLI companion that installs and stages
+mods, launches BeamNG.drive, and remains alive for the game session. It exposes a
+localhost IPC bridge for in-game join requests and a localhost TCP/UDP proxy so the
+client can use one stable loopback path while the launcher handles remote routing and
+NAT-hairpin cases.
 
 | Responsibility | Description |
 |---------------|-------------|
@@ -116,7 +120,8 @@ The launcher is a lightweight Rust CLI that runs **before** BeamNG.drive launche
 | **Session staging** | Stages server-required mods into BeamNG mods folder under a `highbeam-session-*` prefix; records staged files in a session manifest |
 | **Session cleanup** | Removes staged server mods from BeamNG mods folder after the game exits; stale sessions from crashed launcher runs are recovered on next startup |
 | **Mod caching** | Maintains a local cache with SHA-256 hashes to skip re-downloading unchanged mods across sessions |
-| **Game launch** | Launches BeamNG.drive with the correct mod configuration, then exits |
+| **IPC + proxy** | Serves join-sync requests and relays gameplay TCP/UDP through loopback for the active session |
+| **Game launch** | Launches BeamNG.drive, monitors readiness/process exit, then cleans up staged state |
 
 The launcher is the **only component that writes to the filesystem** outside the game. The in-game client mod has no file I/O responsibilities for mod management.
 
@@ -173,11 +178,11 @@ See [PROTOCOL.md](PROTOCOL.md) for the full protocol specification.
 |--------|----------|
 | **Authentication** | Decentralized — server issues its own tokens, optional password protection |
 | **Server discovery** | Community node mesh for discovery, or direct IP connect (see [RELAY.md](RELAY.md)) |
-| **Launcher** | Lightweight Rust CLI — syncs mods, launches game, then exits (not a proxy) |
+| **Launcher** | Rust desktop/CLI companion — syncs/stages mods, launches and monitors the game, serves IPC, and runs a session-scoped localhost proxy |
 | **Server binary** | Rust with embedded Lua 5.4 |
 | **Server management** | Built-in desktop GUI (egui) with system tray, plus headless mode |
 | **Vehicle persistence** | Admin-toggled per-player vehicle persistence (SQLite-backed) |
-| **Protocol** | Fully documented, versioned protocol with direct game connection |
+| **Protocol** | Fully documented, versioned protocol; game traffic uses the launcher's loopback relay for the active remote server |
 | **Plugin API** | Lua plugin system with HB.* API namespace |
 | **Guest support** | Server-local guest policy (configurable per-server) |
 | **Mod sync** | Launcher downloads mods via raw binary TCP before game launch; no in-game file I/O |
@@ -263,7 +268,7 @@ Player A (Client)           Server              Player B (Client)
 | Component | Technology | Rationale |
 |-----------|-----------|-----------|| Launcher | Rust | Same toolchain as server, native filesystem access, small binary size || Server binary | Rust | Memory safety without GC, excellent async networking (tokio), cross-platform |
 | Server plugins | Lua 5.4 (via mlua) | Familiar to BeamNG modders, sandboxed execution, hot-reloadable |
-| Client mod | Lua (LuaJIT via BeamNG) | Required by BeamNG.drive's extension system — runs in GELUA (main/graphics thread) |
+| Client mod | Lua (LuaJIT via BeamNG) | GE extension owns networking/UI/lifecycle; auxiliary vehicle controllers own physics sampling and remote application |
 | Client UI | HTML/JS/CSS (BeamNG UI apps) | BeamNG's native UI app framework |
 | Server GUI | egui/eframe (Rust) | Immediate-mode GUI, cross-platform, no web server dependency |
 | System tray | tray-icon (Rust) | Cross-platform tray integration for minimize-to-tray |
