@@ -6,6 +6,10 @@ mod_sync_addr = ""
 cache_dir = "~/.highbeam/cache"
 # Path to BeamNG.drive executable. Leave empty to auto-detect from Steam.
 beamng_exe = ""
+# Graphics backend used when HighBeam starts BeamNG.
+# BeamNG 0.39 defaults Windows to D3D12 and automatically falls back to D3D11.
+# Options: "d3d12" (HighBeam Windows default), "dx11", "vulkan", or "auto".
+graphics_api = "d3d12"
 # Path to BeamNG.drive user data folder. Leave empty to auto-detect.
 # Modern BeamNG (0.27+) on Windows: C:\Users\<you>\AppData\Local\BeamNG\BeamNG.drive
 # Legacy (pre-0.27) on Windows:       C:\Users\<you>\AppData\Local\BeamNG.drive

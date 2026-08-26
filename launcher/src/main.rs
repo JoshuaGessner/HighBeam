@@ -359,6 +359,10 @@ fn main() -> Result<()> {
             Some(p) => println!("BeamNG exe  : {}", p.display()),
             None => println!("BeamNG exe  : NOT FOUND (set beamng_exe in LauncherConfig.toml)"),
         }
+        match cfg.graphics_api.beamng_gfx_arg() {
+            Some(renderer) => println!("Graphics API: {renderer} (-gfx {renderer})"),
+            None => println!("Graphics API: auto (BeamNG selection)"),
+        }
         match installer::resolve_mods_dir_pub(cfg.beamng_userfolder.as_deref()) {
             Ok(p) => println!("Mods dir    : {}", p.display()),
             Err(e) => println!("Mods dir    : UNRESOLVED ({})", e),
@@ -512,7 +516,7 @@ fn main() -> Result<()> {
     }
 
     // ── Spawn the game (non-blocking) ────────────────────────────────────────
-    let mut game_child = game::spawn_game(cfg.beamng_exe.as_deref())?;
+    let mut game_child = game::spawn_game(cfg.beamng_exe.as_deref(), cfg.graphics_api)?;
     tracing::info!("BeamNG.drive launched");
 
     // ── Start the IPC server so in-game joins can trigger mod sync ───────────

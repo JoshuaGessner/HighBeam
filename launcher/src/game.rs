@@ -1,6 +1,8 @@
 use anyhow::{anyhow, Result};
 use std::process::Command;
 
+use crate::config::GraphicsApi;
+
 /// Detect or validate the BeamNG.drive executable path and return a resolved string.
 fn resolve_exe(beamng_exe: Option<&str>) -> Result<String> {
     match beamng_exe {
@@ -24,10 +26,21 @@ fn resolve_exe(beamng_exe: Option<&str>) -> Result<String> {
 
 /// Spawn BeamNG.drive and return the child process handle *without* waiting for it.
 /// The caller is responsible for waiting or monitoring the child.
-pub fn spawn_game(beamng_exe: Option<&str>) -> Result<std::process::Child> {
+pub fn spawn_game(
+    beamng_exe: Option<&str>,
+    graphics_api: GraphicsApi,
+) -> Result<std::process::Child> {
     let exe = resolve_exe(beamng_exe)?;
-    println!("Launching BeamNG.drive: {exe}");
-    let child = Command::new(&exe)
+    let mut command = Command::new(&exe);
+    if let Some(renderer) = graphics_api.beamng_gfx_arg() {
+        command.args(["-gfx", renderer]);
+        println!("Launching BeamNG.drive: {exe} (-gfx {renderer})");
+        tracing::info!(%exe, renderer, "Launching BeamNG.drive with graphics override");
+    } else {
+        println!("Launching BeamNG.drive: {exe} (renderer: BeamNG auto)");
+        tracing::info!(%exe, "Launching BeamNG.drive with BeamNG renderer selection");
+    }
+    let child = command
         .spawn()
         .map_err(|e| anyhow!("Failed to spawn BeamNG.drive ({}): {e}", exe))?;
     Ok(child)
@@ -36,8 +49,8 @@ pub fn spawn_game(beamng_exe: Option<&str>) -> Result<std::process::Child> {
 /// Spawn BeamNG.drive and block until the process exits.
 /// Equivalent to calling `spawn_game` then `child.wait()`.
 #[allow(dead_code)]
-pub fn launch_game(beamng_exe: Option<&str>) -> Result<()> {
-    let mut child = spawn_game(beamng_exe)?;
+pub fn launch_game(beamng_exe: Option<&str>, graphics_api: GraphicsApi) -> Result<()> {
+    let mut child = spawn_game(beamng_exe, graphics_api)?;
     let status = child.wait()?;
     if status.success() {
         println!("BeamNG.drive exited normally");

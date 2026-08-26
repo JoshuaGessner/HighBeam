@@ -1,14 +1,18 @@
 # HighBeam Launcher Architecture
 
-> **Last updated:** 2026-04-03
-> **Applies to:** v0.8.0
+> **Last updated:** 2026-08-24
+> **Applies to:** v0.8.2-dev.54
 > **Parent doc:** [OVERVIEW.md](OVERVIEW.md)
 
 ---
 
 ## Overview
 
-The HighBeam Launcher is a lightweight Rust CLI that handles mod management and game launching. It is **not a network proxy** — it performs setup work, launches the game, and exits. It auto-detects BeamNG.drive installations from Steam and self-updates from GitHub Releases.
+The HighBeam Launcher is a lightweight Rust desktop/CLI companion that handles mod
+management, game launching, join IPC, and the active session's localhost TCP/UDP
+proxy. It auto-detects BeamNG.drive installations from Steam and self-updates from
+GitHub Releases. It remains alive until the game exits so it can service in-game join
+requests, report readiness, route network traffic, and clean up staged mods.
 
 ```
 ┌──────────────────────────────────────────────────┐
@@ -27,10 +31,11 @@ The HighBeam Launcher is a lightweight Rust CLI that handles mod management and 
 │    8. Stage mods into BeamNG mods dir            │
 │       (prefix: highbeam-session-*)              │
 │    9. Write session manifest JSON                │
-│   10. Launch BeamNG.drive                        │
-│   11. Wait for game exit                         │
-│   12. Clean up staged session mods               │
-│   13. Exit                                       │
+│   10. Start localhost TCP/UDP proxy + IPC        │
+│   11. Launch and monitor BeamNG.drive            │
+│   12. Service join-sync/readiness during play    │
+│   13. Stop proxy and clean staged session mods   │
+│   14. Exit                                       │
 └──────────────────────────────────────────────────┘
 ```
 
@@ -46,8 +51,8 @@ BeamNG's GE Lua runtime does not provide reliable filesystem write access. The i
 
 | Aspect | HighBeam Launcher |
 |--------|-------------------|
-| **Role** | One-shot mod sync + game launch, then exits |
-| **Network proxy** | No — client mod connects directly to server via localhost relay |
+| **Role** | Mod sync, game launch/monitoring, join IPC, proxy relay, and cleanup |
+| **Network proxy** | Yes — session-scoped localhost TCP/UDP relay to the selected server |
 | **Authentication** | No auth role — server-local auth handled by client mod |
 | **Mod injection** | Writes client mod to mods directory (standard BeamNG mod loading) |
 | **Lifetime** | Stays running during session for IPC and proxy relay, cleans up on exit |
@@ -65,15 +70,12 @@ launcher/
 │   ├── detect.rs           # BeamNG.drive auto-detection (Steam libraries, userfolder)
 │   ├── installer.rs        # Mod installation, session staging manifest, cleanup
 │   ├── ipc.rs              # In-game IPC bridge (localhost TCP for join-sync handshake)
+│   ├── proxy.rs            # Session-scoped localhost TCP/UDP relay to remote server
 │   ├── mod_sync.rs         # Mod download: mod_list handshake + raw binary TCP download
 │   ├── mod_cache.rs        # Local cache management (SHA-256 hashes, file tracking)
 │   ├── discovery.rs        # Server query (UDP 0x7A) and relay HTTP browsing
 │   ├── transfer.rs         # Raw binary TCP mod transfer framing protocol
 │   ├── updater.rs          # Self-update from GitHub Releases
-│   └── game.rs             # BeamNG.drive detection and launch
-├── Cargo.toml
-└── LauncherConfig.toml     # User configuration
-```
 │   └── game.rs             # BeamNG.drive detection and launch
 ├── Cargo.toml
 └── LauncherConfig.toml     # User configuration
@@ -168,31 +170,27 @@ The launcher maintains a local mod cache to avoid re-downloading mods that haven
 ### LauncherConfig.toml
 
 ```toml
-[General]
-# Path to BeamNG.drive (auto-detected if not set)
-# BeamNGPath = "C:/Program Files (x86)/Steam/steamapps/common/BeamNG.drive"
+server_addr = "127.0.0.1:18860"
+mod_sync_addr = ""
+cache_dir = "~/.highbeam/cache"
 
-# Where to cache downloaded mods
-CacheDir = "~/.highbeam/cache"
+# Leave empty to auto-detect BeamNG from Steam.
+beamng_exe = ""
+beamng_userfolder = ""
 
-# Maximum concurrent mod downloads (future)
-# MaxConcurrentDownloads = 2
+# BeamNG 0.39 Windows default. BeamNG falls back to D3D11 when D3D12 is
+# unavailable. Troubleshooting overrides: "dx11", "vulkan", or "auto".
+graphics_api = "d3d12"
 
-[Server]
-# Default server to connect to (can be overridden via CLI)
-Host = ""
-Port = 18860
-
-[Security]
-# Require TLS for mod downloads (recommended) (v0.9.0)
-RequireTlsForMods = true
-# Maximum mod file size in megabytes (per mod) (v0.9.0)
-MaxModSizeMB = 500
-# Per-mod download timeout in seconds (v0.9.0)
-ModDownloadTimeoutSec = 600
-# Trust-on-first-use for server mod signing keys (v0.9.0)
-ModSigningTrust = "tofu"  # "tofu", "pinned", or "none"
+query_timeout_ms = 1500
+connect_timeout_sec = 10
+max_cache_size_mb = 2048
 ```
+
+`graphics_api = "auto"` is the only mode that omits the `-gfx` argument and
+therefore permits BeamNG's existing persisted renderer selection. HighBeam's Windows
+default is explicit `-gfx d3d12` so an old Vulkan preference cannot silently carry
+forward when the BeamNG launcher screen is bypassed.
 
 ### CLI Usage
 
